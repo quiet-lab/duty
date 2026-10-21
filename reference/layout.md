@@ -17,6 +17,12 @@ Bitbucket — [`access.md`](access.md).
   ветви коллег — всё, что не начинается с `dev2-RP-`, `bugfix/RP-`,
   `chore/`, `feature/` и чей автор последнего коммита не пользователь
   (`git log -1 --format=%an <ветвь>`).
+- Слитой считается ветвь, вершину которой содержит `origin/<родитель>`
+  (`git merge-base --is-ancestor`); `git branch -d` проверяет слитость
+  в HEAD сабмодуля (`new_ocp`) и здесь не годится, удаляет `branch -D`
+  сразу после проверки. Ветви, выписанные в любую worktree
+  (`git worktree list --porcelain` сабмодуля, в том числе деревья
+  исполнителей), и ветви, названные в `--exclude`, не удаляются.
 - История `origin` не переписывается: без `push --force`, без `rebase`
   отправленных ветвей.
 
@@ -27,7 +33,7 @@ Bitbucket — [`access.md`](access.md).
 | `~/.local/share/ocp-dev-stand/src/{qms,ui,tests,jssip-phone}` | основные деревья местного стенда (detached HEAD) | только вместе со стендом, вручную |
 | `~/.local/share/ocp-dev-stand/src/<репозиторий>-wt/<коммит>` | деревья ревизий экземпляров стенда | `just dev-stand::instances-prune` |
 | `~/.local/share/ocp-dev-stand/src/<репозиторий>-wt/<имя>` | worktree исполнителей на ветвях задач | `git -C <сабмодуль> worktree remove <путь>`, когда ветвь слита или удалена и дерево чистое |
-| `/tmp/claude-1000/<проект>/<сеанс>/scratchpad/…` | scratchpad сеансов, в нём бывают worktree | после конца сеанса; живой сеанс — `~/.claude/sessions/<pid>.json` с живым `pid` |
+| `/tmp/claude-1000/<проект>/<сеанс>/scratchpad/…` | scratchpad сеансов, в нём бывают worktree | после конца сеанса, если внутри нет грязных деревьев и невыгруженных коммитов; живой сеанс — `~/.claude/sessions/<pid>.json` с живым `pid` |
 
 Чужое — то, что нельзя трогать: worktree с грязным деревом,
 незакоммиченные правки в любом дереве, scratchpad живого сеанса, каталоги

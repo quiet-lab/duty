@@ -5,9 +5,12 @@
 пользователю. Меняет только ссылки origin/* (git fetch --prune), чтобы
 видеть удалённые в origin ветви.
 
-Аргумент — корень монорепозитория.
+Аргументы: корень монорепозитория (необязательно, по умолчанию текущий
+каталог) и повторяемый --exclude <шаблон> — glob по имени ветви; такие ветви
+остаются в перечне со строкой «оставлено».
 """
 
+import fnmatch
 import json
 import os
 import shlex
@@ -16,7 +19,18 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(sys.argv[1] if len(sys.argv) > 1 else os.getcwd()).resolve()
+_args = sys.argv[1:]
+EXCLUDES: list[str] = []
+_positional: list[str] = []
+while _args:
+    _a = _args.pop(0)
+    if _a == "--exclude" and _args:
+        EXCLUDES.append(_args.pop(0))
+    elif _a.startswith("--exclude="):
+        EXCLUDES.append(_a.removeprefix("--exclude="))
+    else:
+        _positional.append(_a)
+ROOT = Path(_positional[0] if _positional else os.getcwd()).resolve()
 HOME = Path.home()
 STAND = HOME / ".local/share/ocp-dev-stand"
 RESULTS = STAND / "results"
@@ -24,8 +38,11 @@ SCRATCH = Path(f"/tmp/claude-{os.getuid()}")
 PROTECTED = {"dev", "dev2", "master", "new_ocp", "dev-local"}
 # Основные деревья стенда переводит на новую ревизию сам стенд; удаляются
 # только вместе со стендом (docs/dev-stand.md, «Остановка и очистка»).
+OUR_PREFIXES = ("dev2-RP-", "bugfix/RP-", "chore/", "feature/")
+ME = subprocess.run(["git", "config", "user.name"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
 STAND_MAIN = {STAND / "src" / n for n in ("qms", "ui", "tests", "jssip-phone")}
-rows: list[tuple[str, str, str, str, str]] = []
+# Поля строки: вид, сабмодуль, родитель, что, размер, решение, команда.
+rows: list[tuple[str, str, str, str, str, str, str]] = []
 
 
 def sh(*args: str, cwd: Path | None = None) -> str:
@@ -37,8 +54,8 @@ def size(path: Path) -> str:
     return sh("du", "-sh", "--", str(path)).split("\t")[0] or "?"
 
 
-def add(kind: str, what: str, sz: str, verdict: str, cmd: str = "") -> None:
-    rows.append((kind, what, sz, verdict, cmd))
+def add(kind: str, what: str, sz: str, verdict: str, cmd: str = "", sub: str = "", parent: str = "") -> None:
+    rows.append((kind, sub, parent, what, sz, verdict, cmd))
 
 
 def active_sessions() -> set[str]:
@@ -90,7 +107,7 @@ def worktrees(repo: Path) -> list[dict[str, str]]:
             continue
         k, _, v = line.partition(" ")
         cur[k] = v or "1"
-    return items[1:]  # первый — основное дерево сабмодуля
+    return items
 
 
 live = active_sessions()
@@ -104,24 +121,30 @@ for repo, parent in submodules():
     stale = sh("git", "worktree", "prune", "--dry-run", "-v", cwd=repo)
     if stale:
         add("worktree", f"{rel}: {stale.splitlines()[0][:80]}…", "—", "удалить",
-            f"git -C {shlex.quote(str(repo))} worktree prune")
-    checked_out = set()
-    for wt in worktrees(repo):
+            f"git -C {shlex.quote(str(repo))} worktree prune", str(rel), parent)
+    # Ветвь -> рабочий каталог, где она выписана; из `git worktree list`
+    # самого сабмодуля, первое дерево — основное.
+    all_wts = worktrees(repo)
+    occupied = {
+        w["branch"].removeprefix("refs/heads/"): Path(w["worktree"])
+        for w in all_wts
+        if w.get("branch") and Path(w["worktree"]).exists()
+    }
+    for wt in all_wts[1:]:
         path = Path(wt["worktree"])
         branch = wt.get("branch", "").removeprefix("refs/heads/")
-        checked_out.add(branch)
         if path in STAND_MAIN or not path.exists():
             continue
         if not branch:
             if path.parent.name.endswith("-wt"):
                 continue  # деревья ревизий стенда убирает instances-prune
-            add("worktree", str(path), size(path), "оставить: без ветви, чьё — неясно")
+            add("worktree", str(path), size(path), "оставлено: без ветви, чьё — неясно", "", str(rel), parent)
             continue
         if sh("git", "status", "--porcelain", cwd=path):
-            add("worktree", f"{path} [{branch}]", size(path), "оставить: грязное дерево")
+            add("worktree", f"{path} [{branch}]", size(path), "оставлено: грязное дерево", "", str(rel), parent)
             continue
         if in_live_session(path) or cwd_users(path):
-            add("worktree", f"{path} [{branch}]", size(path), "оставить: живой сеанс или процесс")
+            add("worktree", f"{path} [{branch}]", size(path), "оставлено: живой сеанс или процесс", "", str(rel), parent)
             continue
         gone = not sh("git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}", cwd=repo)
         merged = subprocess.run(
@@ -130,16 +153,29 @@ for repo, parent in submodules():
         if gone or merged:
             why = "ветвь удалена в origin" if gone else f"слита в {parent}"
             add("worktree", f"{path} [{branch}]", size(path), f"удалить: {why}",
-                f"git -C {shlex.quote(str(repo))} worktree remove {shlex.quote(str(path))}")
-    merged_branches = [
-        b
-        for b in sh("git", "branch", "--format=%(refname:short)", "--merged", f"origin/{parent}", cwd=repo).splitlines()
+                f"git -C {shlex.quote(str(repo))} worktree remove {shlex.quote(str(path))}", str(rel), parent)
+    for b in sh("git", "branch", "--format=%(refname:short)", cwd=repo).splitlines():
         # backup/* и saved/* — сохранённые копии, их удаляет только пользователь.
-        if b not in PROTECTED and b not in checked_out and not b.startswith(("backup/", "saved/"))
-    ]
-    if merged_branches:
-        add("ветви", f"{rel}: {len(merged_branches)} местных, слитых в origin/{parent}", "—", "удалить",
-            f"git -C {shlex.quote(str(repo))} branch -d " + " ".join(shlex.quote(b) for b in merged_branches))
+        if b in PROTECTED or b.startswith(("backup/", "saved/")):
+            continue
+        # Слитость — это «origin/<родитель> содержит вершину ветви», а не
+        # слитость в HEAD сабмодуля, которую проверяет `git branch -d`.
+        merged = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", b, f"origin/{parent}"], cwd=repo, capture_output=True
+        ).returncode == 0
+        if not merged:
+            continue
+        cmd = f"git -C {shlex.quote(str(repo))} branch -D {shlex.quote(b)}"
+        if not b.startswith(OUR_PREFIXES) and sh("git", "log", "-1", "--format=%an", b, cwd=repo) != ME:
+            add("ветвь", b, "—", "оставлено: чужая ветвь (автор не пользователь)", "", str(rel), parent)
+            continue
+        if any(fnmatch.fnmatchcase(b, pat) for pat in EXCLUDES):
+            add("ветвь", b, "—", "оставлено: исключена параметром --exclude", "", str(rel), parent)
+        elif b in occupied:
+            dirty = " (есть незакоммиченные изменения)" if sh("git", "status", "--porcelain", cwd=occupied[b]) else ""
+            add("ветвь", b, "—", f"оставлено: занята worktree {occupied[b]}{dirty}", "", str(rel), parent)
+        else:
+            add("ветвь", b, "—", f"удалить: origin/{parent} содержит вершину", cmd, str(rel), parent)
 
 if any((STAND / "src").glob("*-wt/*")):
     add("стенд", "деревья ревизий src/*-wt/<коммит>", "—", "удалить: уборка стенда",
@@ -154,11 +190,19 @@ for d in sorted(project.glob("*")) if project.is_dir() else []:
     # Сеанс без процесса, но с журналом свежее часа, мог продолжиться через
     # --resume другим процессом: такой каталог решает пользователь.
     if t.exists() and time.time() - t.stat().st_mtime < 3600:
-        add("scratchpad", str(d), size(d), "оставить: журнал сеанса свежее часа")
+        add("scratchpad", str(d), size(d), "оставлено: журнал сеанса свежее часа")
         continue
-    wts = [ln.split()[0] for ln in sh("bash", "-c", f"find {shlex.quote(str(d))} -maxdepth 3 -name .git -type f").splitlines()]
-    if wts:
-        add("scratchpad", str(d), size(d), f"оставить: внутри worktree ({len(wts)}), убрать их строками выше")
+    # Внутри каталога бывают клоны и worktree (.git — файл или каталог): пока в них
+    # есть незакоммиченное или не выгруженное в origin, каталог не удаляется.
+    problems = []
+    for g in sh("find", str(d), "-maxdepth", "6", "-name", ".git", "-not", "-path", "*/node_modules/*").splitlines():
+        repo_dir = Path(g).parent
+        if sh("git", "status", "--porcelain", cwd=repo_dir):
+            problems.append(f"{repo_dir.name}: грязное дерево")
+        if sh("git", "log", "--branches", "--not", "--remotes", "--oneline", "-n", "1", cwd=repo_dir):
+            problems.append(f"{repo_dir.name}: невыгруженные коммиты")
+    if problems:
+        add("scratchpad", str(d), size(d), "оставлено: " + "; ".join(problems))
         continue
     add("scratchpad", str(d), size(d), "удалить: сеанс завершён", f"rm -rf -- {shlex.quote(str(d))}")
 
@@ -199,15 +243,18 @@ for line in sh("docker", "ps", "-a", "--filter", "status=exited", "--format",
 dangling = sh("docker", "images", "-f", "dangling=true", "-q").split()
 if dangling:
     add("docker", f"висячие образы: {len(dangling)}", "—", "удалить", "docker image prune -f")
-cache = [ln for ln in sh("docker", "system", "df").splitlines() if ln.startswith("Build Cache")]
-if cache:
-    total, reclaim = cache[0].split()[4:6]
-    add("docker", f"кэш сборки {total}", reclaim,
-        "решение пользователя: следующая сборка пойдёт дольше", "docker builder prune -f")
+# Размер и «Что» — освобождаемый объём (RECLAIMABLE), а не весь кэш.
+for line in sh("docker", "system", "df", "--format", "{{.Type}}|{{.Reclaimable}}").splitlines():
+    typ, _, reclaim = line.partition("|")
+    reclaim = reclaim.split(" (")[0]
+    if typ == "Build Cache" and reclaim and not reclaim.startswith("0B"):
+        add("docker", f"кэш сборки, освобождаемо {reclaim}", reclaim,
+            "решение пользователя: следующая сборка пойдёт дольше", "docker builder prune -f")
 
-print("| № | Вид | Что | Размер | Решение | Команда |")
-print("|---|---|---|---|---|---|")
-for i, (kind, what, sz, verdict, cmd) in enumerate(rows, 1):
+# Строки опознаются по полям (сабмодуль, ветвь, путь, имя), не по номеру.
+print("| Вид | Сабмодуль | Родитель | Что | Размер | Решение | Команда |")
+print("|---|---|---|---|---|---|---|")
+for kind, sub, parent, what, sz, verdict, cmd in rows:
     # Длинный префикс scratchpad сокращается только в колонке «Что»; команды остаются точными.
     what = what.replace(str(project), "<scratch>").replace(str(HOME), "~")
-    print(f"| {i} | {kind} | {what} | {sz} | {verdict} | {('`' + cmd + '`') if cmd else ''} |")
+    print(f"| {kind} | {sub} | {parent} | {what} | {sz} | {verdict} | {('`' + cmd + '`') if cmd else ''} |")

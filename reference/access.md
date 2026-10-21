@@ -54,7 +54,7 @@
   `Queue Manager Backend E2E/dev2`; `QueueManagerUI/dev2` →
   `Queue Manager Frontend E2E`; `Deploy-Build-ProxyAppBack/dev2` →
   `proxyappback-ci`; ярусы сборки — запись 0040.
-- Линия коллег: `QueueManagerBackend`, `QueueManagerUI`,
+- Ветка `dev`: `QueueManagerBackend`, `QueueManagerUI`,
   `Deploy-Build-ProxyAppBack` (все ветви, кроме `dev2-*`), `Deploy-tests-stand`,
   `PlayWright-QMS-DEV`, `Tests-dev-on-push`.
 - Узлы: `BinaryBuilder` (4 исполнителя), `TEST_NODE` (2), `QMS_DEV`,

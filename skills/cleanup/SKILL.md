@@ -75,5 +75,5 @@ allowed-tools: Bash, Read
 Запрещено: завершать процессы (`kill`, `pkill`, `killall`, по образцу);
 трогать worktree с грязным деревом и чужие незакоммиченные правки;
 удалять ветви `backup/*`, `saved/*`, `dev`, `dev2`, `master`, `new_ocp`,
-`dev-local` и ветви коллег; `instances-down all`; действия с root без
+`dev-local` и именные ветви разработчиков; `instances-down all`; действия с root без
 `sudo -A -p`; что-либо за пределами перечня.

@@ -30,9 +30,9 @@ Bitbucket — [`access.md`](access.md).
 
 | Где | Что | Кто убирает |
 |---|---|---|
-| `~/.local/share/ocp-dev-stand/src/{qms,ui,tests,jssip-phone}` | основные деревья местного стенда (detached HEAD) | только вместе со стендом, вручную |
-| `~/.local/share/ocp-dev-stand/src/<репозиторий>-wt/<коммит>` | деревья ревизий экземпляров стенда | `just dev-stand::instances-prune` |
-| `~/.local/share/ocp-dev-stand/src/<репозиторий>-wt/<имя>` | worktree исполнителей на ветвях задач | `git -C <сабмодуль> worktree remove <путь>`, когда ветвь слита или удалена и дерево чистое |
+| `../ocp-dev-stand/src/{qms,ui,tests,jssip-phone}` | основные деревья местного стенда (detached HEAD) | только вместе со стендом, вручную |
+| `../ocp-dev-stand/src/<репозиторий>-wt/<коммит>` | деревья ревизий экземпляров стенда | `just dev-stand::instances-prune` |
+| `../ocp-dev-stand/src/<репозиторий>-wt/<имя>` | worktree исполнителей на ветвях задач | `git -C <сабмодуль> worktree remove <путь>`, когда ветвь слита или удалена и дерево чистое |
 | `/tmp/claude-1000/<проект>/<сеанс>/scratchpad/…` | scratchpad сеансов, в нём бывают worktree | после конца сеанса, если внутри нет грязных деревьев и невыгруженных коммитов; живой сеанс — `~/.claude/sessions/<pid>.json` с живым `pid` |
 
 Чужое — то, что нельзя трогать: worktree с грязным деревом,
@@ -42,7 +42,10 @@ Bitbucket — [`access.md`](access.md).
 
 ## Результаты и временные файлы
 
-- Отчёты, видео, трассы прогонов — `~/.local/share/ocp-dev-stand/results/`;
+Каталог `ocp-dev-stand` — рядом с корнем монорепозитория (`../ocp-dev-stand`
+от корня); пути ниже и в таблице выше отсчитываются от него.
+
+- Отчёты, видео, трассы прогонов — `../ocp-dev-stand/results/`;
   видео и трассы прошедших тестов не хранятся (признак провала —
   `error-context.md` или `test-failed-*.png` в том же каталоге).
 - `/tmp` — общий tmpfs на 32 ГБ для всех сеансов: копии деревьев

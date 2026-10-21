@@ -32,7 +32,9 @@ while _args:
         _positional.append(_a)
 ROOT = Path(_positional[0] if _positional else os.getcwd()).resolve()
 HOME = Path.home()
-STAND = HOME / ".local/share/ocp-dev-stand"
+# Данные стенда лежат в каталоге ocp-dev-stand рядом с корнем монорепозитория.
+_project = os.environ.get("CLAUDE_PROJECT_DIR") or sh("git", "rev-parse", "--show-toplevel", cwd=Path.cwd()) or str(ROOT)
+STAND = Path(_project).resolve().parent / "ocp-dev-stand"
 RESULTS = STAND / "results"
 SCRATCH = Path(f"/tmp/claude-{os.getuid()}")
 PROTECTED = {"dev", "dev2", "master", "new_ocp", "dev-local"}

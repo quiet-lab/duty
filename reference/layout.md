@@ -10,7 +10,7 @@ Bitbucket — [`access.md`](access.md).
   (`dev2` или `master`); `legacy/tests` рабочей ветви не имеет и следит
   за `dev2`. Слияние родителя в `new_ocp` — проектный навык
   `/sync-parents`, плагин его не выполняет.
-- Наши ветви задач: `dev2-RP-<номер>-<тема>` (в `dev2`), `bugfix/RP-…`,
+- Ветви задач проекта: `dev2-RP-<номер>-<тема>` (в `dev2`), `bugfix/RP-…`,
   `chore/…`, `feature/…` (в `master` сабмодулей).
 - **Защищённые — не удаляются ни в origin, ни локально**: `backup/*`,
   `saved/*`, `dev`, `dev2`, `master`, `new_ocp`, `dev-local`, а также

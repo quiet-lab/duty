@@ -30,6 +30,11 @@ while _args:
         EXCLUDES.append(_a.removeprefix("--exclude="))
     else:
         _positional.append(_a)
+def sh(*args: str, cwd: Path | None = None) -> str:
+    r = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 ROOT = Path(_positional[0] if _positional else os.getcwd()).resolve()
 HOME = Path.home()
 # Данные стенда лежат в каталоге ocp-dev-stand рядом с корнем монорепозитория.
@@ -45,11 +50,6 @@ ME = subprocess.run(["git", "config", "user.name"], cwd=ROOT, capture_output=Tru
 STAND_MAIN = {STAND / "src" / n for n in ("qms", "ui", "tests", "jssip-phone")}
 # Поля строки: вид, сабмодуль, родитель, что, размер, решение, команда.
 rows: list[tuple[str, str, str, str, str, str, str]] = []
-
-
-def sh(*args: str, cwd: Path | None = None) -> str:
-    r = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
-    return r.stdout.strip() if r.returncode == 0 else ""
 
 
 def size(path: Path) -> str:

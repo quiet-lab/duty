@@ -52,6 +52,12 @@ STAND_MAIN = {STAND / "src" / n for n in ("qms", "ui", "tests", "jssip-phone")}
 rows: list[tuple[str, str, str, str, str, str, str]] = []
 
 
+def foreign(path: Path) -> bool:
+    """Файл принадлежит не пользователю: root или uid из пространства
+    контейнера Docker без root, которого нет в /etc/passwd."""
+    return path.stat().st_uid != os.getuid()
+
+
 def size(path: Path) -> str:
     return sh("du", "-sh", "--", str(path)).split("\t")[0] or "?"
 
@@ -224,15 +230,16 @@ if RESULTS.is_dir():
         failed = (f.parent / "error-context.md").exists() or any(f.parent.glob("test-failed-*.png"))
         if not failed:
             rm = f"rm -f -- {shlex.quote(str(f))}"
-            if f.owner() == "root":
-                rm = "sudo -A -p 'Удалить видео прошедшего теста, созданное root в контейнере' " + rm
+            if foreign(f):
+                rm = "sudo -A -p 'Удалить видео прошедшего теста, созданное в контейнере' " + rm
             add("results", str(f.relative_to(STAND)), size(f), "удалить: тест прошёл", rm)
-    # Пустые каталоги root остаются от контейнеров прогонов и сами не исчезают.
+    # Пустые каталоги чужих владельцев остаются от контейнеров прогонов
+    # и сами не исчезают.
     for f in RESULTS.rglob("*"):
         try:
-            if f.is_dir() and f.owner() == "root" and not any(f.iterdir()):
-                add("results", str(f.relative_to(STAND)), "0", "удалить через sudo: пустой каталог root",
-                    "sudo -A -p 'Удалить пустой каталог результатов, созданный root в контейнере' "
+            if f.is_dir() and foreign(f) and not any(f.iterdir()):
+                add("results", str(f.relative_to(STAND)), "0", "удалить через sudo: пустой каталог контейнера",
+                    "sudo -A -p 'Удалить пустой каталог результатов, созданный в контейнере' "
                     f"rmdir -- {shlex.quote(str(f))}")
         except OSError:
             continue

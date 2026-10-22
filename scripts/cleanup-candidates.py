@@ -152,6 +152,15 @@ for repo, parent in submodules():
         merged = subprocess.run(
             ["git", "merge-base", "--is-ancestor", branch, f"origin/{parent}"], cwd=repo
         ).returncode == 0
+        # Ветвь без origin/<ветвь> и без origin-ветви, содержащей её вершину,
+        # не удалена в origin, а никогда не отправлялась: дерево такой ветви
+        # решает пользователь, хотя сама ветвь при удалении дерева сохраняется.
+        if gone and not merged and not sh("git", "branch", "-r", "--contains", branch, cwd=repo):
+            ahead = sh("git", "rev-list", "--count", f"origin/{parent}..{branch}", cwd=repo)
+            add("worktree", f"{path} [{branch}]", size(path),
+                f"решение пользователя: ветвь не отправлена в origin, {ahead} коммитов вне origin/{parent}",
+                "", str(rel), parent)
+            continue
         if gone or merged:
             why = "ветвь удалена в origin" if gone else f"слита в {parent}"
             add("worktree", f"{path} [{branch}]", size(path), f"удалить: {why}",

@@ -59,10 +59,8 @@ scripts/busy.py              реестр занятости общих ресу
 scripts/tests/test_busy.py   проверки реестра
 scripts/cleanup-candidates.py перечень кандидатов на уборку
 scripts/dispatch.sh          запуск, перечень и закрытие workspace задач
-scripts/tab-run.sh           длинная команда во вкладке с итогом в файл
-scripts/wait-done.sh         ожидание файла done по inotify
-scripts/tabrun.sh            обёртка длинной команды во вкладке: log.txt, done
-scripts/waitdone.sh          ожидание файла done по inotify
+scripts/tab-run.sh           длинная команда в новой вкладке: cmd.sh, out.log, done
+scripts/wait-done.sh         ожидание файла done по inotify со сроком
 scripts/jwait.sh, jwait.py   ожидание конца сборки Jenkins: report.md, done
 scripts/decision-number.sh   выдача номера записи решения
 reference/access.md          доступы, REST, репозитории, задания Jenkins
@@ -112,7 +110,7 @@ reference/worker-rules.md    общие запреты для rules.md зада�
 | `rules.md` | `dispatch.sh` из `reference/worker-rules.md`, главная сессия дописывает «Переданные» | действующие запреты и решения; агент перечитывает перед каждым внешним действием |
 | `state.md` | агент после каждого шага | снимок: шаг, хеши, вкладки, занятые ресурсы |
 | `report.md` | агент в конце | итог по `reference/report.md` |
-| `runs/<вкладка>/` | `scripts/tab-run.sh` | `cmd.sh`, `out.log`, `done` с кодом завершения |
+| `runs/<вкладка>/` | `scripts/tab-run.sh` | `cmd.sh`, `out.log`, `meta.txt`, `done` с кодом завершения |
 
 **Долгие команды** идут во вкладках своего workspace
 (`scripts/tab-run.sh`: `herdr tab create --no-focus`, `herdr pane run`),
@@ -149,18 +147,18 @@ bash claude-plugins/duty/scripts/dispatch.sh close <имя>    # агент idle
 ## Вкладки: длинные команды
 
 Длинная команда идёт не в Bash агента и не в субагенте, а во вкладке
-workspace herdr (`herdr pane run <панель> …`); агент ждёт её файла-отметки
-`done` одним вызовом `waitdone.sh`. Во вкладку идут:
+workspace herdr (`tab-run.sh`: `herdr tab create`, `herdr pane run`);
+агент ждёт её файла-отметки `done` одним вызовом `wait-done.sh`. Во вкладку идут:
 
 - местный прогон `just dev-stand::pipeline …` (свой `done` рядом
   с `summary.md` и отметки мест в `../ocp-dev-stand/busy/` пишет сам
   `pipeline.py`, `docs/dev-stand.md` монорепозитория);
-- ожидание сборки Jenkins — `jwait.sh`;
+- ожидание сборки Jenkins — `jwait.sh` через `tab-run.sh`;
 - `scripts/ci-checks.sh`, `just test-compiled-all`, `just check-release`,
   `pipeline.py --src`, `run-checks-light.sh`, `run-shards.sh`,
   `npx playwright test <файл>`, `pytest tests/blackbox`, наборы
-  `e2e/voip-*` — через `tabrun.sh`;
-- замеры (`bench.py`, покрытие) — через `tabrun.sh` с отметкой `station`
+  `e2e/voip-*` — через `tab-run.sh`;
+- замеры (`bench.py`, покрытие) — через `tab-run.sh` с отметкой `station`
   в реестре занятости;
 - сборки стендов (`just stands::build`, `codegen/run.sh`,
   `checks/run-all.sh`) и наблюдение дев-контура
@@ -170,26 +168,28 @@ workspace herdr (`herdr pane run <панель> …`); агент ждёт её 
 не вкладки.
 
 ```sh
-# Во вкладке: команда в текущем каталоге вкладки, итог — в $DUTY_TASK/runs/<имя>/.
-"${CLAUDE_PLUGIN_ROOT}/scripts/tabrun.sh" checks -- just test-compiled-all
+# Новая вкладка в каталоге --cwd (по умолчанию текущий), итог — в $DUTY_TASK/runs/<имя>/.
+"${CLAUDE_PLUGIN_ROOT}/scripts/tab-run.sh" checks --cwd "$PWD" -- just test-compiled-all
+# Строка для bash — одним аргументом: кавычки уходят в cmd.sh, а не в терминал.
+"${CLAUDE_PLUGIN_ROOT}/scripts/tab-run.sh" grep-log -- 'grep -c "FAILED" out.txt | tee n.txt'
 
-# Во вкладке: дождаться сборки Jenkins (номер или last) и записать итог.
-"${CLAUDE_PLUGIN_ROOT}/scripts/jwait.sh" qms-checks/PR-2581 last
+# Ожидание сборки Jenkins (номер или last) — тоже во вкладке.
+"${CLAUDE_PLUGIN_ROOT}/scripts/tab-run.sh" pr-2581 -- "${CLAUDE_PLUGIN_ROOT}/scripts/jwait.sh" qms-checks/PR-2581 last
 
 # У агента: одним вызовом дождаться done, код — в выводе и коде выхода.
-"${CLAUDE_PLUGIN_ROOT}/scripts/waitdone.sh" "$DUTY_TASK/runs/checks" --timeout-s 590
+"${CLAUDE_PLUGIN_ROOT}/scripts/wait-done.sh" "$DUTY_TASK/runs/checks" --timeout-s 590
 ```
 
 | Сценарий | Каталог итога | Файлы |
 |---|---|---|
-| `tabrun.sh <имя> -- <команда…>` | `runs/<имя>/` каталога задачи (`$DUTY_TASK`, без него — текущий каталог); каталог должен быть новым | `cmd.txt` (каталог, команда, `started_ms`, `finished_ms`, код), `log.txt` (stdout и stderr вместе, они же на экране вкладки), `done` с кодом команды; при `HERDR_ENV=1` — уведомление `herdr notification show` (звук `done`, при ненулевом коде `request`) |
+| `tab-run.sh <имя> [--cwd <каталог>] -- <команда…>` | `runs/<имя>/` каталога задачи (`$DUTY_TASK`, без него — текущий каталог); каталог должен быть новым, иначе отказ с кодом 2 | `cmd.sh` (команда: один аргумент — строка для bash, несколько — команда с экранированными аргументами), `out.log` (stdout и stderr вместе, они же на экране вкладки), `meta.txt` (каталог, `started_ms`, `finished_ms`, код), `done` с кодом команды; при `HERDR_ENV=1` — уведомление `herdr notification show` (звук `done`, при ненулевом коде `request`) и строка `DUTY-DONE <имя> rc=<код>`; в ответ — JSON с `tab_id`, `pane_id`, `run_dir` |
 | `jwait.sh <задание> <номер\|last> [--out <каталог>]` | `--out`; иначе `$DUTY_TASK/runs/jenkins-<задание>-<номер>/`; без `DUTY_TASK` — `../ocp-dev-stand/results/wait/<задание>-<номер>/` (`last` заменяется номером; `/` в имени задания — `-`) | `console.log` (журнал сборки), `report.md` (итог, длительность, этапы `wfapi/describe`, шаги упавших этапов с хвостом журнала, хвост журнала сборки), `done`: 0 — SUCCESS, 1 — другой итог, 2 — ожидание не удалось |
-| `waitdone.sh <каталог> [--timeout-s <с>]` | — | ничего не пишет; печатает код из `done` и выходит с ним, 124 — истёк срок, 2 — ошибка вызова |
+| `wait-done.sh <каталог> [--timeout-s <с>]` | — | ничего не пишет; печатает `done rc=<код> <каталог>` и выходит с кодом из `done`, 124 — истёк срок, 2 — ошибка вызова или каталога нет (его создаёт `tab-run.sh` до возврата) |
 
 Отметка `done` появляется переименованием и последней, поэтому её
 содержимое всегда целое, а остальные файлы к этому моменту дописаны.
 
-Ожидание везде по событиям: `waitdone.sh` — `inotifywait` (пакет
+Ожидание везде по событиям: `wait-done.sh` — `inotifywait` (пакет
 `inotify-tools`, на станции есть; наблюдение ставится до проверки, есть
 ли `done`); `jwait.sh` — поток журнала команды Jenkins CLI
 `console <задание> <номер> -f` по WebSocket, конец сборки — кадр EXIT
@@ -201,10 +201,10 @@ WebSocket не пропускает, поэтому CLI идёт прямо на
 подряд), тишина дольше 90 с (три интервала ping контроллера) считается
 обрывом. Сборок `jwait.sh` не запускает.
 
-`--timeout-s` у `waitdone.sh` — предел ожидания, а не такт опроса:
+`--timeout-s` у `wait-done.sh` — предел ожидания, а не такт опроса:
 вызов из Bash агента ограничен 10 минутами, поэтому для долгой команды
 агент ставит `--timeout-s 590` и повторяет вызов либо запускает
-`waitdone.sh` фоном (`run_in_background`) и получает уведомление
+`wait-done.sh` фоном (`run_in_background`) и получает уведомление
 о его выходе.
 
 Вкладка после `done` остаётся открытой для просмотра; закрывает её

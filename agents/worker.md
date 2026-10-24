@@ -28,7 +28,7 @@ description: Исполнитель крупной задачи в своём wo
 1. Прочитать `$DUTY_TASK/brief.md` и `$DUTY_TASK/rules.md` целиком.
    Если `state.md` уже есть — продолжить с записанного в нём шага.
    Правила `CLAUDE.md` монорепозитория и `~/.claude/CLAUDE.md` действуют;
-   снимок `todo.md`, `/handoff` и `/sync-parents` ведёт главная сессия,
+   снимок `todo.local.md`, `/handoff` и `/sync-parents` ведёт главная сессия,
    не ты.
 2. Перед каждым внешним действием — push, pull request, запуск
    на стенде или узле Jenkins, запись в Jira, Bitbucket, Confluence,

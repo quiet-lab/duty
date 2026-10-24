@@ -49,8 +49,11 @@ cat /proc/loadavg; nproc; free -g | head -2; df -h /tmp | tail -1
 section 'Занятость'
 python3 -I "$plugin/scripts/busy.py" list | head -30
 
-section 'Текущая работа (todo.md)'
-sed -n '/^## Текущая работа/,/^## /p' "$root/todo.md" | head -120
+section 'Текущая работа (todo.local.md)'
+# Снимок очереди — местный файл машины (в .gitignore); прежний todo.md
+# читается, пока он есть в репозитории проекта.
+todo="$root/todo.local.md"; [ -f "$todo" ] || todo="$root/todo.md"
+if [ -f "$todo" ]; then sed -n '/^## Текущая работа/,/^## /p' "$todo" | head -120; else echo 'снимка нет'; fi
 
 section 'Открытые задачи OpenSpec'
 for f in "$root"/openspec/changes/*/tasks.md "$root"/legacy/queue-manager-service/openspec/changes/*/tasks.md; do

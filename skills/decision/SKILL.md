@@ -76,4 +76,4 @@ allowed-tools: Bash, Read, Edit, Write, Grep
 
 Запрещено: записывать в режиме справки; вычислять номер без сценария;
 править записи, не относящиеся к теме; `git add -A`, `git add -u`,
-`git stash`; push; `todo.md`; завершение процессов.
+`git stash`; push; `todo.local.md`; завершение процессов.

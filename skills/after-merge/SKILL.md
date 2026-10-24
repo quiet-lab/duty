@@ -1,5 +1,5 @@
 ---
-description: После слияния pull request'а: удалить ветвь в origin, перевести тикет RP в «Готово» со ссылкой, отметить задачи tasks.md, убрать местные worktree и ветвь. todo.md не трогает.
+description: После слияния pull request'а: удалить ветвь в origin, перевести тикет RP в «Готово» со ссылкой, отметить задачи tasks.md, убрать местные worktree и ветвь. todo.local.md не трогает.
 argument-hint: "<репозиторий>#<номер> | <URL pull request'а>"
 context: fork
 model: sonnet
@@ -73,7 +73,7 @@ allowed-tools: Bash, Read, Edit
 
 Затем «Решения за пользователем» и «Что не проверено».
 
-Запрещено: сливать pull request'ы; `todo.md` (его ведёт `/handoff`);
+Запрещено: сливать pull request'ы; `todo.local.md` (его ведёт `/handoff`);
 `/sync-parents`; коммит и отправка монорепозитория; `--force`;
 удаление защищённых и чужих ветвей; завершение процессов; повтор
 после 401/403 от Bitbucket.

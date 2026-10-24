@@ -71,4 +71,4 @@ allowed-tools: Bash, Read, Edit, Grep
 Затем «Решения за пользователем» и «Что не проверено».
 
 Запрещено: `git add -A`, `git add -u`, `git stash`; push; правка вне
-перечня и вне области; архив OpenSpec; `todo.md`; завершение процессов.
+перечня и вне области; архив OpenSpec; `todo.local.md`; завершение процессов.

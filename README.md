@@ -99,7 +99,7 @@ reference/worker-rules.md    общие запреты для rules.md зада�
 `herdr agent start <имя> --kind claude -- --agent duty:worker --model
 <модель> --name <имя>`; приглашение `herdr agent prompt` без `--wait`
 и проверка, что агент перешёл в `working`. Хуки `SessionStart`
-монорепозитория при `DUTY_ROLE=worker` не выдают снимок `todo.md`
+монорепозитория при `DUTY_ROLE=worker` не выдают снимок `todo.local.md`
 и указание `/sync-parents`.
 
 **Файлы задачи** — `../ocp-dev-stand/results/<имя>/`:

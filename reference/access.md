@@ -72,7 +72,7 @@
 python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/gates.py"
 
 # Сырые факты для /duty:inspect: git, worktree, pull request'ы, Jenkins, машина,
-# todo.md, OpenSpec, отложенные вопросы, Jira.
+# todo.local.md, OpenSpec, отложенные вопросы, Jira.
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/facts.sh" "${CLAUDE_PROJECT_DIR}"
 
 # Перечень кандидатов на уборку (/duty:cleanup).

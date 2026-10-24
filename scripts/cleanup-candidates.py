@@ -297,13 +297,17 @@ for line in sh("docker", "ps", "-a", "--filter", "status=exited", "--format",
 dangling = sh("docker", "images", "-f", "dangling=true", "-q").split()
 if dangling:
     add("docker", f"висячие образы: {len(dangling)}", "—", "удалить", "docker image prune -f")
-# Размер и «Что» — освобождаемый объём (RECLAIMABLE), а не весь кэш.
+# Кэш сборки старше двух суток удаляется по решению пользователя, свежий
+# остаётся: он ускоряет текущие сборки. Объём по возрасту Docker не
+# сообщает (docker buildx du с --filter итога не печатает), поэтому
+# «Размер» — весь освобождаемый объём кэша по docker system df, верхняя
+# граница того, что освободит команда.
 for line in sh("docker", "system", "df", "--format", "{{.Type}}|{{.Reclaimable}}").splitlines():
     typ, _, reclaim = line.partition("|")
     reclaim = reclaim.split(" (")[0]
     if typ == "Build Cache" and reclaim and not reclaim.startswith("0B"):
-        add("docker", f"кэш сборки, освобождаемо {reclaim}", reclaim,
-            "решение пользователя: следующая сборка пойдёт дольше", "docker builder prune -f")
+        add("docker", f"кэш сборки старше 48 ч (весь освобождаемый кэш — {reclaim}, свежий остаётся)",
+            f"до {reclaim}", "удалить", "docker builder prune -f --filter until=48h")
 
 # Строки опознаются по полям (сабмодуль, ветвь, путь, имя), не по номеру.
 print("| Вид | Сабмодуль | Родитель | Что | Размер | Решение | Команда |")

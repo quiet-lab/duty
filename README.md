@@ -19,7 +19,7 @@
 | `/duty:inspect [фокус]` | sonnet | `duty:inspector` | таблица задач: что трогают, с чем пересекаются, какой моделью, можно ли сейчас; перечень уборки | ничего |
 | `/duty:gates [now \| фильтр]` | haiku | `duty:inspector` | открытые pull request'ы пользователя: сборки, ворота Jenkins с этапами, готовность к слиянию, возраст; с `now` — что идёт на узлах Jenkins и чем заняты агенты | ничего |
 | `/duty:branches [all \| репозиторий] [--mine]` | haiku | `duty:inspector` | таблица ветвей в `origin` с предложением по каждой: слить, удалить, оставить, решить | ничего |
-| `/duty:cleanup [apply]` | sonnet | `duty:runner` | кандидаты на уборку с размерами; с `apply` — удаление строго по перечню; файлы контейнеров rootless Docker (uid из `/etc/subuid`) — через `rootlesskit rm -rf` без sudo | только с `apply` |
+| `/duty:cleanup [apply]` | sonnet | `duty:runner` | кандидаты на уборку с размерами; с `apply` — удаление строго по перечню; файлы контейнеров rootless Docker (uid из `/etc/subuid`) — через `rootlesskit rm -rf` без sudo; кэш сборки Docker — только старше двух суток | только с `apply` |
 | `/duty:after-merge <репозиторий>#<номер>` | sonnet | `duty:runner` | ветвь в origin, тикет RP, задачи `tasks.md`, местные worktree и ветвь после слияния | да |
 | `/duty:dispatch <имя> <модель> [задача]` | главной сессии; агенту — из аргумента | `duty:worker` в своём workspace | вынос крупной задачи в workspace herdr с запиской | каталог задачи, workspace |
 | `/duty:decision <тема> :: <решение>` | sonnet | `duty:runner` | запись решения в `docs/decisions/` по форме записи 0029 с номером из сценария и строкой указателя; без `::` — справка, что по теме уже решено | да, только в режиме записи (коммит двух файлов) |

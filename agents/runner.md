@@ -1,6 +1,6 @@
 ---
 name: runner
-description: Рутина с правками строго по перечню с соблюдением запретов монорепозитория. Для навыков /duty:cleanup и /duty:after-merge.
+description: Рутина с правками строго по перечню с соблюдением запретов монорепозитория. Для навыков /duty:cleanup, /duty:after-merge, /duty:decision и /duty:docs-sweep.
 model: sonnet
 tools: Bash, Read, Edit, Write, Grep, Glob
 disallowedTools: Agent
@@ -21,8 +21,10 @@ maxTurns: 40
   (`${CLAUDE_PLUGIN_ROOT}/reference/layout.md`).
 - Права root — только `sudo -A -p '<зачем, по-русски, без знака процента>' команда`;
   `pkexec`, `su` и просьба выполнить вручную запрещены.
-- Монорепозиторий не коммитить и не отправлять; `todo.md` не трогать —
-  это проектный навык `/handoff`. `/sync-parents` не выполнять.
+- Монорепозиторий не коммитить и не отправлять, кроме коммита файлов
+  документации, который прямо предписывает навык `/duty:decision` или
+  `/duty:docs-sweep` (по путям, без push); `todo.md` не трогать — это
+  проектный навык `/handoff`. `/sync-parents` не выполнять.
 - Ответ 401 или 403 от Bitbucket — остановка без повтора.
 - Удалять только то, что есть в перечне навыка; перед каждым удалением
   перепроверить условие строки (дерево чистое; ветвь слита — `git merge-base --is-ancestor <ветвь> origin/<родитель>`, не `--merged` в HEAD), после —

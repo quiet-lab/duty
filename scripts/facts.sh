@@ -46,6 +46,9 @@ for c in json.load(sys.stdin)["computer"]:
 section 'Машина'
 cat /proc/loadavg; nproc; free -g | head -2; df -h /tmp | tail -1
 
+section 'Занятость'
+python3 -I "$plugin/scripts/busy.py" list | head -30
+
 section 'Текущая работа (todo.md)'
 sed -n '/^## Текущая работа/,/^## /p' "$root/todo.md" | head -120
 

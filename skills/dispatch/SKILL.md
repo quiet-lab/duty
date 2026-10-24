@@ -91,7 +91,8 @@ allowed-tools: Bash, Read, Write
    `../ocp-dev-stand/results/<имя>/`.
 
    Готово, когда сценарий вышел с кодом 0 и напечатал `workspace=`,
-   `pane=`, `status=working` или `status=blocked`. Код 1 — причина
+   `pane=`, `status=working`, `status=blocked` или `status=idle`
+   (приглашение ушло в транскрипт, а первый ход был коротким). Код 1 — причина
    в последней строке; созданный workspace остаётся для осмотра.
 4. Записку и правила из scratchpad удалить: копии лежат в каталоге
    задачи.

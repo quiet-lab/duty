@@ -41,7 +41,8 @@
 и основной сессии. Набор инструментов задаёт агент: `inspector` —
 `Bash, Read, Grep, Glob` без правок, `runner` — с `Edit, Write`, без
 `Agent`, `worker` — все инструменты, включая `Agent`, и без своей
-модели: её задаёт `/duty:dispatch`. Ключ `permissionMode` у агентов
+модели: её задаёт `/duty:dispatch`. В завершении `worker` проверяет diff задачи
+навыком `/code-review` (уровень по модели задачи) и выносит находки в `report.md`. Ключ `permissionMode` у агентов
 плагина не действует.
 
 ## Состав
@@ -57,6 +58,7 @@ scripts/branches.py          таблица ветвей origin с предло�
 scripts/facts.sh             факты для /duty:inspect
 scripts/busy.py              реестр занятости общих ресурсов
 scripts/tests/test_busy.py   проверки реестра
+tests/probes/                пробы flow: песочница, записки, run-probe.sh
 scripts/cleanup-candidates.py перечень кандидатов на уборку
 scripts/dispatch.sh          запуск, перечень и закрытие workspace задач
 scripts/tab-run.sh           длинная команда в новой вкладке: cmd.sh, out.log, done
@@ -73,6 +75,12 @@ reference/worker-rules.md    общие запреты для rules.md зада�
 Пути внутри плагина в тексте навыков — `${CLAUDE_PLUGIN_ROOT}`, корень
 проекта — `${CLAUDE_PROJECT_DIR}`: Claude Code подставляет их при
 загрузке навыка. В окружении Bash эти переменные не заданы.
+
+## Пробы
+
+Регрессионный набор для `dispatch.sh`, `tab-run.sh`, `wait-done.sh`,
+`busy.py` и `worker.md` — песочница, записки, сценарии `make-sandbox.sh`
+и `run-probe.sh`: [`tests/probes/README.md`](tests/probes/README.md).
 
 ## Вынос задачи в workspace
 

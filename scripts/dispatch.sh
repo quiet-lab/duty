@@ -14,7 +14,8 @@
 #
 # Метка workspace и вкладки — «<имя> · <модель>»; имя агента herdr и сессии
 # Claude — <имя>. list и close находят workspace по id из служебного блока
-# brief.md и метке «<имя>» либо «<имя> · …».
+# brief.md и метке «<имя>» либо «<имя> · …», а агента — по имени, при его
+# отсутствии по панели из строки «- панель агента:» того же блока.
 #
 # Запуск — шаги и критерий готовности каждого (проверяется командой):
 #   1. каталог задачи <results>/<имя>/ с brief.md, rules.md и runs/ — файлы
@@ -30,13 +31,20 @@
 #      готовым (timeout) при исправной работе. Тогда экран читается через
 #      herdr pane read; приглашение в строке ввода или в транскрипте — шаг
 #      выполнен с предупреждением, имя агента закрепляется herdr agent rename
-#      (после timeout за именем агента нет), приглашения нет — отказ;
-#   5. агент перешёл в working или blocked (herdr agent wait, 10 с); если
+#      (после timeout за именем агента нет); пока запуск не завершён, rename
+#      отвечает agent_launch_pending — это не отказ: herdr применяет имя
+#      из agent start сам, сценарий предупреждает и идёт дальше; другая
+#      ошибка rename — отказ; приглашения нет — отказ;
+#   5. агент (по панели: имени у него может ещё не быть) перешёл в working
+#      или blocked (herdr agent wait, 10 с); если
 #      состояния нет, решает экран: приглашение в транскрипте (выше двух
 #      последних линий «─») — шаг выполнен, статус может быть и idle
 #      (короткий первый ход, состояние herdr запаздывает); приглашение
 #      в строке ввода (между этими линиями) — Enter досылается один раз
 #      и проверка повторяется; приглашения на экране нет — отказ.
+#      После шага имя проверяется herdr agent get: нет его — rename повторяется
+#      один раз, при agent_launch_pending снова — предупреждение «имя
+#      применится после запуска» без отказа; list и close работают и без имени.
 # При отказе шага сценарий останавливается с кодом 1 и печатает, что уже
 # создано: workspace не закрывается, чтобы причину было видно в нём.
 #
@@ -105,6 +113,34 @@ agent_status() {
     herdr agent get "$1" 2> /dev/null | jq -r '.result.agent.agent_status // empty' || true
 }
 
+# Панель агента из служебного блока brief.md задачи.
+task_pane() {
+    sed -n 's/^- панель агента: `\([^`]*\)`.*/\1/p' "$1/brief.md" 2> /dev/null | tail -1
+}
+
+# Цель для herdr agent get/wait: имя агента, а если за ним агента нет —
+# панель из brief.md (имя применяется после завершения запуска).
+agent_target() {
+    local name=$1 dir=$2
+    if herdr agent get "$name" > /dev/null 2>&1; then
+        printf '%s' "$name"
+    else
+        task_pane "$dir"
+    fi
+}
+
+# Закрепляет имя за агентом в панели. Код 0 — закреплено; 3 — запуск ещё
+# не завершён (agent_launch_pending, имя применит herdr сам); иное — ошибка,
+# её текст в $rename_out.
+try_rename() {
+    local pane=$1 name=$2
+    rename_out=$(herdr agent rename "$pane" "$name" 2>&1) && return 0
+    case $rename_out in
+        *agent_launch_pending*) return 3 ;;
+        *) return 1 ;;
+    esac
+}
+
 cmd_list() {
     local workspaces dir name ws status report
     workspaces=$(herdr workspace list)
@@ -118,7 +154,7 @@ cmd_list() {
         jq -e --arg w "$ws" --arg n "$name" \
             '.result.workspaces[] | select(.workspace_id == $w and (.label == $n or (.label | startswith($n + " · "))))' <<< "$workspaces" > /dev/null \
             || continue
-        status=$(agent_status "$name")
+        status=$(agent_status "$(agent_target "$name" "$dir")")
         report='нет'
         [ -s "$dir/report.md" ] && report='есть'
         printf '| %s | `%s` | %s | %s | `%s` |\n' "$name" "$ws" "${status:-вышел}" "$report" "$dir"
@@ -126,7 +162,7 @@ cmd_list() {
 }
 
 cmd_close() {
-    local name=$1 task ws status agent_tab tabs tab marks resource
+    local name=$1 task ws status target agent_tab tabs tab marks resource
     task="$results/$name"
     [ -f "$task/brief.md" ] || die "задачи $name нет: $task/brief.md"
     ws=$(task_workspace "$task")
@@ -135,7 +171,8 @@ cmd_close() {
         '.result.workspaces[] | select(.workspace_id == $w and (.label == $n or (.label | startswith($n + " · "))))' > /dev/null \
         || die "workspace $ws с меткой $name не открыт"
 
-    status=$(agent_status "$name")
+    target=$(agent_target "$name" "$task")
+    status=$(agent_status "$target")
     case ${status:-exited} in
         idle | done | exited) ;;
         *) die "агент $name в состоянии $status: задача не завершена" ;;
@@ -151,7 +188,7 @@ cmd_close() {
     done
 
     # Корневая вкладка — та, где агент; остальные создавал он сам.
-    agent_tab=$(herdr agent get "$name" 2> /dev/null | jq -r '.result.agent.tab_id // empty' || true)
+    agent_tab=$(herdr agent get "$target" 2> /dev/null | jq -r '.result.agent.tab_id // empty' || true)
     tabs=$(herdr tab list --workspace "$ws" | jq -r '.result.tabs[].tab_id')
     [ -n "$agent_tab" ] || agent_tab=$(head -1 <<< "$tabs")
     for tab in $tabs; do
@@ -167,7 +204,7 @@ cmd_close() {
 
 cmd_start() {
     local name=$1 model_arg=$2 model task workspaces agents passed template rules
-    local created ws pane started_at_ms state status prompt screen input tab
+    local rc rename_out created ws pane started_at_ms state status prompt screen input tab
     local -a claude_args
 
     # Имя служит и меткой workspace, и именем агента herdr, и именем сессии
@@ -269,14 +306,21 @@ BLOCK
         # После timeout имя за агентом не закреплено (agent get по имени даёт
         # agent_not_found), а по панели агент виден: закрепляем имя сами, чтобы
         # wait, list и close находили его, как обычно.
-        herdr agent rename "$pane" "$name" > /dev/null \
-            || die "шаг 4: имя $name не закреплено за агентом в $pane; workspace $ws оставлен"
+        # Пока запуск не завершён, rename отвечает agent_launch_pending; имя
+        # herdr применит сам, поэтому это не отказ.
+        rc=0
+        try_rename "$pane" "$name" || rc=$?
+        case $rc in
+            0) ;;
+            3) warn "имя $name применится после завершения запуска (agent_launch_pending)" ;;
+            *) die "шаг 4: имя $name не закреплено за агентом в $pane: $rename_out; workspace $ws оставлен" ;;
+        esac
     fi
-    herdr agent get "$name" | jq -e '.result.agent.agent == "claude"' > /dev/null \
+    herdr agent get "$pane" | jq -e '.result.agent.agent == "claude"' > /dev/null \
         || die "шаг 4: в $pane не виден claude"
 
     # Подпись вкладки и агента у панели — только для глаз: сбой не останавливает запуск.
-    tab=$(herdr agent get "$name" 2> /dev/null | jq -r '.result.agent.tab_id // empty' || true)
+    tab=$(herdr agent get "$pane" 2> /dev/null | jq -r '.result.agent.tab_id // empty' || true)
     [ -z "$tab" ] || herdr tab rename "$tab" "$name · $model_arg" > /dev/null || warn "вкладка $tab не переименована"
     herdr pane report-metadata "$pane" --source duty --display-agent "$model_arg" > /dev/null \
         || warn "подпись агента у панели $pane не выставлена"
@@ -284,8 +328,8 @@ BLOCK
     # Шаг 5. Ждём начала работы: сценарию нужно лишь убедиться, что агент её
     # начал. Состояние herdr после start запаздывает, поэтому при отказе wait
     # решает экран, а не состояние.
-    if herdr agent wait "$name" --until working --until blocked --timeout 10000 > /dev/null 2>&1; then
-        status=$(agent_status "$name")
+    if herdr agent wait "$pane" --until working --until blocked --timeout 10000 > /dev/null 2>&1; then
+        status=$(agent_status "$pane")
     else
         screen=$(herdr agent read "$pane" --source recent-unwrapped 2>&1 || true)
         place=$(prompt_place "$screen" brief.md)
@@ -293,7 +337,7 @@ BLOCK
             # Приглашение стоит в строке ввода без вывода после него — Enter потерян.
             warn 'приглашение осталось в строке ввода, Enter досылается'
             herdr pane send-keys "$pane" enter > /dev/null || die "шаг 5: Enter не отправлен в $pane"
-            if ! herdr agent wait "$name" --until working --until blocked --timeout 10000 > /dev/null 2>&1; then
+            if ! herdr agent wait "$pane" --until working --until blocked --timeout 10000 > /dev/null 2>&1; then
                 screen=$(herdr agent read "$pane" --source recent-unwrapped 2>&1 || true)
                 place=$(prompt_place "$screen" brief.md)
                 [ "$place" = sent ] \
@@ -305,9 +349,21 @@ BLOCK
         # sent: приглашение ушло в транскрипт, агент его принял. Короткий первый
         # ход мог закончиться раньше, чем herdr показал working, поэтому idle
         # здесь — успех, а не отказ.
-        status=$(agent_status "$name")
+        status=$(agent_status "$pane")
     fi
     status=${status:-?}
+
+    # Имя к этому времени обычно применено; если нет — один повтор rename,
+    # а при agent_launch_pending снова это предупреждение, не отказ.
+    if ! herdr agent get "$name" > /dev/null 2>&1; then
+        rc=0
+        try_rename "$pane" "$name" || rc=$?
+        case $rc in
+            0) ;;
+            3) warn "имя применится после запуска; list/close находят агента по панели из brief.md" ;;
+            *) warn "имя $name не закреплено: $rename_out; list/close находят агента по панели из brief.md" ;;
+        esac
+    fi
 
     printf 'workspace=%s\npane=%s\nagent=%s\nmodel=%s\nstatus=%s\ntask=%s\nmain=%s\n' \
         "$ws" "$pane" "$name" "$model" "$status" "$task" "$main"

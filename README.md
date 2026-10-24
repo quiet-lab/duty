@@ -20,11 +20,14 @@
 | `/duty:gates [фильтр]` | haiku | `duty:inspector` | открытые pull request'ы пользователя: сборки, ворота Jenkins с этапами, готовность к слиянию, возраст | ничего |
 | `/duty:cleanup [apply]` | sonnet | `duty:runner` | кандидаты на уборку с размерами; с `apply` — удаление строго по перечню | только с `apply` |
 | `/duty:after-merge <репозиторий>#<номер>` | sonnet | `duty:runner` | ветвь в origin, тикет RP, задачи `tasks.md`, местные worktree и ветвь после слияния | да |
+| `/duty:dispatch <имя> <модель> [задача]` | главной сессии; агенту — из аргумента | `duty:worker` в своём workspace | вынос крупной задачи в workspace herdr с запиской | каталог задачи, workspace |
 
 Модель задаёт ключ `model` навыка; он перекрывает модель агента
 и основной сессии. Набор инструментов задаёт агент: `inspector` —
 `Bash, Read, Grep, Glob` без правок, `runner` — с `Edit, Write`, без
-`Agent`. Ключ `permissionMode` у агентов плагина не действует.
+`Agent`, `worker` — все инструменты, включая `Agent`, и без своей
+модели: её задаёт `/duty:dispatch`. Ключ `permissionMode` у агентов
+плагина не действует.
 
 ## Состав
 
@@ -33,17 +36,93 @@
 skills/<навык>/SKILL.md      навыки
 agents/inspector.md          только чтение
 agents/runner.md             рутина с правками по списку
+agents/worker.md             исполнитель задачи в своём workspace herdr
 scripts/gates.py             сводка pull request'ов (Bitbucket, Jenkins)
 scripts/facts.sh             факты для /duty:inspect
 scripts/cleanup-candidates.py перечень кандидатов на уборку
+scripts/dispatch.sh          запуск, перечень и закрытие workspace задач
+scripts/tab-run.sh           длинная команда во вкладке с итогом в файл
+scripts/wait-done.sh         ожидание файла done по inotify
 reference/access.md          доступы, REST, репозитории, задания Jenkins
 reference/layout.md          раскладка, защищённые ветви, что чужое
 reference/report.md          форма итога
+reference/brief-template.md  шаблон записки задачи
+reference/worker-rules.md    общие запреты для rules.md задачи
 ```
 
 Пути внутри плагина в тексте навыков — `${CLAUDE_PLUGIN_ROOT}`, корень
 проекта — `${CLAUDE_PROJECT_DIR}`: Claude Code подставляет их при
 загрузке навыка. В окружении Bash эти переменные не заданы.
+
+## Вынос задачи в workspace
+
+Крупная задача уходит из главной сессии в отдельный workspace herdr
+с говорящим именем; там работает своя сессия Claude в роли
+`duty:worker`. Решение и отвергнутые варианты — запись
+`docs/decisions/0054-duty-workspace-dispatch.md` монорепозитория.
+
+**Когда.** Задача занимает местный стенд, его экземпляр, домен студии
+или узел Jenkins, содержит прогон, сборку или ожидание дольше 10 минут,
+правит больше одного репозитория или идёт через изменение OpenSpec.
+Модель — по стоимости (`sonnet`, `opus`); Fable в workspace — только
+после согласия пользователя: главная сессия предлагает его
+с обоснованием и лишь тогда передаёт слово `fable`.
+
+**Что делает навык.** `/duty:dispatch` выполняется в главной сессии,
+без `context: fork`: записку составляют из того, что знает только она
+(цель, сделанное, решения пользователя), а форк этих сведений
+не получает. Запуск — детерминированный сценарий `scripts/dispatch.sh`,
+одна команда с проверкой каждого шага: каталог задачи с `brief.md`
+и `rules.md`; `herdr workspace create --label <имя> --env DUTY_ROLE=worker
+--env DUTY_TASK=<каталог> --no-focus`; служебный блок в `brief.md`
+(workspace, панель, имя агента, имя главной сессии, каталог плагина);
+`herdr agent start <имя> --kind claude -- --agent duty:worker --model
+<модель> --name <имя>`; приглашение `herdr agent prompt` без `--wait`
+и проверка, что агент перешёл в `working`. Хуки `SessionStart`
+монорепозитория при `DUTY_ROLE=worker` не выдают снимок `todo.md`
+и указание `/sync-parents`.
+
+**Файлы задачи** — `../ocp-dev-stand/results/<имя>/`:
+
+| Файл | Кто пишет | Что в нём |
+|---|---|---|
+| `brief.md` | главная сессия по `reference/brief-template.md`, служебный блок — `dispatch.sh` | цель, сделанное, где остановились, следующие шаги, команды проверки, решения, ссылки; раздел «Передача» — агент при переполнении контекста |
+| `rules.md` | `dispatch.sh` из `reference/worker-rules.md`, главная сессия дописывает «Переданные» | действующие запреты и решения; агент перечитывает перед каждым внешним действием |
+| `state.md` | агент после каждого шага | снимок: шаг, хеши, вкладки, занятые ресурсы |
+| `report.md` | агент в конце | итог по `reference/report.md` |
+| `runs/<вкладка>/` | `scripts/tab-run.sh` | `cmd.sh`, `out.log`, `done` с кодом завершения |
+
+**Долгие команды** идут во вкладках своего workspace
+(`scripts/tab-run.sh`: `herdr tab create --no-focus`, `herdr pane run`),
+ожидание — `scripts/wait-done.sh` (inotify) фоновым вызовом Bash или
+`herdr pane wait-output --match 'DUTY-DONE <вкладка>'`, без опроса.
+Размышляющие подзадачи — инструментом Agent внутри агента. Общие
+ресурсы — `scripts/busy.py claim|release` с `--holder <имя>` и
+`--pid "$PPID"` (процесс сессии Claude).
+
+**Вопросы** агент задаёт пользователю сам в своём workspace через
+`AskUserQuestion` с вариантами, после всего, что от ответа не зависит;
+если workspace не в фокусе (`herdr workspace list` → `focused: false`),
+перед вопросом — `herdr notification show "Workspace <имя> ждёт ответа"
+--sound request`. Главная сессия вопросы не пересылает, а новые
+решения дописывает в `rules.md`.
+
+**Итог и закрытие.** Агент по порядку: снимает свои отметки реестра,
+удаляет свои временные деревья (scratchpad, `runs/*/tmp`), закрывает
+созданные им вкладки (корневую оставляет), пишет `report.md`
+и `state.md`, отправляет главной сессии `SendMessage` (три строки
+и путь к `report.md`), показывает `herdr notification show … --sound
+done` и последним действием закрывает свой workspace — если `rules.md`
+не велит оставить его открытым. Тогда закрывает главная сессия:
+
+```sh
+bash claude-plugins/duty/scripts/dispatch.sh list           # открытые workspace задач: агент, report.md
+bash claude-plugins/duty/scripts/dispatch.sh close <имя>    # агент idle/done, report.md есть
+```
+
+`close` снимает забытые отметки держателя `<имя>` принудительно
+с предупреждением, закрывает вкладки кроме корневой и workspace;
+перечнем `list` позже воспользуется `/duty:cleanup`.
 
 ## Подключение
 
@@ -87,6 +166,17 @@ claude --plugin-dir claude-plugins/duty plugin details duty   # инвентар
 python3 -I claude-plugins/duty/scripts/gates.py        # таблица pull request'ов
 python3 -I claude-plugins/duty/scripts/cleanup-candidates.py "$PWD"   # сухой перечень
 claude -p '/duty:gates' --model haiku --output-format json < /dev/null
+bash -n claude-plugins/duty/scripts/dispatch.sh       # разбор сценария выноса
+bash claude-plugins/duty/scripts/dispatch.sh list     # перечень workspace задач
+```
+
+Пробный вынос (в herdr; workspace закрывает сам агент, каталог задачи
+удаляется после проверки):
+
+```sh
+bash claude-plugins/duty/scripts/dispatch.sh dispatch-probe haiku \
+  --goal 'Напиши в $DUTY_TASK/report.md слово «готово» и заверши задачу.'
+cat ../ocp-dev-stand/results/dispatch-probe/report.md && rm -r ../ocp-dev-stand/results/dispatch-probe
 ```
 
 В выводе последней команды `modelUsage` содержит только

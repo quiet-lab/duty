@@ -80,13 +80,22 @@ def try_create(path: Path, mark: dict) -> bool:
 
 
 def cmd_claim(args: argparse.Namespace) -> int:
+    # Родитель самого сценария — короткая оболочка Bash вызова: отметка
+    # с его pid устарела бы сразу после выхода, поэтому pid задаётся явно.
+    if args.pid is None:
+        print("claim: нужен --pid долгоживущего держателя; из Bash сессии Claude — "
+              '--pid "$PPID"', file=sys.stderr)
+        return EXIT_USAGE
+    if args.pid <= 0 or not pid_alive(args.pid):
+        print(f"claim: процесс --pid {args.pid} не жив, отметка сразу устарела бы", file=sys.stderr)
+        return EXIT_USAGE
     path = mark_path(args.resource)
     path.parent.mkdir(parents=True, exist_ok=True)
     mark = {
         "resource": args.resource,
         "holder": args.holder,
         "task": args.task or "",
-        "pid": args.pid if args.pid is not None else os.getppid(),
+        "pid": args.pid,
         "since_ms": now_ms(),
         "note": args.note or "",
     }
@@ -178,7 +187,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--holder", required=True)
     c.add_argument("--task")
     c.add_argument("--note")
-    c.add_argument("--pid", type=int, help="по умолчанию родительский процесс вызывающего")
+    c.add_argument("--pid", type=int,
+                   help='обязателен: процесс держателя; из Bash сессии Claude — --pid "$PPID"')
     c.set_defaults(fn=cmd_claim)
     r = sub.add_parser("release", help="снять свою отметку")
     r.add_argument("resource")

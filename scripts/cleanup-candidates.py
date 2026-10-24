@@ -13,6 +13,7 @@
 import fnmatch
 import json
 import os
+import pwd
 import shlex
 import subprocess
 import sys
@@ -52,10 +53,40 @@ STAND_MAIN = {STAND / "src" / n for n in ("qms", "ui", "tests", "jssip-phone")}
 rows: list[tuple[str, str, str, str, str, str, str]] = []
 
 
-def foreign(path: Path) -> bool:
-    """Файл принадлежит не пользователю: root или uid из пространства
-    контейнера Docker без root, которого нет в /etc/passwd."""
-    return path.stat().st_uid != os.getuid()
+def subuid_range() -> range:
+    """Подчинённый диапазон uid пользователя из /etc/subuid (по имени)."""
+    user = pwd.getpwuid(os.getuid()).pw_name
+    try:
+        for line in Path("/etc/subuid").read_text(encoding="utf-8").splitlines():
+            name, _, rest = line.partition(":")
+            if name == user:
+                start, _, count = rest.partition(":")
+                return range(int(start), int(start) + int(count))
+    except (OSError, ValueError):
+        pass
+    return range(0)
+
+
+SUBUIDS = subuid_range()
+
+
+def owner_kind(path: Path) -> str:
+    """Владелец файла: own — пользователь; subuid — uid из подчинённого
+    диапазона (контейнеры rootless Docker от не-root uid), удаляется через
+    rootlesskit без root; other — настоящий root или иной uid, нужен sudo."""
+    uid = path.stat().st_uid
+    if uid == os.getuid():
+        return "own"
+    return "subuid" if uid in SUBUIDS else "other"
+
+
+def removal(path: Path, args: str, why: str) -> str:
+    """Команда удаления с учётом владельца; args — флаги и путь для rm/rmdir."""
+    kind = owner_kind(path)
+    if kind == "subuid":
+        return f"rootlesskit rm -rf -- {shlex.quote(str(path))}"
+    prefix = f"sudo -A -p '{why}' " if kind == "other" else ""
+    return f"{prefix}{args}"
 
 
 def size(path: Path) -> str:
@@ -154,17 +185,21 @@ for repo, parent in submodules():
         if in_live_session(path) or cwd_users(path):
             add("worktree", f"{path} [{branch}]", size(path), "оставлено: живой сеанс или процесс", "", str(rel), parent)
             continue
-        gone = not sh("git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}", cwd=repo)
+        # «Был upstream и исчез» ([gone]) — ветвь удалена в origin. Ветвь без
+        # upstream и без origin/<ветвь> никогда не отправлялась: это рабочая
+        # ветвь с идущей задачей, не кандидат, даже если вершина уже в родителе.
+        track = sh("git", "for-each-ref", "--format=%(upstream:track)|%(upstream:short)",
+                   f"refs/heads/{branch}", cwd=repo)
+        track, _, upstream = track.partition("|")
+        has_origin_ref = bool(sh("git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}", cwd=repo))
+        gone = "gone" in track
         merged = subprocess.run(
             ["git", "merge-base", "--is-ancestor", branch, f"origin/{parent}"], cwd=repo
         ).returncode == 0
-        # Ветвь без origin/<ветвь> и без origin-ветви, содержащей её вершину,
-        # не удалена в origin, а никогда не отправлялась: дерево такой ветви
-        # решает пользователь, хотя сама ветвь при удалении дерева сохраняется.
-        if gone and not merged and not sh("git", "branch", "-r", "--contains", branch, cwd=repo):
+        if not gone and not upstream and not has_origin_ref:
             ahead = sh("git", "rev-list", "--count", f"origin/{parent}..{branch}", cwd=repo)
             add("worktree", f"{path} [{branch}]", size(path),
-                f"решение пользователя: ветвь не отправлена в origin, {ahead} коммитов вне origin/{parent}",
+                f"решение пользователя: ветвь не отправлялась в origin, {ahead} коммитов вне origin/{parent}",
                 "", str(rel), parent)
             continue
         if gone or merged:
@@ -229,18 +264,19 @@ if RESULTS.is_dir():
             continue
         failed = (f.parent / "error-context.md").exists() or any(f.parent.glob("test-failed-*.png"))
         if not failed:
-            rm = f"rm -f -- {shlex.quote(str(f))}"
-            if foreign(f):
-                rm = "sudo -A -p 'Удалить видео прошедшего теста, созданное в контейнере' " + rm
+            rm = removal(f, f"rm -f -- {shlex.quote(str(f))}", "Удалить видео прошедшего теста, созданное в контейнере")
             add("results", str(f.relative_to(STAND)), size(f), "удалить: тест прошёл", rm)
     # Пустые каталоги чужих владельцев остаются от контейнеров прогонов
     # и сами не исчезают.
     for f in RESULTS.rglob("*"):
         try:
-            if f.is_dir() and foreign(f) and not any(f.iterdir()):
-                add("results", str(f.relative_to(STAND)), "0", "удалить через sudo: пустой каталог контейнера",
-                    "sudo -A -p 'Удалить пустой каталог результатов, созданный в контейнере' "
-                    f"rmdir -- {shlex.quote(str(f))}")
+            if f.is_dir() and owner_kind(f) != "own" and not any(f.iterdir()):
+                kind = owner_kind(f)
+                verdict = ("удалить через rootlesskit: пустой каталог контейнера" if kind == "subuid"
+                           else "решение пользователя: нужен sudo, пустой каталог чужого владельца")
+                add("results", str(f.relative_to(STAND)), "0", verdict,
+                    removal(f, f"rmdir -- {shlex.quote(str(f))}",
+                            "Удалить пустой каталог результатов, созданный в контейнере"))
         except OSError:
             continue
 

@@ -19,6 +19,12 @@
 # (звук done, при ненулевом коде request) и печатает «DUTY-DONE <имя>
 # rc=<код>» для herdr pane wait-output. В ответ — JSON с tab_id, pane_id
 # и run_dir.
+#
+# Переменные DUTY_TASK, DUTY_NAME и DUTY_ROLE вызывающего (если заданы)
+# экспортируются в начале cmd.sh и передаются herdr tab create --env: workspace
+# create задаёт окружение только корневой панели, новая вкладка его не
+# наследует, и команда (например, jwait.sh) иначе пишет итог в путь по
+# умолчанию. Основной путь — экспорт в cmd.sh.
 
 set -euo pipefail
 
@@ -62,6 +68,9 @@ cwd=$(realpath "$cwd")
 {
     printf '#!/usr/bin/env bash\n'
     printf '# Прогон %s от tab-run.sh; идёт в текущем каталоге вкладки (%s).\n' "$name" "$cwd"
+    for var in DUTY_TASK DUTY_NAME DUTY_ROLE; do
+        [ -z "${!var:-}" ] || printf 'export %s=%q\n' "$var" "${!var}"
+    done
     printf 'run_dir=%q\n' "$run_dir"
     printf 'printf "cwd: %%s\\nstarted_ms: %%s\\n" "$PWD" "$(date +%%s%%3N)" > "$run_dir/meta.txt"\n'
     printf '{\n%s\n} 2>&1 | tee "$run_dir/out.log"\n' "$command"
@@ -76,7 +85,11 @@ cwd=$(realpath "$cwd")
 } > "$run_dir/cmd.sh"
 bash -n "$run_dir/cmd.sh" || die "команда не разбирается bash: $run_dir/cmd.sh"
 
-tab=$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd "$cwd" --label "$name" --no-focus)
+env_args=()
+for var in DUTY_TASK DUTY_NAME DUTY_ROLE; do
+    [ -z "${!var:-}" ] || env_args+=(--env "$var=${!var}")
+done
+tab=$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd "$cwd" --label "$name" --no-focus ${env_args[@]+"${env_args[@]}"})
 tab_id=$(jq -er '.result.tab.tab_id' <<< "$tab") || die "herdr tab create: $tab"
 pane_id=$(jq -er '.result.root_pane.pane_id' <<< "$tab") || die "herdr tab create: $tab"
 

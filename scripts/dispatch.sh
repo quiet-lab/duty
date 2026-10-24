@@ -12,10 +12,14 @@
 # запускается только по этому слову: навык /duty:dispatch передаёт его,
 # когда пользователь согласился.
 #
+# Метка workspace и вкладки — «<имя> · <модель>»; имя агента herdr и сессии
+# Claude — <имя>. list и close находят workspace по id из служебного блока
+# brief.md и метке «<имя>» либо «<имя> · …».
+#
 # Запуск — шаги и критерий готовности каждого (проверяется командой):
 #   1. каталог задачи <results>/<имя>/ с brief.md, rules.md и runs/ — файлы
 #      непустые;
-#   2. workspace с меткой <имя>, DUTY_ROLE=worker, DUTY_TASK=<каталог> —
+#   2. workspace с меткой «<имя> · <модель>» (слово из аргумента), DUTY_ROLE=worker, DUTY_TASK=<каталог> —
 #      есть в herdr workspace list;
 #   3. служебный блок в brief.md — строка с id workspace есть в файле;
 #   4. claude --agent duty:worker в корневой панели, приглашение прочитать
@@ -23,8 +27,8 @@
 #      только что запущенном агенте теряет Enter длинного текста) —
 #      herdr agent get показывает agent=claude;
 #   5. агент перешёл в working или blocked (herdr agent wait); если за 60 с
-#      состояния нет, а приглашение стоит в строке ввода (последняя строка
-#      экрана `❯` с текстом), Enter досылается один раз и ожидание
+#      состояния нет, а текст приглашения стоит в строке ввода (между двумя
+#      последними линиями «─» экрана), Enter досылается один раз и ожидание
 #      повторяется.
 # При отказе шага сценарий останавливается с кодом 1 и печатает, что уже
 # создано: workspace не закрывается, чтобы причину было видно в нём.
@@ -88,7 +92,7 @@ cmd_list() {
         ws=$(task_workspace "$dir")
         [ -n "$ws" ] || continue
         jq -e --arg w "$ws" --arg n "$name" \
-            '.result.workspaces[] | select(.workspace_id == $w and .label == $n)' <<< "$workspaces" > /dev/null \
+            '.result.workspaces[] | select(.workspace_id == $w and (.label == $n or (.label | startswith($n + " · "))))' <<< "$workspaces" > /dev/null \
             || continue
         status=$(agent_status "$name")
         report='нет'
@@ -104,7 +108,7 @@ cmd_close() {
     ws=$(task_workspace "$task")
     [ -n "$ws" ] || die "в $task/brief.md нет служебного блока с workspace"
     herdr workspace list | jq -e --arg w "$ws" --arg n "$name" \
-        '.result.workspaces[] | select(.workspace_id == $w and .label == $n)' > /dev/null \
+        '.result.workspaces[] | select(.workspace_id == $w and (.label == $n or (.label | startswith($n + " · "))))' > /dev/null \
         || die "workspace $ws с меткой $name не открыт"
 
     status=$(agent_status "$name")
@@ -139,7 +143,7 @@ cmd_close() {
 
 cmd_start() {
     local name=$1 model_arg=$2 model task workspaces agents passed template rules
-    local created ws pane started_at_ms state status prompt screen last
+    local created ws pane started_at_ms state status prompt screen input tab
     local -a claude_args
 
     # Имя служит и меткой workspace, и именем агента herdr, и именем сессии
@@ -161,7 +165,7 @@ cmd_start() {
     [ ! -e "$task" ] || die "каталог задачи $task уже есть: другое имя или продолжение в старом workspace"
 
     workspaces=$(herdr workspace list)
-    jq -e --arg n "$name" '[.result.workspaces[] | select(.label == $n)] | length == 0' <<< "$workspaces" > /dev/null \
+    jq -e --arg n "$name" '[.result.workspaces[] | select(.label == $n or (.label | startswith($n + " · ")))] | length == 0' <<< "$workspaces" > /dev/null \
         || die "workspace с меткой $name уже есть"
     agents=$(herdr agent list)
     jq -e --arg n "$name" '[.result.agents[] | select(.name == $n)] | length == 0' <<< "$agents" > /dev/null \
@@ -194,7 +198,7 @@ cmd_start() {
         || die "шаг 1: файлы задачи в $task не созданы"
 
     # Шаг 2. Workspace.
-    created=$(herdr workspace create --cwd "$root" --label "$name" \
+    created=$(herdr workspace create --cwd "$root" --label "$name · $model_arg" \
         --env DUTY_ROLE=worker --env "DUTY_TASK=$task" --env "DUTY_NAME=$name" --no-focus)
     ws=$(jq -er '.result.workspace.workspace_id' <<< "$created") || die "шаг 2: herdr workspace create: $created"
     pane=$(jq -er '.result.root_pane.pane_id' <<< "$created") || die "шаг 2: нет корневой панели: $created"
@@ -207,7 +211,7 @@ cmd_start() {
 
 ## Служебное (заполняет dispatch.sh)
 
-- workspace: \`$ws\`, метка \`$name\`
+- workspace: \`$ws\`, метка \`$name · $model_arg\`
 - панель агента: \`$pane\`
 - агент herdr и сессия Claude: \`$name\`, модель \`$model\`
 - главная сессия для SendMessage: \`$main\`
@@ -230,14 +234,23 @@ BLOCK
     herdr agent get "$name" | jq -e '.result.agent.agent == "claude"' > /dev/null \
         || die "шаг 4: в $pane не виден claude"
 
+    # Подпись вкладки и агента у панели — только для глаз: сбой не останавливает запуск.
+    tab=$(herdr agent get "$name" 2> /dev/null | jq -r '.result.agent.tab_id // empty' || true)
+    [ -z "$tab" ] || herdr tab rename "$tab" "$name · $model_arg" > /dev/null || warn "вкладка $tab не переименована"
+    herdr pane report-metadata "$pane" --source duty --display-agent "$model_arg" > /dev/null \
+        || warn "подпись агента у панели $pane не выставлена"
+
     # Шаг 5. Ждём начала работы: сценарию нужно лишь убедиться, что агент её
     # начал. Состояние herdr после start запаздывает (бывает idle при уже
     # идущей работе), поэтому критерий — wait, а не ответ start.
     if ! state=$(herdr agent wait "$name" --until working --until blocked --timeout 60000 2>&1); then
         # Приглашение стоит в строке ввода без вывода после него — Enter потерян.
         screen=$(herdr agent read "$pane" --source recent-unwrapped 2>&1 || true)
-        last=$(grep -v '^[[:space:]]*$' <<< "$screen" | tail -1)
-        if [[ $last == '❯'* && $last == *"brief.md"* ]]; then
+        # Строка ввода Claude Code стоит между двумя последними линиями «─»;
+        # отправленное приглашение выше верхней линии, в транскрипте.
+        input=$(awk '/─/ { a = b; b = NR } { line[NR] = $0 }
+            END { for (i = a + 1; a > 0 && i < b; i++) print line[i] }' <<< "$screen")
+        if [[ $input == *"brief.md"* ]]; then
             warn 'приглашение осталось в строке ввода, Enter досылается'
             herdr pane send-keys "$pane" enter > /dev/null || die "шаг 5: Enter не отправлен в $pane"
             state=$(herdr agent wait "$name" --until working --until blocked --timeout 60000 2>&1) \

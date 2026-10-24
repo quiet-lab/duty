@@ -93,7 +93,7 @@ reference/worker-rules.md    общие запреты для rules.md зада�
 (цель, сделанное, решения пользователя), а форк этих сведений
 не получает. Запуск — детерминированный сценарий `scripts/dispatch.sh`,
 одна команда с проверкой каждого шага: каталог задачи с `brief.md`
-и `rules.md`; `herdr workspace create --label <имя> --env DUTY_ROLE=worker
+и `rules.md`; `herdr workspace create --label "<имя> · <модель>" --env DUTY_ROLE=worker
 --env DUTY_TASK=<каталог> --env DUTY_NAME=<имя> --no-focus`; служебный блок в `brief.md`
 (workspace, панель, имя агента, имя главной сессии, каталог плагина);
 `herdr agent start <имя> --kind claude -- --agent duty:worker --model

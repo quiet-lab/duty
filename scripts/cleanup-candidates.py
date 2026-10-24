@@ -185,17 +185,21 @@ for repo, parent in submodules():
         if in_live_session(path) or cwd_users(path):
             add("worktree", f"{path} [{branch}]", size(path), "оставлено: живой сеанс или процесс", "", str(rel), parent)
             continue
-        gone = not sh("git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}", cwd=repo)
+        # «Был upstream и исчез» ([gone]) — ветвь удалена в origin. Ветвь без
+        # upstream и без origin/<ветвь> никогда не отправлялась: это рабочая
+        # ветвь с идущей задачей, не кандидат, даже если вершина уже в родителе.
+        track = sh("git", "for-each-ref", "--format=%(upstream:track)|%(upstream:short)",
+                   f"refs/heads/{branch}", cwd=repo)
+        track, _, upstream = track.partition("|")
+        has_origin_ref = bool(sh("git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}", cwd=repo))
+        gone = "gone" in track
         merged = subprocess.run(
             ["git", "merge-base", "--is-ancestor", branch, f"origin/{parent}"], cwd=repo
         ).returncode == 0
-        # Ветвь без origin/<ветвь> и без origin-ветви, содержащей её вершину,
-        # не удалена в origin, а никогда не отправлялась: дерево такой ветви
-        # решает пользователь, хотя сама ветвь при удалении дерева сохраняется.
-        if gone and not merged and not sh("git", "branch", "-r", "--contains", branch, cwd=repo):
+        if not gone and not upstream and not has_origin_ref:
             ahead = sh("git", "rev-list", "--count", f"origin/{parent}..{branch}", cwd=repo)
             add("worktree", f"{path} [{branch}]", size(path),
-                f"решение пользователя: ветвь не отправлена в origin, {ahead} коммитов вне origin/{parent}",
+                f"решение пользователя: ветвь не отправлялась в origin, {ahead} коммитов вне origin/{parent}",
                 "", str(rel), parent)
             continue
         if gone or merged:

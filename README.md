@@ -57,6 +57,8 @@ scripts/gates.py             сводка pull request'ов (Bitbucket, Jenkins)
 scripts/branches.py          таблица ветвей origin с предложениями
 scripts/facts.sh             факты для /duty:inspect
 scripts/busy.py              реестр занятости общих ресурсов
+hooks/hooks.json             подключение хука SessionStart
+hooks/session-start.sh       при старте: workspace задач, реестр занятости, напоминание
 scripts/tests/test_busy.py   проверки реестра
 tests/probes/                пробы flow: песочница, записки, run-probe.sh
 scripts/cleanup-candidates.py перечень кандидатов на уборку
@@ -75,6 +77,16 @@ reference/worker-rules.md    общие запреты для rules.md зада�
 Пути внутри плагина в тексте навыков — `${CLAUDE_PLUGIN_ROOT}`, корень
 проекта — `${CLAUDE_PROJECT_DIR}`: Claude Code подставляет их при
 загрузке навыка. В окружении Bash эти переменные не заданы.
+
+## Хук SessionStart
+
+`hooks/session-start.sh` при каждом старте сессии (без матчера: запуск,
+возобновление, сжатие, `/clear`) отдаёт модели через `additionalContext`
+таблицу `dispatch.sh list`, если есть открытые workspace задач, таблицу
+`busy.py list`, если есть отметки, и напоминание о `/duty:dispatch`.
+Хук молчит в сессии агента (`DUTY_ROLE=worker`) и вне herdr
+(`HERDR_ENV` не равно 1); сбой herdr даёт строку «herdr недоступен»
+и не прерывает старт.
 
 ## Пробы
 

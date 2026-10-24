@@ -1,0 +1,16 @@
+{
+  "description": "При старте сессии: открытые workspace задач, реестр занятости, напоминание о /duty:dispatch",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

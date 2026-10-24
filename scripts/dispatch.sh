@@ -25,7 +25,12 @@
 #   4. claude --agent duty:worker в корневой панели, приглашение прочитать
 #      brief.md — позиционным аргументом команды (herdr agent prompt на
 #      только что запущенном агенте теряет Enter длинного текста) —
-#      herdr agent get показывает agent=claude;
+#      herdr agent get показывает agent=claude. Срок start — 30 с: при
+#      приглашении аргументом агент занят сразу, и herdr может не счесть его
+#      готовым (timeout) при исправной работе. Тогда экран читается через
+#      herdr pane read; приглашение в строке ввода или в транскрипте — шаг
+#      выполнен с предупреждением, имя агента закрепляется herdr agent rename
+#      (после timeout за именем агента нет), приглашения нет — отказ;
 #   5. агент перешёл в working или blocked (herdr agent wait, 10 с); если
 #      состояния нет, решает экран: приглашение в транскрипте (выше двух
 #      последних линий «─») — шаг выполнен, статус может быть и idle
@@ -248,8 +253,25 @@ BLOCK
     prompt="Прочитай $task/brief.md и выполняй."
     claude_args=(--agent duty:worker --model "$model" --name "$name")
     [ -z "$plugin_dir" ] || claude_args+=(--plugin-dir "$(realpath "$plugin_dir")")
-    herdr agent start "$name" --kind claude --pane "$pane" --timeout 120000 -- "${claude_args[@]}" "$prompt" > /dev/null \
-        || die "шаг 4: агент не готов; workspace $ws оставлен, экран: herdr agent read $pane --source recent-unwrapped"
+    # herdr считает агента готовым у свободной строки ввода, а при приглашении
+    # аргументом агент занят с первой секунды: start может истечь по сроку
+    # при исправной работе. Поэтому срок короткий, а при timeout решает экран.
+    if ! start_out=$(herdr agent start "$name" --kind claude --pane "$pane" --timeout 30000 -- "${claude_args[@]}" "$prompt" 2>&1); then
+        case $start_out in
+            *'"timeout"'* | *agent_not_ready*) ;;
+            *) die "шаг 4: агент не запущен: $start_out; workspace $ws оставлен, экран: herdr pane read $pane --source recent-unwrapped" ;;
+        esac
+        screen=$(herdr pane read "$pane" --source recent-unwrapped 2>&1 || true)
+        place=$(prompt_place "$screen" brief.md)
+        [ "$place" != none ] \
+            || die "шаг 4: агент не готов, приглашения на экране нет: $start_out; workspace $ws оставлен, экран: herdr pane read $pane --source recent-unwrapped"
+        warn "herdr не подтвердил готовность агента (приглашение на экране: $place)"
+        # После timeout имя за агентом не закреплено (agent get по имени даёт
+        # agent_not_found), а по панели агент виден: закрепляем имя сами, чтобы
+        # wait, list и close находили его, как обычно.
+        herdr agent rename "$pane" "$name" > /dev/null \
+            || die "шаг 4: имя $name не закреплено за агентом в $pane; workspace $ws оставлен"
+    fi
     herdr agent get "$name" | jq -e '.result.agent.agent == "claude"' > /dev/null \
         || die "шаг 4: в $pane не виден claude"
 

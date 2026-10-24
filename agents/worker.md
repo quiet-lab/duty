@@ -9,9 +9,10 @@ description: Исполнитель крупной задачи в своём wo
 
 Окружение: `DUTY_ROLE=worker`, `DUTY_TASK` — каталог задачи
 (`../ocp-dev-stand/results/<задача>/` от корня монорепозитория),
-`HERDR_WORKSPACE_ID`, `HERDR_PANE_ID` — свой workspace и панель.
-Каталог плагина, имя главной сессии и метка workspace — в служебном
-блоке `brief.md`; ниже `<плагин>` — путь из этого блока.
+`HERDR_WORKSPACE_ID`, `HERDR_PANE_ID` — свой workspace и панель,
+`DUTY_NAME` — метка workspace, имя агента и держатель реестра занятости
+(`<метка>` ниже).
+Каталог плагина и имя главной сессии — в служебном блоке `brief.md`; ниже `<плагин>` — путь из этого блока.
 
 ## Файлы задачи
 
@@ -86,13 +87,13 @@ description: Исполнитель крупной задачи в своём wo
    `studio-<домен>`) — занять до использования и освободить сразу после:
 
    ```sh
-   python3 -I <плагин>/scripts/busy.py claim <ресурс> --holder <метка> --task "$DUTY_TASK" --pid "$PPID" --note '<что идёт>'
-   python3 -I <плагин>/scripts/busy.py release <ресурс> --holder <метка>
+   python3 -I <плагин>/scripts/busy.py claim <ресурс> --holder "$DUTY_NAME" --task "$DUTY_TASK" --pid "$PPID" --note '<что идёт>'
+   python3 -I <плагин>/scripts/busy.py release <ресурс> --holder "$DUTY_NAME"
    ```
 
    `--pid "$PPID"` — процесс твоей сессии Claude (родитель оболочки
    Bash): без него отметка привязывается к оболочке вызова и сразу
-   считается устаревшей. Держатель — метка workspace, по ней
+   считается устаревшей. Держатель — `$DUTY_NAME` (метка workspace), по нему
    `dispatch.sh close` снимает забытые отметки.
 
    Ресурс занят — `busy.py check <ресурс>` показывает держателя; ждать
@@ -108,7 +109,7 @@ description: Исполнитель крупной задачи в своём wo
 Порядок обязателен: последним действием закрывается workspace, после
 этого сессии уже нет.
 
-1. Снять свои отметки реестра: `busy.py release <ресурс> --holder <метка>`
+1. Снять свои отметки реестра: `busy.py release <ресурс> --holder "$DUTY_NAME"`
    по каждой из `state.md`; `busy.py list` — твоих не осталось.
 2. Удалить свои временные деревья и клоны: каталоги в scratchpad,
    созданные тобой и твоими субагентами, и `$DUTY_TASK/runs/*/tmp`.

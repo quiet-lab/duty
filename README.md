@@ -94,11 +94,13 @@ reference/worker-rules.md    общие запреты для rules.md зада�
 не получает. Запуск — детерминированный сценарий `scripts/dispatch.sh`,
 одна команда с проверкой каждого шага: каталог задачи с `brief.md`
 и `rules.md`; `herdr workspace create --label <имя> --env DUTY_ROLE=worker
---env DUTY_TASK=<каталог> --no-focus`; служебный блок в `brief.md`
+--env DUTY_TASK=<каталог> --env DUTY_NAME=<имя> --no-focus`; служебный блок в `brief.md`
 (workspace, панель, имя агента, имя главной сессии, каталог плагина);
 `herdr agent start <имя> --kind claude -- --agent duty:worker --model
-<модель> --name <имя>`; приглашение `herdr agent prompt` без `--wait`
-и проверка, что агент перешёл в `working`. Хуки `SessionStart`
+<модель> --name <имя> "<приглашение>"` (первое приглашение — позиционным
+аргументом: `herdr agent prompt` на только что запущенном агенте теряет Enter
+длинного текста) и проверка `herdr agent wait`, что агент перешёл в `working`
+или `blocked`; потерянный Enter досылается один раз. Хуки `SessionStart`
 монорепозитория при `DUTY_ROLE=worker` не выдают снимок `todo.local.md`
 и указание `/sync-parents`.
 

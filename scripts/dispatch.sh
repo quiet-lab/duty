@@ -18,9 +18,14 @@
 #   2. workspace с меткой <имя>, DUTY_ROLE=worker, DUTY_TASK=<каталог> —
 #      есть в herdr workspace list;
 #   3. служебный блок в brief.md — строка с id workspace есть в файле;
-#   4. claude --agent duty:worker в корневой панели — herdr agent get
-#      показывает agent=claude;
-#   5. приглашение прочитать brief.md — агент перешёл в working или blocked.
+#   4. claude --agent duty:worker в корневой панели, приглашение прочитать
+#      brief.md — позиционным аргументом команды (herdr agent prompt на
+#      только что запущенном агенте теряет Enter длинного текста) —
+#      herdr agent get показывает agent=claude;
+#   5. агент перешёл в working или blocked (herdr agent wait); если за 60 с
+#      состояния нет, а приглашение стоит в строке ввода (последняя строка
+#      экрана `❯` с текстом), Enter досылается один раз и ожидание
+#      повторяется.
 # При отказе шага сценарий останавливается с кодом 1 и печатает, что уже
 # создано: workspace не закрывается, чтобы причину было видно в нём.
 #
@@ -134,7 +139,7 @@ cmd_close() {
 
 cmd_start() {
     local name=$1 model_arg=$2 model task workspaces agents passed template rules
-    local created ws pane started_at_ms state status
+    local created ws pane started_at_ms state status prompt screen last
     local -a claude_args
 
     # Имя служит и меткой workspace, и именем агента herdr, и именем сессии
@@ -190,7 +195,7 @@ cmd_start() {
 
     # Шаг 2. Workspace.
     created=$(herdr workspace create --cwd "$root" --label "$name" \
-        --env DUTY_ROLE=worker --env "DUTY_TASK=$task" --no-focus)
+        --env DUTY_ROLE=worker --env "DUTY_TASK=$task" --env "DUTY_NAME=$name" --no-focus)
     ws=$(jq -er '.result.workspace.workspace_id' <<< "$created") || die "шаг 2: herdr workspace create: $created"
     pane=$(jq -er '.result.root_pane.pane_id' <<< "$created") || die "шаг 2: нет корневой панели: $created"
     herdr workspace list | jq -e --arg w "$ws" '.result.workspaces[] | select(.workspace_id == $w)' > /dev/null \
@@ -208,25 +213,39 @@ cmd_start() {
 - главная сессия для SendMessage: \`$main\`
 - каталог плагина: \`$plugin_root\`
 - каталог задачи: \`$task\`
+- держатель реестра занятости: \`$name\` (\`DUTY_NAME\`)
 - запущено: \`started_at_ms=$started_at_ms\`
 BLOCK
     grep -q "workspace: \`$ws\`" "$task/brief.md" || die "шаг 3: служебный блок не записан в $task/brief.md"
 
     # Шаг 4. Агент. --plugin-dir нужен, когда плагин проверяется из другой
-    # worktree, чем та, что подключена в корне.
+    # worktree, чем та, что подключена в корне. Первое приглашение идёт
+    # позиционным аргументом: herdr agent prompt на только что запущенном
+    # агенте набирает длинный текст в строку ввода, но Enter теряется.
+    prompt="Прочитай $task/brief.md и выполняй."
     claude_args=(--agent duty:worker --model "$model" --name "$name")
     [ -z "$plugin_dir" ] || claude_args+=(--plugin-dir "$(realpath "$plugin_dir")")
-    herdr agent start "$name" --kind claude --pane "$pane" --timeout 120000 -- "${claude_args[@]}" > /dev/null \
+    herdr agent start "$name" --kind claude --pane "$pane" --timeout 120000 -- "${claude_args[@]}" "$prompt" > /dev/null \
         || die "шаг 4: агент не готов; workspace $ws оставлен, экран: herdr agent read $pane --source recent-unwrapped"
     herdr agent get "$name" | jq -e '.result.agent.agent == "claude"' > /dev/null \
         || die "шаг 4: в $pane не виден claude"
 
-    # Шаг 5. Приглашение. Без --wait: работа идёт часами, а сценарию нужно
-    # лишь убедиться, что агент её начал.
-    herdr agent prompt "$name" "Прочитай $task/brief.md и выполняй." > /dev/null \
-        || die "шаг 5: приглашение не принято"
-    state=$(herdr agent wait "$name" --until working --until blocked --timeout 60000) \
-        || die "шаг 5: агент не начал работу за 60 с: $state"
+    # Шаг 5. Ждём начала работы: сценарию нужно лишь убедиться, что агент её
+    # начал. Состояние herdr после start запаздывает (бывает idle при уже
+    # идущей работе), поэтому критерий — wait, а не ответ start.
+    if ! state=$(herdr agent wait "$name" --until working --until blocked --timeout 60000 2>&1); then
+        # Приглашение стоит в строке ввода без вывода после него — Enter потерян.
+        screen=$(herdr agent read "$pane" --source recent-unwrapped 2>&1 || true)
+        last=$(grep -v '^[[:space:]]*$' <<< "$screen" | tail -1)
+        if [[ $last == '❯'* && $last == *"brief.md"* ]]; then
+            warn 'приглашение осталось в строке ввода, Enter досылается'
+            herdr pane send-keys "$pane" enter > /dev/null || die "шаг 5: Enter не отправлен в $pane"
+            state=$(herdr agent wait "$name" --until working --until blocked --timeout 60000 2>&1) \
+                || die "шаг 5: агент не начал работу после досылки Enter: $state; экран: herdr agent read $pane --source recent-unwrapped"
+        else
+            die "шаг 5: агент не начал работу за 60 с: $state; экран: herdr agent read $pane --source recent-unwrapped"
+        fi
+    fi
     status=$(jq -r '.result.agent.agent_status // .result.agent_status // "?"' <<< "$state")
 
     printf 'workspace=%s\npane=%s\nagent=%s\nmodel=%s\nstatus=%s\ntask=%s\nmain=%s\n' \

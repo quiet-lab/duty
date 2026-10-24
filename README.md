@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | `/duty:inspect [фокус]` | sonnet | `duty:inspector` | таблица задач: что трогают, с чем пересекаются, какой моделью, можно ли сейчас; перечень уборки | ничего |
 | `/duty:gates [фильтр]` | haiku | `duty:inspector` | открытые pull request'ы пользователя: сборки, ворота Jenkins с этапами, готовность к слиянию, возраст | ничего |
-| `/duty:cleanup [apply]` | sonnet | `duty:runner` | кандидаты на уборку с размерами; с `apply` — удаление строго по перечню | только с `apply` |
+| `/duty:cleanup [apply]` | sonnet | `duty:runner` | кандидаты на уборку с размерами; с `apply` — удаление строго по перечню; файлы контейнеров rootless Docker (uid из `/etc/subuid`) — через `rootlesskit rm -rf` без sudo | только с `apply` |
 | `/duty:after-merge <репозиторий>#<номер>` | sonnet | `duty:runner` | ветвь в origin, тикет RP, задачи `tasks.md`, местные worktree и ветвь после слияния | да |
 
 Модель задаёт ключ `model` навыка; он перекрывает модель агента

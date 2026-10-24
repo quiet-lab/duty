@@ -140,7 +140,7 @@ bash claude-plugins/duty/scripts/dispatch.sh list           # открытые w
 bash claude-plugins/duty/scripts/dispatch.sh close <имя>    # агент idle/done, report.md есть
 ```
 
-`close` снимает забытые отметки держателя `<имя>` принудительно
+`close` снимает забытые отметки держателя `<имя>` через `busy.py`
 с предупреждением, закрывает вкладки кроме корневой и workspace;
 перечнем `list` позже воспользуется `/duty:cleanup`.
 

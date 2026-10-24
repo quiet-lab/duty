@@ -109,16 +109,13 @@ cmd_close() {
     esac
     [ -s "$task/report.md" ] || die "нет $task/report.md: задача не завершена"
 
-    if [ -f "$busy" ]; then
-        marks=$(python3 -I "$busy" list --json)
-        for resource in $(jq -r --arg n "$name" '.[] | select(.holder == $n) | .resource' <<< "$marks"); do
-            warn "отметка $resource держателя $name снимается принудительно"
-            python3 -I "$busy" release "$resource" --holder "$name" --force > /dev/null \
-                || die "отметка $resource не снята"
-        done
-    else
-        warn "нет $busy: отметки реестра не проверены"
-    fi
+    # busy.py лежит в том же каталоге scripts/, что и этот сценарий.
+    marks=$(python3 -I "$busy" list --json) || die "busy.py list не выполнен"
+    for resource in $(jq -r --arg n "$name" '.[] | select(.holder == $n) | .resource' <<< "$marks"); do
+        warn "забытая отметка $resource держателя $name снимается"
+        python3 -I "$busy" release "$resource" --holder "$name" > /dev/null \
+            || die "отметка $resource не снята"
+    done
 
     # Корневая вкладка — та, где агент; остальные создавал он сам.
     agent_tab=$(herdr agent get "$name" 2> /dev/null | jq -r '.result.agent.tab_id // empty' || true)

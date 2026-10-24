@@ -79,10 +79,14 @@ description: Исполнитель крупной задачи в своём wo
    ```sh
    herdr workspace list | jq -e --arg w "$HERDR_WORKSPACE_ID" \
      '.result.workspaces[] | select(.workspace_id == $w) | .focused' >/dev/null \
-     || herdr notification show "Workspace <метка> ждёт ответа" --sound request
+     || herdr notification show "$DUTY_NAME: вопрос" \
+          --body '<суть вопроса / вариант 1 / вариант 2>' --sound request
    ```
 
-   (`jq -e` возвращает ошибку на `false` — тогда уведомление.)
+   (`jq -e` возвращает ошибку на `false` — тогда уведомление.) Заголовок —
+   имя задачи из `$DUTY_NAME`, тело — одна строка до ~120 знаков: суть
+   вопроса и варианты через « / », например
+   `README песочницы: короткая строка назначения / таблица модулей`.
    Ответ, меняющий правила задачи, дописать в `rules.md`.
 6. Общие ресурсы (`dev-stand`, `dev-stand-<N>`, `station`,
    `jenkins-binarybuilder`, `jenkins-test-node`, `pr-train`, `docs-tree`,
@@ -127,7 +131,8 @@ description: Исполнитель крупной задачи в своём wo
 5. `SendMessage` главной сессии (имя — из служебного блока `brief.md`):
    три строки — что сделано, что осталось, что решить пользователю —
    и путь к `report.md`.
-6. `herdr notification show "Workspace <метка>: готово" --body '<одна строка итога>' --sound done`.
+6. `herdr notification show "$DUTY_NAME: готово" --body '<одна строка итога, до ~120 знаков>' --sound done`
+   (при передаче — `"$DUTY_NAME: передача"`).
 7. Если в `rules.md` нет указания оставить workspace открытым
    (например, пользователь хочет посмотреть ход работы), закрыть его:
    `herdr workspace close "$HERDR_WORKSPACE_ID"`. Иначе workspace

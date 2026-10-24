@@ -9,6 +9,7 @@
 |---|---|---|---|
 | Bitbucket Server 7.21 | `https://git.service-desk.site/rest/api/1.0`, статусы сборок — `https://git.service-desk.site/rest/build-status/1.0` | `~/.config/axata/bitbucket-http-token` | `-H "Authorization: Bearer $(cat ~/.config/axata/bitbucket-http-token)"` |
 | Jenkins 2.528 | `$JENKINS_URL` (`https://jen.service-desk.site/`) | `~/.config/axata/jenkins-credentials.env`: `JENKINS_URL`, `JENKINS_USER`, `JENKINS_TOKEN` | `set -a; . ~/.config/axata/jenkins-credentials.env; set +a`, затем `curl -sk -g -u "$JENKINS_USER:$JENKINS_TOKEN"` |
+| Jenkins CLI (WebSocket `/cli/ws`, только `jwait.sh`) | `$JENKINS_CLI_URL`, по умолчанию `http://10.200.100.8:8080/` — контроллер напрямую: внешний nginx не передаёт `Upgrade` | тот же файл | Basic с теми же `JENKINS_USER`, `JENKINS_TOKEN` |
 | Jira | `https://jira.service-desk.site/rest/api/2` | `~/.config/axata/jira-pat` | `-H "Authorization: Bearer $(cat ~/.config/axata/jira-pat)"` |
 
 Учётная запись Bitbucket — `a.pinchuk`. **Ответ 401 или 403 от Bitbucket —

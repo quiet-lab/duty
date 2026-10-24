@@ -41,7 +41,8 @@
 и основной сессии. Набор инструментов задаёт агент: `inspector` —
 `Bash, Read, Grep, Glob` без правок, `runner` — с `Edit, Write`, без
 `Agent`, `worker` — все инструменты, включая `Agent`, и без своей
-модели: её задаёт `/duty:dispatch`. Ключ `permissionMode` у агентов
+модели: её задаёт `/duty:dispatch`. В завершении `worker` проверяет diff задачи
+навыком `/code-review` (уровень по модели задачи) и выносит находки в `report.md`. Ключ `permissionMode` у агентов
 плагина не действует.
 
 ## Состав

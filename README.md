@@ -17,9 +17,22 @@
 | Навык | Модель | Агент | Что делает | Меняет |
 |---|---|---|---|---|
 | `/duty:inspect [фокус]` | sonnet | `duty:inspector` | таблица задач: что трогают, с чем пересекаются, какой моделью, можно ли сейчас; перечень уборки | ничего |
-| `/duty:gates [фильтр]` | haiku | `duty:inspector` | открытые pull request'ы пользователя: сборки, ворота Jenkins с этапами, готовность к слиянию, возраст | ничего |
+| `/duty:gates [now \| фильтр]` | haiku | `duty:inspector` | открытые pull request'ы пользователя: сборки, ворота Jenkins с этапами, готовность к слиянию, возраст; с `now` — что идёт на узлах Jenkins и чем заняты агенты | ничего |
+| `/duty:branches [all \| репозиторий] [--mine]` | haiku | `duty:inspector` | таблица ветвей в `origin` с предложением по каждой: слить, удалить, оставить, решить | ничего |
 | `/duty:cleanup [apply]` | sonnet | `duty:runner` | кандидаты на уборку с размерами; с `apply` — удаление строго по перечню | только с `apply` |
 | `/duty:after-merge <репозиторий>#<номер>` | sonnet | `duty:runner` | ветвь в origin, тикет RP, задачи `tasks.md`, местные worktree и ветвь после слияния | да |
+
+`/duty:gates now` отвечает на вопрос «что сейчас идёт и чем заняты
+агенты»: таблица исполнителей Jenkins (узел, задание и сборка, сколько
+идёт, кто запустил; очередь ожидания — отдельной строкой) и таблица
+станции (сессии Claude Code из `~/.claude/sessions`, агенты `herdr`,
+отметки реестра занятости из `../ocp-dev-stand/busy/` с проверкой
+`kill -0`). `/duty:branches` заменяет вопросы по одной ветви таблицей:
+данные берутся из местных `refs/remotes` без `fetch`, в конце печатается
+дата последнего `fetch`; защищённые `dev`, `dev2`, `master` и рабочая
+`new_ocp` не показываются, чужие ветви получают предложение «решить»
+и не предлагаются к удалению. Вся логика обоих режимов — в сценариях,
+навыки на `haiku` только запускают их.
 
 Модель задаёт ключ `model` навыка; он перекрывает модель агента
 и основной сессии. Набор инструментов задаёт агент: `inspector` —
@@ -33,7 +46,8 @@
 skills/<навык>/SKILL.md      навыки
 agents/inspector.md          только чтение
 agents/runner.md             рутина с правками по списку
-scripts/gates.py             сводка pull request'ов (Bitbucket, Jenkins)
+scripts/gates.py             сводка pull request'ов (Bitbucket, Jenkins), режим now
+scripts/branches.py          таблица ветвей origin с предложениями
 scripts/facts.sh             факты для /duty:inspect
 scripts/cleanup-candidates.py перечень кандидатов на уборку
 reference/access.md          доступы, REST, репозитории, задания Jenkins
@@ -85,6 +99,8 @@ claude plugin install duty@ocp --scope project
 claude plugin list | grep -A4 duty@ocp                # установлен и включён
 claude --plugin-dir claude-plugins/duty plugin details duty   # инвентарь и токены
 python3 -I claude-plugins/duty/scripts/gates.py        # таблица pull request'ов
+python3 -I claude-plugins/duty/scripts/gates.py now    # узлы Jenkins, агенты, занятость
+python3 -I claude-plugins/duty/scripts/branches.py all --mine   # ветви origin
 python3 -I claude-plugins/duty/scripts/cleanup-candidates.py "$PWD"   # сухой перечень
 claude -p '/duty:gates' --model haiku --output-format json < /dev/null
 ```

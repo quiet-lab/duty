@@ -28,8 +28,8 @@ if marks=$(python3 "$root/scripts/busy.py" list 2> /dev/null) && [ "$marks" != '
     add "$marks"
 fi
 
-if sigs=$(python3 -I "$root/scripts/signals.py" list 2> /dev/null) && [ "$sigs" != 'сигналов и ожиданий нет' ] && [ -n "$sigs" ]; then
-    add "Сигналы и ожидания задач (signals.py list):"
+if sigs=$(python3 -I "$root/scripts/signals.py" list --waits 2> /dev/null) && [ "$sigs" != 'ожиданий нет' ] && [ -n "$sigs" ]; then
+    add "Ожидания сигналов задачами (signals.py list --waits; все сигналы — signals.py list):"
     add "$sigs"
 fi
 

@@ -11,10 +11,12 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "signals.py"
-# Каждая операция занимает доли секунды (запуск Python и inotifywait);
-# предел в 10 с — запас на порядок на самом медленном узле, только как
-# предохранитель от зависания теста, а не как время ожидания события.
-LIMIT_S = 10
+# Замер на станции (32 ядра), 5 прогонов: от запуска wait до его выхода
+# после signal — 0,14-0,19 с, самая долгая операция теста. Узел Jenkins
+# медленнее на ядро в 4,5 раза: 0,19 * 4,5 = 0,86 с; с тройным запасом
+# 2,6 с, округлено до 3 с. Предел — предохранитель от зависания, а не
+# время ожидания события.
+LIMIT_S = 3
 
 
 class SignalsTest(unittest.TestCase):
@@ -70,7 +72,7 @@ class SignalsTest(unittest.TestCase):
 
     def test_wait_then_signal(self) -> None:
         p = self.start_wait("pr-merged-qms-2584", "--holder", "w1")
-        mark = self.dir / "pr-merged-qms-2584.waiting-w1"
+        mark = self.dir / f"pr-merged-qms-2584.waiting-w1.{p.pid}"
         self.assertTrue(mark.exists())
         self.assertEqual(json.loads(mark.read_text(encoding="utf-8"))["pid"], p.pid)
         self.assertEqual(self.run_cmd("signal", "pr-merged-qms-2584", "слит").returncode, 0)
@@ -104,25 +106,91 @@ class SignalsTest(unittest.TestCase):
         self.run_cmd("signal", "c1", "т")
         dead = subprocess.Popen([sys.executable, "-c", "pass"])
         dead.wait(timeout=LIMIT_S)
-        (self.dir / "c1.waiting-old").write_text(
+        (self.dir / "c1.waiting-old.1").write_text(
             json.dumps({"name": "c1", "holder": "old", "task": "", "pid": dead.pid, "since_ms": 0}),
             encoding="utf-8")
-        (self.dir / "c1.waiting-mine").write_text(
+        (self.dir / "c1.waiting-mine.2").write_text(
             json.dumps({"name": "c1", "holder": "mine", "task": "", "pid": os.getpid(), "since_ms": 0}),
             encoding="utf-8")
         r = self.run_cmd("clear", "c1")
         self.assertEqual(r.returncode, 0)
         self.assertFalse((self.dir / "c1.json").exists())
-        self.assertFalse((self.dir / "c1.waiting-old").exists())
-        self.assertTrue((self.dir / "c1.waiting-mine").exists())
+        self.assertFalse((self.dir / "c1.waiting-old.1").exists())
+        self.assertTrue((self.dir / "c1.waiting-mine.2").exists())
         self.assertIn("сигнала нет", self.run_cmd("clear", "c1").stdout)
 
     def test_invalid_names(self) -> None:
-        for bad in ("Bad", "a.b", "a--b", "-a", "a-", "", "a" * 101):
+        for bad in ("Bad", "a.b", "-a", "_a", "", "a" * 101):
             for cmd in ("signal", "wait", "clear"):
                 with self.subTest(name=bad, cmd=cmd):
                     self.assertEqual(self.run_cmd(cmd, bad).returncode, 2)
         self.assertEqual(self.run_cmd("wait", "ok", "--holder", "Bad").returncode, 2)
+
+    def test_valid_names_with_underscore_and_double_dash(self) -> None:
+        for good in ("a--b", "a_b", "task-done-qms_py314", "a-", "0a"):
+            with self.subTest(name=good):
+                self.assertEqual(self.run_cmd("signal", good, "т").returncode, 0)
+        r = self.run_cmd("wait", "a_b", "--holder", "qms_py314")
+        self.assertEqual(r.returncode, 0)
+
+    def test_existing_signal_with_zero_timeout(self) -> None:
+        self.run_cmd("signal", "z1", "есть")
+        r = self.run_cmd("wait", "z1", "--timeout-s", "0")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("сигнал z1: есть", r.stdout)
+
+    def test_zero_timeout_without_signal(self) -> None:
+        self.assertEqual(self.run_cmd("wait", "z2", "--timeout-s", "0", "--holder", "w").returncode, 124)
+
+    def test_same_holder_marks_do_not_collide(self) -> None:
+        first = self.start_wait("dup", "--holder", "w1", "--timeout-s", "1")
+        second = self.start_wait("dup", "--holder", "w1")
+        self.assertEqual(len(list(self.dir.glob("dup.waiting-w1.*"))), 2)
+        first.communicate(timeout=LIMIT_S)
+        self.assertEqual(first.returncode, 124)
+        left = list(self.dir.glob("dup.waiting-w1.*"))
+        self.assertEqual([m.name for m in left], [f"dup.waiting-w1.{second.pid}"])
+        second.terminate()
+        second.communicate(timeout=LIMIT_S)
+        self.assertEqual(list(self.dir.glob("dup.waiting-*")), [])
+
+    def test_list_waits_only(self) -> None:
+        self.run_cmd("signal", "have", "т")
+        self.assertIn("ожиданий нет", self.run_cmd("list", "--waits").stdout)
+        p = self.start_wait("lw-1", "--holder", "w3")
+        out = self.run_cmd("list", "--waits").stdout
+        self.assertIn("| lw-1 | w3 |", out)
+        self.assertNotIn("| have |", out)
+        self.assertTrue(out.rstrip().endswith("| нет |"))
+        data = json.loads(self.run_cmd("list", "--waits", "--json").stdout)
+        self.assertEqual(list(data), ["waits"])
+        self.assertFalse(data["waits"][0]["given"])
+        p.terminate()
+        p.communicate(timeout=LIMIT_S)
+
+    def test_corrupt_signal_files(self) -> None:
+        for body in ("[]", '{"name": "bad", "te'):
+            with self.subTest(body=body):
+                (self.dir / "bad.json").write_text(body, encoding="utf-8")
+                r = self.run_cmd("wait", "bad")
+                self.assertEqual(r.returncode, 2)
+                self.assertIn("повреждён", r.stderr)
+                self.assertIn("| bad | ? | повреждён |", self.run_cmd("list").stdout)
+
+    def test_keep_overwrites_corrupt_with_warning(self) -> None:
+        (self.dir / "kc.json").write_text("[]", encoding="utf-8")
+        r = self.run_cmd("signal", "kc", "новый", "--keep")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("повреждён", r.stderr)
+        self.assertEqual(json.loads((self.dir / "kc.json").read_text(encoding="utf-8"))["text"], "новый")
+        self.assertEqual(list(self.dir.glob(".*.tmp")), [])
+
+    def test_keep_wakes_waiter(self) -> None:
+        p = self.start_wait("kw", "--holder", "w1")
+        self.assertEqual(self.run_cmd("signal", "kw", "через keep", "--keep").returncode, 0)
+        out, _ = p.communicate(timeout=LIMIT_S)
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("сигнал kw: через keep", out)
 
     def test_keep_does_not_overwrite(self) -> None:
         self.run_cmd("signal", "k1", "первый", "--from", "a")
@@ -136,7 +204,7 @@ class SignalsTest(unittest.TestCase):
 
     def test_sigterm_removes_mark(self) -> None:
         p = self.start_wait("t1", "--holder", "w1")
-        mark = self.dir / "t1.waiting-w1"
+        mark = self.dir / f"t1.waiting-w1.{p.pid}"
         self.assertTrue(mark.exists())
         p.send_signal(signal.SIGTERM)
         p.communicate(timeout=LIMIT_S)

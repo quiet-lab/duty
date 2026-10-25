@@ -23,12 +23,19 @@ import time
 from pathlib import Path
 
 DEFAULT_DIR = "~/work/telecom/axata/ocp-dev-stand/signals"
-# Точек в имени нет, поэтому суффикс «.waiting-» отметки ожидания однозначен.
-NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+# Точек в имени нет, поэтому суффикс «.waiting-» отметки ожидания однозначен;
+# «_» допущен, чтобы имя задачи из dispatch.sh годилось как имя сигнала и ожидающего.
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 NAME_MAX = 100
 EXIT_USAGE = 2
 EXIT_TIMEOUT = 124
 WAITING = ".waiting-"
+# Отметка ожидания: <имя>.waiting-<кто>.<pid>; pid делает имя уникальным на процесс.
+WAIT_REST_RE = re.compile(r"^([a-z0-9][a-z0-9_-]*)\.[0-9]+$")
+# Закрытие inotifywait: замер на станции (32 ядра) — 0,010-0,015 с от terminate
+# до выхода; на узле Jenkins в 4,5 раза медленнее на ядро: 0,07 с; с тройным
+# запасом 0,2 с, взят минимум в 2 с.
+CLOSE_WAIT_S = 2
 
 
 def signals_dir() -> Path:
@@ -59,8 +66,8 @@ def valid_name(name: str) -> bool:
 def check_name(kind: str, name: str) -> bool:
     if valid_name(name):
         return True
-    print(f"недопустимое {kind}: {name!r} (латиница в нижнем регистре, цифры и одиночные дефисы, "
-          f"не длиннее {NAME_MAX} знаков)", file=sys.stderr)
+    print(f"недопустимое {kind}: {name!r} (латиница в нижнем регистре, цифры, «-» и «_», "
+          f"не с дефиса, не длиннее {NAME_MAX} знаков)", file=sys.stderr)
     return False
 
 
@@ -76,15 +83,17 @@ def write_atomic(path: Path, data: dict) -> None:
 
 
 def read_json(path: Path) -> dict | None:
+    """Объект из файла; None — файла нет; метка corrupt — файл не разбирается как объект."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except (OSError, ValueError):
-        # Повреждённый файл показывается как есть, а не скрывается.
-        return {"name": path.name.split(".")[0], "text": "файл повреждён", "from": "?",
+        data = None
+    if not isinstance(data, dict):
+        return {"corrupt": True, "name": path.name.split(".")[0], "text": "повреждён", "from": "?",
                 "task": "", "at_ms": 0, "pid": 0, "since_ms": 0, "holder": "?"}
-    return data if isinstance(data, dict) else None
+    return data
 
 
 def default_who(explicit: str | None) -> str:
@@ -106,15 +115,31 @@ def cmd_signal(args: argparse.Namespace) -> int:
     d = signals_dir()
     d.mkdir(parents=True, exist_ok=True)
     path = signal_path(args.name)
-    if args.keep:
-        old = read_json(path)
-        if old is not None:
-            print(f"сигнал {args.name} уже есть: {old.get('text') or ''} "
-                  f"(от {old.get('from') or '?'}, {fmt_utc(int(old.get('at_ms') or 0))})")
-            return 0
     data = {"name": args.name, "text": args.text, "from": default_who(args.who),
             "task": os.environ.get("DUTY_TASK", ""), "at_ms": now_ms()}
-    write_atomic(path, data)
+    if not args.keep:
+        write_atomic(path, data)
+        print(f"сигнал {args.name} дан")
+        return 0
+    # os.link создаёт имя только если его нет: проверка и запись неделимы.
+    tmp = d / f".{path.name}.{os.getpid()}.tmp"
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    try:
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            old = read_json(path)
+            if old is not None and not old.get("corrupt"):
+                print(f"сигнал {args.name} уже есть: {old.get('text') or ''} "
+                      f"(от {old.get('from') or '?'}, {fmt_utc(int(old.get('at_ms') or 0))})")
+                return 0
+            print(f"предупреждение: файл сигнала {args.name} повреждён, перезаписан", file=sys.stderr)
+            os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
     print(f"сигнал {args.name} дан")
     return 0
 
@@ -125,7 +150,7 @@ class Watch:
     def __init__(self, directory: Path) -> None:
         # stderr объединён со stdout: «Watches established.» inotifywait пишет в stderr.
         self.proc = subprocess.Popen(
-            ["inotifywait", "-m", "-e", "moved_to", "-e", "close_write", "--format", "%f", str(directory)],
+            ["inotifywait", "-m", "-e", "moved_to", "-e", "create", "-e", "close_write", "--format", "%f", str(directory)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         assert self.proc.stdout is not None
         self.fd = self.proc.stdout.fileno()
@@ -152,7 +177,7 @@ class Watch:
         if self.proc.poll() is None:
             self.proc.terminate()
         try:
-            self.proc.wait(timeout=5)
+            self.proc.wait(timeout=CLOSE_WAIT_S)
         except subprocess.TimeoutExpired:
             self.proc.kill()
             self.proc.wait()
@@ -165,6 +190,12 @@ def _raise_exit(signum: int, _frame: object) -> None:
     raise SystemExit(128 + signum)
 
 
+def corrupt_signal(name: str) -> int:
+    print(f"wait: файл сигнала {name} повреждён: не объект JSON; снять — signals.py clear {name}",
+          file=sys.stderr)
+    return EXIT_USAGE
+
+
 def cmd_wait(args: argparse.Namespace) -> int:
     if not check_name("имя сигнала", args.name):
         return EXIT_USAGE
@@ -174,7 +205,13 @@ def cmd_wait(args: argparse.Namespace) -> int:
     d = signals_dir()
     d.mkdir(parents=True, exist_ok=True)
     path = signal_path(args.name)
-    deadline = None if args.timeout_s is None else time.monotonic() + args.timeout_s
+    # Уже данный сигнал отдаётся без наблюдения и без срока.
+    data = read_json(path)
+    if data is not None:
+        if data.get("corrupt"):
+            return corrupt_signal(args.name)
+        show_signal(args.name, data)
+        return 0
     for sig in (os_signal.SIGTERM, os_signal.SIGINT, os_signal.SIGHUP):
         os_signal.signal(sig, _raise_exit)
     try:
@@ -182,24 +219,26 @@ def cmd_wait(args: argparse.Namespace) -> int:
     except FileNotFoundError:
         print("wait: нет inotifywait: pacman -S inotify-tools", file=sys.stderr)
         return EXIT_USAGE
-    mark = d / f"{args.name}{WAITING}{holder}"
+    mark = d / f"{args.name}{WAITING}{holder}.{os.getpid()}"
+    created = False
     try:
-        # Наблюдение ставится до проверки наличия файла: сигнал, пришедший
-        # между проверкой и началом наблюдения, не теряется.
+        # Наблюдение ставится до повторной проверки файла: сигнал, пришедший
+        # между проверкой и началом наблюдения, не теряется. Срок отсчитывается
+        # после установки наблюдения, а не от запуска inotifywait.
         try:
-            first = watch.line(deadline)
+            first = watch.line(None)
             if first is not None and "Setting up watches." in first:
-                first = watch.line(deadline)
-            if first is None:
-                return _timeout(args)
-            if "Watches established." not in first:
+                first = watch.line(None)
+            if first is None or "Watches established." not in first:
                 print(f"wait: наблюдение не установлено: {first}", file=sys.stderr)
                 return EXIT_USAGE
+            deadline = None if args.timeout_s is None else time.monotonic() + args.timeout_s
             data = read_json(path)
             if data is None:
                 write_atomic(mark, {"name": args.name, "holder": holder,
                                     "task": os.environ.get("DUTY_TASK", ""),
                                     "pid": os.getpid(), "since_ms": now_ms()})
+                created = True
                 print(f"wait: {args.name}: ждёт сигнал, отметка {mark.name}", file=sys.stderr, flush=True)
             while data is None:
                 line = watch.line(deadline)
@@ -210,14 +249,17 @@ def cmd_wait(args: argparse.Namespace) -> int:
         except EOFError:
             print(f"wait: наблюдение за {d} оборвалось без сигнала {args.name}", file=sys.stderr)
             return EXIT_USAGE
+        if data.get("corrupt"):
+            return corrupt_signal(args.name)
         show_signal(args.name, data)
         return 0
     finally:
         watch.close()
-        try:
-            mark.unlink()
-        except FileNotFoundError:
-            pass
+        if created:
+            try:
+                mark.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _timeout(args: argparse.Namespace) -> int:
@@ -232,6 +274,7 @@ def collect() -> tuple[list[dict], list[dict]]:
     if not d.is_dir():
         return sigs, waits
     now = now_ms()
+    names = set()
     for p in sorted(d.iterdir()):
         if p.name.startswith("."):
             continue
@@ -242,18 +285,23 @@ def collect() -> tuple[list[dict], list[dict]]:
             data["name"] = p.name[:-5]
             data["minutes"] = max(0, (now - int(data.get("at_ms") or 0)) // 60_000)
             sigs.append(data)
+            names.add(data["name"])
         elif WAITING in p.name:
-            name, _, who = p.name.partition(WAITING)
-            if not (valid_name(name) and valid_name(who)):
+            name, _, rest = p.name.partition(WAITING)
+            m = WAIT_REST_RE.match(rest)
+            if not (valid_name(name) and m and valid_name(m.group(1))):
                 continue
             data = read_json(p)
             if data is None:
                 continue
             data["name"] = name
-            data["holder"] = who
+            data["holder"] = data.get("holder") or m.group(1)
+            data["file"] = p.name
             data["alive"] = pid_alive(int(data.get("pid") or 0))
             data["minutes"] = max(0, (now - int(data.get("since_ms") or 0)) // 60_000)
             waits.append(data)
+    for w in waits:
+        w["given"] = w["name"] in names
     return sigs, waits
 
 
@@ -261,13 +309,25 @@ def cell(value: object) -> str:
     return str(value or "").replace("\n", " ").replace("|", "\\|")
 
 
+def print_waits(waits: list[dict]) -> None:
+    print("| ждёт сигнал | кто | задача | pid жив | минут | сигнал дан |")
+    print("|---|---|---|---|---|---|")
+    for w in waits:
+        print(f"| {w['name']} | {w['holder']} | {cell(w.get('task'))} "
+              f"| {'да' if w['alive'] else 'нет (устарело)'} | {w['minutes']} "
+              f"| {'да' if w['given'] else 'нет'} |")
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     sigs, waits = collect()
+    if args.waits:
+        sigs = []
     if args.json:
-        print(json.dumps({"signals": sigs, "waits": waits}, ensure_ascii=False, indent=2))
+        out = {"waits": waits} if args.waits else {"signals": sigs, "waits": waits}
+        print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
     if not sigs and not waits:
-        print("сигналов и ожиданий нет")
+        print("ожиданий нет" if args.waits else "сигналов и ожиданий нет")
         return 0
     if sigs:
         print("| сигнал | от кого | текст | минут назад |")
@@ -277,11 +337,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     if waits:
         if sigs:
             print()
-        print("| ждёт сигнал | кто | задача | pid жив | минут |")
-        print("|---|---|---|---|---|")
-        for w in waits:
-            print(f"| {w['name']} | {w['holder']} | {cell(w.get('task'))} "
-                  f"| {'да' if w['alive'] else 'нет (устарело)'} | {w['minutes']} |")
+        print_waits(waits)
     return 0
 
 
@@ -297,7 +353,7 @@ def cmd_clear(args: argparse.Namespace) -> int:
     for w in waits:
         if w["name"] == args.name and not w["alive"]:
             try:
-                (signals_dir() / f"{args.name}{WAITING}{w['holder']}").unlink()
+                (signals_dir() / w["file"]).unlink()
                 print(f"устаревшее ожидание {w['holder']} снято")
             except FileNotFoundError:
                 pass
@@ -320,6 +376,7 @@ def build_parser() -> argparse.ArgumentParser:
     w.set_defaults(fn=cmd_wait)
     ls = sub.add_parser("list", help="сигналы и ожидания")
     ls.add_argument("--json", action="store_true")
+    ls.add_argument("--waits", action="store_true", help="только ожидания, с отметкой «сигнал дан»")
     ls.set_defaults(fn=cmd_list)
     c = sub.add_parser("clear", help="снять сигнал и устаревшие ожидания")
     c.add_argument("name")

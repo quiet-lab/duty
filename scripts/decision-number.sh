@@ -25,7 +25,11 @@ next_number() {
         find "$dir" -maxdepth 1 -type f -name '[0-9][0-9][0-9][0-9]-*.md' -printf '%f\n'
         git -C "$dir" ls-files --cached -- . 2>/dev/null | sed 's|.*/||' || true
     } | while read -r name; do
-        [[ "$name" =~ ^([0-9]{4})-.*\.md$ ]] && echo "${BASH_REMATCH[1]}"
+        # if, а не «&&»: при set -e и pipefail неподходящее имя последней
+        # строки сделало бы код выхода всего конвейера ненулевым.
+        if [[ "$name" =~ ^([0-9]{4})-.*\.md$ ]]; then
+            echo "${BASH_REMATCH[1]}"
+        fi
     done | sort -u | tail -n1 | {
         read -r max || max=0
         printf '%04d\n' "$((10#${max:-0} + 1))"

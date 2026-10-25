@@ -90,6 +90,24 @@ class DecisionNumberTest(unittest.TestCase):
         self.assertIn("decision-number.lock", done.stderr)
         self.assertFalse(list((wt / "docs" / "decisions").glob("*-reserved.md")))
 
+    @unittest.skipUnless(shutil.which("inotifywait"), "нужен inotifywait")
+    def test_interrupted_waiter_keeps_foreign_lock(self) -> None:
+        lock = self.root / ".git" / "decision-number.lock"
+        lock.mkdir()
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT), str(self.decisions)], stderr=subprocess.PIPE, text=True
+        )
+        # Момент входа в inotifywait снаружи не наблюдается без опроса, но первая
+        # строка stderr печатается перед ожиданием: её приход и есть готовность.
+        assert proc.stderr is not None
+        first = proc.stderr.readline()
+        proc.terminate()
+        proc.wait()
+        self.assertIn("оставшийся после аварии замок снимается rmdir", first)
+        self.assertIn(str(lock), first)
+        self.assertTrue(lock.is_dir())
+        self.assertFalse(list(self.decisions.glob("*-reserved.md")))
+
 
 if __name__ == "__main__":
     os.environ.setdefault("GIT_CONFIG_NOSYSTEM", "1")

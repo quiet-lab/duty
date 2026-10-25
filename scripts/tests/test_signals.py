@@ -212,5 +212,44 @@ class SignalsTest(unittest.TestCase):
         self.assertFalse(mark.exists())
 
 
+    def test_partial_write_does_not_end_wait(self) -> None:
+        p = self.start_wait("pw", "--holder", "w1")
+        # Неатомарная запись: файл создан и дописывается; ожидание не прерывается.
+        with open(self.dir / "pw.json", "w", encoding="utf-8") as f:
+            f.write('{"name": "pw", "text": "дописан", ')
+            f.flush()
+            self.assertIsNone(p.poll())
+            f.write('"from": "a", "task": "", "at_ms": 1}')
+        out, _ = p.communicate(timeout=LIMIT_S)
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("сигнал pw: дописан", out)
+
+    def test_list_survives_bad_field_types(self) -> None:
+        (self.dir / "bs.json").write_text(
+            json.dumps({"name": "bs", "text": "т", "from": "a", "at_ms": "вчера"}), encoding="utf-8")
+        (self.dir / "bw.waiting-w.7").write_text(
+            json.dumps({"name": "bw", "holder": "w", "pid": None, "since_ms": "x"}), encoding="utf-8")
+        for argv in (("list",), ("list", "--waits"), ("list", "--json")):
+            with self.subTest(argv=argv):
+                r = self.run_cmd(*argv)
+                self.assertEqual(r.returncode, 0, r.stderr)
+        out = self.run_cmd("list").stdout
+        self.assertIn("| bs | a | повреждён | 0 |", out)
+        self.assertIn("| bw | w | повреждён | нет (устарело) | 0 |", out)
+        self.assertEqual(self.run_cmd("signal", "bs", "н", "--keep").returncode, 0)
+
+    def test_double_sigterm_cleans_up(self) -> None:
+        p = self.start_wait("ds", "--holder", "w1")
+        children = Path(f"/proc/{p.pid}/task/{p.pid}/children").read_text().split()
+        self.assertEqual(len(children), 1)
+        p.send_signal(signal.SIGTERM)
+        p.send_signal(signal.SIGTERM)
+        p.communicate(timeout=LIMIT_S)
+        self.assertEqual(p.returncode, 128 + signal.SIGTERM)
+        self.assertEqual(list(self.dir.glob("ds.waiting-*")), [])
+        # Наблюдатель завершён и собран родителем: каталога процесса нет.
+        self.assertFalse(Path(f"/proc/{children[0]}").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

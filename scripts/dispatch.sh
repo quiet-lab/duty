@@ -55,9 +55,9 @@
 # close — закрытие workspace задачи извне: агент в idle или done либо уже
 # вышел, report.md есть; отметки реестра держателя <имя> снимаются
 # принудительно с предупреждением, сигнал task-done-<имя> даётся, если
-# исполнитель его не дал (signals.py --keep; после передачи — раздел
-# «## Передача» в brief.md — не даётся), вкладки кроме корневой и сам
-# workspace закрываются; готово, когда workspace нет в herdr workspace list.
+# исполнитель его не дал (signals.py --keep; после передачи — заголовок
+# «Передача» любого уровня в brief.md — не даётся), вкладки кроме корневой
+# и сам workspace закрываются; готово, когда workspace нет в herdr workspace list.
 
 set -euo pipefail
 
@@ -191,13 +191,14 @@ cmd_close() {
     done
 
     # Исполнитель даёт task-done-<имя> сам; здесь страховка на случай его сбоя.
-    # После передачи (раздел «## Передача» в brief.md) задача не завершена.
-    if grep -q '^## Передача' "$task/brief.md"; then
+    # После передачи (заголовок «Передача» любого уровня в brief.md) задача не завершена.
+    if grep -Eq '^#+ +Передача' "$task/brief.md"; then
         signal_note='нет (передача)'
-    else
-        python3 -I "$signals" signal "task-done-$name" "$task/report.md" --from dispatch.sh --keep > /dev/null \
-            || warn "сигнал task-done-$name не дан"
+    elif python3 -I "$signals" signal "task-done-$name" "$task/report.md" --from dispatch.sh --keep > /dev/null; then
         signal_note="task-done-$name"
+    else
+        warn "сигнал task-done-$name не дан"
+        signal_note='не дан (ошибка)'
     fi
 
     # Корневая вкладка — та, где агент; остальные создавал он сам.
@@ -253,6 +254,11 @@ cmd_start() {
             '.result.agents[] | select(.pane_id == $p) | (.name // .terminal_title_stripped // empty)' <<< "$agents")
     fi
     [ -n "$main" ] || main='не определено — спросить пользователя'
+
+    # Сигнал завершения прежней задачи с тем же именем не должен считаться
+    # завершением новой.
+    python3 -I "$signals" clear "task-done-$name" > /dev/null \
+        || warn "сигнал task-done-$name не снят"
 
     # Шаг 1. Каталог задачи.
     mkdir -p "$task/runs"

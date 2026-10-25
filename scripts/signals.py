@@ -34,8 +34,9 @@ WAITING = ".waiting-"
 WAIT_REST_RE = re.compile(r"^([a-z0-9][a-z0-9_-]*)\.[0-9]+$")
 # Закрытие inotifywait: замер на станции (32 ядра) — 0,010-0,015 с от terminate
 # до выхода; на узле Jenkins в 4,5 раза медленнее на ядро: 0,07 с; с тройным
-# запасом 0,2 с, взят минимум в 2 с.
-CLOSE_WAIT_S = 2
+# запасом 0,2 с, округлено вверх до 1 с.
+CLOSE_WAIT_S = 1
+FATAL_SIGNALS = (os_signal.SIGTERM, os_signal.SIGINT, os_signal.SIGHUP)
 
 
 def signals_dir() -> Path:
@@ -71,8 +72,21 @@ def check_name(kind: str, name: str) -> bool:
     return False
 
 
-def fmt_utc(ms: int) -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ms / 1000))
+def to_int(value: object) -> int | None:
+    """Целое из поля файла; None — не число (строка, null, дробь, bool)."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def fmt_utc(ms: object) -> str:
+    n = to_int(ms)
+    if n is None:
+        return "?"
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(n / 1000))
+    except (OverflowError, ValueError, OSError):
+        return "?"
 
 
 def write_atomic(path: Path, data: dict) -> None:
@@ -106,7 +120,7 @@ def signal_path(name: str) -> Path:
 
 def show_signal(name: str, data: dict) -> None:
     print(f"сигнал {name}: {data.get('text') or ''}")
-    print(f"от {data.get('from') or '?'}, {fmt_utc(int(data.get('at_ms') or 0))}")
+    print(f"от {data.get('from') or '?'}, {fmt_utc(data.get('at_ms'))}")
 
 
 def cmd_signal(args: argparse.Namespace) -> int:
@@ -131,7 +145,7 @@ def cmd_signal(args: argparse.Namespace) -> int:
             old = read_json(path)
             if old is not None and not old.get("corrupt"):
                 print(f"сигнал {args.name} уже есть: {old.get('text') or ''} "
-                      f"(от {old.get('from') or '?'}, {fmt_utc(int(old.get('at_ms') or 0))})")
+                      f"(от {old.get('from') or '?'}, {fmt_utc(old.get('at_ms'))})")
                 return 0
             print(f"предупреждение: файл сигнала {args.name} повреждён, перезаписан", file=sys.stderr)
             os.replace(tmp, path)
@@ -150,8 +164,10 @@ class Watch:
     def __init__(self, directory: Path) -> None:
         # stderr объединён со stdout: «Watches established.» inotifywait пишет в stderr.
         self.proc = subprocess.Popen(
-            ["inotifywait", "-m", "-e", "moved_to", "-e", "create", "-e", "close_write", "--format", "%f", str(directory)],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            ["inotifywait", "-m", "-e", "moved_to", "-e", "create", "-e", "close_write", "--format", "%e %f", str(directory)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            # Родитель блокирует сигналы на время запуска; наблюдателю маска не нужна.
+            preexec_fn=lambda: os_signal.pthread_sigmask(os_signal.SIG_SETMASK, []))
         assert self.proc.stdout is not None
         self.fd = self.proc.stdout.fileno()
         self.buf = b""
@@ -212,16 +228,21 @@ def cmd_wait(args: argparse.Namespace) -> int:
             return corrupt_signal(args.name)
         show_signal(args.name, data)
         return 0
-    for sig in (os_signal.SIGTERM, os_signal.SIGINT, os_signal.SIGHUP):
+    for sig in FATAL_SIGNALS:
         os_signal.signal(sig, _raise_exit)
-    try:
-        watch = Watch(d)
-    except FileNotFoundError:
-        print("wait: нет inotifywait: pacman -S inotify-tools", file=sys.stderr)
-        return EXIT_USAGE
+    # Сигнал во время запуска наблюдателя отложен: иначе процесс inotifywait
+    # мог бы остаться без владельца.
+    os_signal.pthread_sigmask(os_signal.SIG_BLOCK, FATAL_SIGNALS)
     mark = d / f"{args.name}{WAITING}{holder}.{os.getpid()}"
+    watch: Watch | None = None
     created = False
     try:
+        try:
+            watch = Watch(d)
+        except FileNotFoundError:
+            print("wait: нет inotifywait: pacman -S inotify-tools", file=sys.stderr)
+            return EXIT_USAGE
+        os_signal.pthread_sigmask(os_signal.SIG_UNBLOCK, FATAL_SIGNALS)
         # Наблюдение ставится до повторной проверки файла: сигнал, пришедший
         # между проверкой и началом наблюдения, не теряется. Срок отсчитывается
         # после установки наблюдения, а не от запуска inotifywait.
@@ -244,8 +265,14 @@ def cmd_wait(args: argparse.Namespace) -> int:
                 line = watch.line(deadline)
                 if line is None:
                     return _timeout(args)
-                if line == path.name:
-                    data = read_json(path)
+                event, _, fname = line.partition(" ")
+                if fname != path.name:
+                    continue
+                data = read_json(path)
+                # Файл, созданный пустым и ещё не дописанный (echo > x.json),
+                # не завершает ожидание: дописанный придёт событием close_write.
+                if data is not None and data.get("corrupt") and event == "CREATE":
+                    data = None
         except EOFError:
             print(f"wait: наблюдение за {d} оборвалось без сигнала {args.name}", file=sys.stderr)
             return EXIT_USAGE
@@ -254,7 +281,10 @@ def cmd_wait(args: argparse.Namespace) -> int:
         show_signal(args.name, data)
         return 0
     finally:
-        watch.close()
+        # Повторный сигнал не должен прервать уборку.
+        os_signal.pthread_sigmask(os_signal.SIG_BLOCK, FATAL_SIGNALS)
+        if watch is not None:
+            watch.close()
         if created:
             try:
                 mark.unlink()
@@ -283,7 +313,11 @@ def collect() -> tuple[list[dict], list[dict]]:
             if data is None:
                 continue
             data["name"] = p.name[:-5]
-            data["minutes"] = max(0, (now - int(data.get("at_ms") or 0)) // 60_000)
+            at = to_int(data.get("at_ms"))
+            if at is None:
+                data["corrupt"] = True
+                data["text"] = "повреждён"
+            data["minutes"] = 0 if at is None else max(0, (now - at) // 60_000)
             sigs.append(data)
             names.add(data["name"])
         elif WAITING in p.name:
@@ -297,8 +331,13 @@ def collect() -> tuple[list[dict], list[dict]]:
             data["name"] = name
             data["holder"] = data.get("holder") or m.group(1)
             data["file"] = p.name
-            data["alive"] = pid_alive(int(data.get("pid") or 0))
-            data["minutes"] = max(0, (now - int(data.get("since_ms") or 0)) // 60_000)
+            pid = to_int(data.get("pid"))
+            since = to_int(data.get("since_ms"))
+            if pid is None or since is None:
+                data["corrupt"] = True
+                data["task"] = "повреждён"
+            data["alive"] = pid_alive(pid or 0)
+            data["minutes"] = 0 if since is None else max(0, (now - since) // 60_000)
             waits.append(data)
     for w in waits:
         w["given"] = w["name"] in names

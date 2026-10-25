@@ -24,13 +24,13 @@
 | Путь | Проект/слаг | Родитель | Задание ворот `dev2` |
 |---|---|---|---|
 | `.` (монорепозиторий) | `QM/monorepo-ocp` | `master` | — |
-| `legacy/queue-manager-service` | `QM/queue-manager-service` | `dev2` | `qms-checks` |
-| `legacy/queue-manager-ui` | `QM/queue-manager-ui` | `dev2` | `qms-ui-checks` |
-| `legacy/proxyappback` | `SOFTPHONE-API-DEMO/proxyappback` | `master` (pull request'ы линии — в `dev2`) | `proxyappback-checks` |
-| `legacy/softphone-api-demo` | `SOFTPHONE-API-DEMO/softphone-api-demo` | `master` | `softphone-api-demo-checks` |
-| `legacy/tests` | `PT/tests` | `dev2` (без `new_ocp`) | `PT-tests-checks` |
-| `legacy/release-sets` | `QM/release-sets` | `dev2` | `release-sets-checks` |
-| `legacy/mergemedia` | `MER/mergemedia` | `dev2` | `mergemedia-checks` |
+| `legacy/queue-manager-service` | `QM/queue-manager-service` | `dev2` | `qms` |
+| `legacy/queue-manager-ui` | `QM/queue-manager-ui` | `dev2` | `qms-ui` |
+| `legacy/proxyappback` | `SOFTPHONE-API-DEMO/proxyappback` | `master` (pull request'ы линии — в `dev2`) | `proxyappback` |
+| `legacy/softphone-api-demo` | `SOFTPHONE-API-DEMO/softphone-api-demo` | `master` | `softphone-api-demo` |
+| `legacy/tests` | `PT/tests` | `dev2` (без `new_ocp`) | `pt-tests` |
+| `legacy/release-sets` | `QM/release-sets` | `dev2` | `release-sets` |
+| `legacy/mergemedia` | `MER/mergemedia` | `dev2` | `mergemedia` |
 | `legacy/jssip-phone` | `JSSIP/jssip-phone` | `master` | — |
 | `legacy/screen-backend`, `legacy/screen-frontend` | `SCREEN/backend`, `SCREEN/frontend` | `master` | — |
 | `legacy/soft-phone-api-demo-test` | `SADT/soft-phone-api-demo-test` | `dev` | — |
@@ -41,9 +41,7 @@
 | `claude-plugins/duty` | `QM/duty` | `master` | — |
 | вне монорепозитория | `JEN/jenkins-shared-lib` | `master` | — |
 
-Имена заданий ворот меняются (рядом живут пробные `*-gates-try`,
-`mergemedia-checks` и `softphone-api-demo-checks` ещё не заведены), поэтому
-сборку pull request'а находят не по имени задания, а по статусу сборки
+Сборку pull request'а находят не по имени задания, а по статусу сборки
 коммита: поле `url` в `build-status` ведёт прямо на сборку Jenkins.
 
 ## Задания Jenkins
@@ -51,13 +49,11 @@
 - Ворота pull request'ов в `dev2` — многоветвевые задания из таблицы выше,
   сборка `PR-<номер>`, этапы «Ворота» → «Проверки» (записи 0032, 0039
   монорепозитория).
-- Цепочка после слияния — `QueueManagerBackend/dev2` →
-  `Queue Manager Backend E2E/dev2`; `QueueManagerUI/dev2` →
-  `Queue Manager Frontend E2E`; `Deploy-Build-ProxyAppBack/dev2` →
-  `proxyappback-ci`; ярусы сборки — запись 0040.
-- Ветка `dev`: `QueueManagerBackend`, `QueueManagerUI`,
-  `Deploy-Build-ProxyAppBack` (все ветви, кроме `dev2-*`), `Deploy-tests-stand`,
-  `PlayWright-QMS-DEV`, `Tests-dev-on-push`.
+- Бинарники, образы и `Promote` идут шагом `dev2Binaries` в сборке
+  pull request'а (`qms/PR-<номер>`) и в сборке ветви `dev2`; прогон на
+  зонах — общее задание `e2e`; ярусы сборки — запись 0040.
+- Ветвь `dev`: сборка `dev` тех же заданий (`qms`, `qms-ui`,
+  `proxyappback`, `mergemedia`, `pt-tests`) и задание `e2e` с `LINE=dev`.
 - Узлы: `BinaryBuilder` (4 исполнителя), `TEST_NODE` (2), `QMS_DEV`,
   `QMS_TEST`, `QMS_FEATURE`, `QMS_PROD`, `test-zone-1`, `test-zone-2`.
 - Запуск заданий меняет контур и навыкам плагина запрещён.

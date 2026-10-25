@@ -54,8 +54,9 @@
 #
 # close — закрытие workspace задачи извне: агент в idle или done либо уже
 # вышел, report.md есть; отметки реестра держателя <имя> снимаются
-# принудительно с предупреждением, вкладки кроме корневой и сам workspace
-# закрываются; готово, когда workspace нет в herdr workspace list.
+# принудительно с предупреждением, сигнал task-done-<имя> даётся, если
+# исполнитель его не дал (signals.py --keep), вкладки кроме корневой и сам
+# workspace закрываются; готово, когда workspace нет в herdr workspace list.
 
 set -euo pipefail
 
@@ -64,6 +65,7 @@ warn() { printf 'dispatch.sh: предупреждение: %s\n' "$*" >&2; }
 
 plugin_root=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
 busy="$plugin_root/scripts/busy.py"
+signals="$plugin_root/scripts/signals.py"
 
 # Корень монорепозитория: из сабмодуля — его надпроект.
 resolve_paths() {
@@ -187,6 +189,10 @@ cmd_close() {
             || die "отметка $resource не снята"
     done
 
+    # Исполнитель даёт task-done-<имя> сам; здесь страховка на случай его сбоя.
+    python3 -I "$signals" signal "task-done-$name" "$task/report.md" --from dispatch.sh --keep > /dev/null \
+        || warn "сигнал task-done-$name не дан"
+
     # Корневая вкладка — та, где агент; остальные создавал он сам.
     agent_tab=$(herdr agent get "$target" 2> /dev/null | jq -r '.result.agent.tab_id // empty' || true)
     tabs=$(herdr tab list --workspace "$ws" | jq -r '.result.tabs[].tab_id')
@@ -199,7 +205,7 @@ cmd_close() {
     herdr workspace close "$ws" > /dev/null || die "workspace $ws не закрыт"
     ! herdr workspace list | jq -e --arg w "$ws" '.result.workspaces[] | select(.workspace_id == $w)' > /dev/null \
         || die "workspace $ws остался в herdr workspace list"
-    printf 'closed=%s\nworkspace=%s\nreport=%s\n' "$name" "$ws" "$task/report.md"
+    printf 'closed=%s\nworkspace=%s\nreport=%s\nsignal=task-done-%s\n' "$name" "$ws" "$task/report.md" "$name"
 }
 
 cmd_start() {

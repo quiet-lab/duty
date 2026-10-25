@@ -28,6 +28,11 @@ if marks=$(python3 "$root/scripts/busy.py" list 2> /dev/null) && [ "$marks" != '
     add "$marks"
 fi
 
+if sigs=$(python3 -I "$root/scripts/signals.py" list 2> /dev/null) && [ "$sigs" != 'сигналов и ожиданий нет' ] && [ -n "$sigs" ]; then
+    add "Сигналы и ожидания задач (signals.py list):"
+    add "$sigs"
+fi
+
 add 'Крупные задачи — `/duty:dispatch <имя> <модель>` (критерий и лесенка моделей — `skills/dispatch/SKILL.md` плагина); имя этой сессии для `--main` — из `ListAgents`.'
 
 jq -n --arg ctx "$text" \

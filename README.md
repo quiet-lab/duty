@@ -57,9 +57,11 @@ scripts/gates.py             сводка pull request'ов (Bitbucket, Jenkins)
 scripts/branches.py          таблица ветвей origin с предложениями
 scripts/facts.sh             факты для /duty:inspect
 scripts/busy.py              реестр занятости общих ресурсов
+scripts/signals.py           именованные сигналы между задачами, ожидание по inotify
 hooks/hooks.json             подключение хука SessionStart
 hooks/session-start.sh       при старте: workspace задач, реестр занятости, напоминание
 scripts/tests/test_busy.py   проверки реестра
+scripts/tests/test_signals.py проверки сигналов
 tests/probes/                пробы flow: песочница, записки, run-probe.sh
 scripts/cleanup-candidates.py перечень кандидатов на уборку
 scripts/dispatch.sh          запуск, перечень и закрытие workspace задач
@@ -83,7 +85,7 @@ reference/worker-rules.md    общие запреты для rules.md зада�
 `hooks/session-start.sh` при каждом старте сессии (без матчера: запуск,
 возобновление, сжатие, `/clear`) отдаёт модели через `additionalContext`
 таблицу `dispatch.sh list`, если есть открытые workspace задач, таблицу
-`busy.py list`, если есть отметки, и напоминание о `/duty:dispatch`.
+`busy.py list`, если есть отметки, таблицы `signals.py list`, если есть сигналы или ожидания, и напоминание о `/duty:dispatch`.
 Хук молчит в сессии агента (`DUTY_ROLE=worker`) и вне herdr
 (`HERDR_ENV` не равно 1); сбой herdr даёт строку «herdr недоступен»
 и не прерывает старт.
@@ -163,7 +165,7 @@ bash claude-plugins/duty/scripts/dispatch.sh close <имя>    # агент idle
 ```
 
 `close` снимает забытые отметки держателя `<имя>` через `busy.py`
-с предупреждением, закрывает вкладки кроме корневой и workspace;
+с предупреждением, даёт сигнал `task-done-<имя>` (если исполнитель не дал), закрывает вкладки кроме корневой и workspace;
 перечнем `list` позже воспользуется `/duty:cleanup`.
 
 ## Вкладки: длинные команды
@@ -313,6 +315,51 @@ busy.py check <ресурс>      # 0 — свободно, 3 — занято
 `/duty:inspect` опираются на реестр. Решение — запись 0055 в
 `docs/decisions/` монорепозитория. Проверка:
 `python3 -I scripts/tests/test_busy.py`.
+
+## Сигналы между задачами
+
+Исполнитель иногда ждёт условие, которым владеет другая задача: слияние
+pull request'а, освобождение стенда, готовность ветви. Ждать его опросом
+Jenkins или Bitbucket либо пересылкой через главную сессию не нужно:
+дающий создаёт сигнал, ожидающий узнаёт о нём по событию inotify. Сигнал —
+защёлка «событие произошло», а не блокировка с живым держателем, поэтому
+он остаётся в каталоге, пока его не снимут (`clear`).
+
+Каталог — `~/work/telecom/axata/ocp-dev-stand/signals/` (`DUTY_SIGNALS_DIR`
+меняет; создаётся по необходимости). Сигнал — файл `<имя>.json`, время —
+целые миллисекунды Unix UTC; запись атомарна (временный файл с точкой
+в имени и `os.replace`), недописанный файл ожидающий не видит:
+
+```json
+{"name": "pr-merged-qms-2584", "text": "слит в dev2", "from": "qms-py314-dev2",
+ "task": "<каталог задачи>", "at_ms": 1792900000000}
+```
+
+`from` — ключ `--from`, иначе `DUTY_NAME`, иначе `DUTY_HOLDER`, иначе `?`;
+`task` — `DUTY_TASK`. Имя — `^[a-z0-9]+(-[a-z0-9]+)*$`, не длиннее
+100 знаков; недопустимое имя — код 2. Примеры: `pr-merged-qms-2584`,
+`task-done-qms-py314-dev2`, `stand-free`.
+
+```sh
+signals.py signal <имя> [текст] [--from <кто>] [--keep]   # --keep: существующий не менять
+signals.py wait <имя> [--timeout-s N] [--holder <кто>]     # по событию; печатает текст сигнала
+signals.py list [--json]                                   # сигналы и ожидания
+signals.py clear <имя>                                     # снять сигнал и ожидания с мёртвым pid
+```
+
+Коды: 0 — успех, 2 — неверное обращение, нет `inotifywait` (`pacman -S
+inotify-tools`) или оборвалось наблюдение, 124 — истёк `--timeout-s`.
+Срок по умолчанию не задан: `--timeout-s` — предохранитель с явным
+значением. `wait` ставит наблюдение до проверки файла, поэтому сигнал,
+пришедший между ними, не теряется; пока ждёт, держит отметку
+`<имя>.waiting-<кто>` (`name`, `holder`, `task`, `pid`, `since_ms`),
+которую снимает при любом выходе, в том числе по SIGTERM, SIGINT
+и SIGHUP. Отметка с мёртвым `pid` в `list` помечена «устарело».
+
+Сигнал `task-done-<имя>` даёт исполнитель при завершении, а на случай его
+сбоя — `dispatch.sh close` (с `--keep`). Открытые сигналы и ожидания
+печатает хук SessionStart. Проверка:
+`python3 -I scripts/tests/test_signals.py`.
 
 ## Доступы
 

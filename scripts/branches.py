@@ -30,6 +30,13 @@ _spec.loader.exec_module(gates)
 # Ветви, которых в таблице нет: линии приёма и рабочая ветвь сабмодулей.
 HIDDEN = {"dev", "dev2", "master", "new_ocp"}
 KEEP_PREFIXES = ("backup/", "saved/")
+TASK_PREFIXES = ("dev2-", "feature/", "bugfix/", "chore/", "RP-", "backup/", "saved/")
+
+
+def named_dev_branch(name):
+    # Именная ветвь разработчика линии dev: имя без префикса и без косой черты;
+    # её собирает Jenkins, слитой она не считается.
+    return "/" not in name and not name.startswith(TASK_PREFIXES) and name not in ("dev", "dev2", "master", "new_ocp")
 MAX_PR_PAGES = 5
 DEFAULT_ROOT = Path.home() / "work/telecom/axata/monorepo-ocp"
 
@@ -208,7 +215,9 @@ def main() -> int:
             elif no_pr or denied:
                 pr_cell = "не проверен"
             # Предложение. Чужие ветви не трогаются, даже слитые.
-            if not mine:
+            if named_dev_branch(name) and not mine:
+                prop = f"оставить: именная, владелец {an}"
+            elif not mine:
                 prop = f"решить: чужая ветвь ({an})" + ("; слита в родителя" if merged else "")
             elif name.startswith(KEEP_PREFIXES):
                 prop = "оставить: сохранённая копия"

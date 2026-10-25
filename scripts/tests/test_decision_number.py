@@ -1,6 +1,7 @@
 """Проверки decision-number.sh: `python3 -I scripts/tests/test_decision_number.py`."""
 
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -66,6 +67,28 @@ class DecisionNumberTest(unittest.TestCase):
         self.assertTrue((self.decisions / "0006-reserved.md").is_file())
         self.assertFalse((self.decisions / ".number-lock").exists())
         self.assertEqual(number(self.decisions, "--peek"), "0007")
+
+    def test_lock_is_shared_between_worktrees(self) -> None:
+        git(self.root, "branch", "third")
+        wt = Path(self.tmp.name) / "wt-third"
+        git(self.root, "worktree", "add", "-q", str(wt), "third")
+        (self.root / ".git" / "decision-number.lock").mkdir()
+        # PATH без inotifywait: занятый замок не ждётся, вызов завершается кодом 3.
+        bin_dir = Path(self.tmp.name) / "bin"
+        bin_dir.mkdir()
+        for tool in ("git", "sed", "find", "sort", "tail", "rmdir", "mkdir"):
+            found = shutil.which(tool)
+            assert found is not None
+            (bin_dir / tool).symlink_to(found)
+        done = subprocess.run(
+            [shutil.which("bash") or "bash", str(SCRIPT), str(wt / "docs" / "decisions")],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PATH": str(bin_dir)},
+        )
+        self.assertEqual(done.returncode, 3, done.stderr)
+        self.assertIn("decision-number.lock", done.stderr)
+        self.assertFalse(list((wt / "docs" / "decisions").glob("*-reserved.md")))
 
 
 if __name__ == "__main__":

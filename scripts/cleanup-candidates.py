@@ -169,6 +169,39 @@ for repo, parent in submodules():
         for w in all_wts
         if w.get("branch") and Path(w["worktree"]).exists()
     }
+    # Тесты чёрного ящика QMS, запущенные из каталога дерева, оставляют в нём
+    # Content/uploaded_files с загруженными списками обзвона (путь относителен
+    # текущему каталогу процесса). Первая запись `git worktree list` у
+    # сабмодуля — его gitdir, а не рабочая копия, поэтому рабочая копия
+    # `repo` добавляется явно; деревья задач в ../ocp-dev-stand/results/*/wt/*
+    # приходят из того же перечня.
+    if str(rel) == "legacy/queue-manager-service":
+        for tree in [repo, *(Path(w["worktree"]) for w in all_wts[1:])]:
+            content = tree / "Content"
+            if not content.is_dir() or tree.parent.name.endswith("-wt"):
+                continue  # деревья ревизий стенда убирает instances-prune
+            ignored = subprocess.run(["git", "check-ignore", "-q", "Content"], cwd=tree,
+                                     capture_output=True).returncode == 0
+            # git check-ignore не сообщает об отслеживаемых файлах, поэтому
+            # git ls-files проверяется отдельно; сбой git (код возврата не 0)
+            # не считается «отслеживаемого нет» и оставляет каталог.
+            tracked = subprocess.run(["git", "ls-files", "--", "Content"], cwd=tree,
+                                     capture_output=True, text=True)
+            cmd = ""
+            if tree.resolve() in STAND_MAIN:
+                # Основное дерево стенда обслуживает работающий стенд: его
+                # загруженные списки могут быть нужны контейнеру.
+                verdict = "оставлено: основное дерево стенда"
+            elif not ignored or tracked.returncode != 0 or tracked.stdout.strip():
+                verdict = "оставлено: путь не игнорируется git, содержит отслеживаемое или git не отвечает"
+            elif in_live_session(tree) or cwd_users(tree):
+                # Тесты пишут Content относительно корня дерева, поэтому
+                # процесс проверяется по всему дереву, а не по Content.
+                verdict = "оставлено: живой сеанс или процесс в дереве"
+            else:
+                verdict = "удалить: данные прогонов тестов (списки обзвона), в git не попадает"
+                cmd = f"rm -rf -- {shlex.quote(str(content))}"
+            add("данные прогонов QMS", str(content), size(content), verdict, cmd, str(rel), parent)
     for wt in all_wts[1:]:
         path = Path(wt["worktree"])
         branch = wt.get("branch", "").removeprefix("refs/heads/")

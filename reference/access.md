@@ -24,13 +24,13 @@
 | Путь | Проект/слаг | Родитель | Задание ворот `dev2` |
 |---|---|---|---|
 | `.` (монорепозиторий) | `QM/monorepo-ocp` | `master` | — |
-| `legacy/queue-manager-service` | `QM/queue-manager-service` | `dev2` | `qms` |
-| `legacy/queue-manager-ui` | `QM/queue-manager-ui` | `dev2` | `qms-ui` |
-| `legacy/proxyappback` | `SOFTPHONE-API-DEMO/proxyappback` | `master` (pull request'ы линии — в `dev2`) | `proxyappback` |
-| `legacy/softphone-api-demo` | `SOFTPHONE-API-DEMO/softphone-api-demo` | `master` | `softphone-api-demo` |
-| `legacy/tests` | `PT/tests` | `dev2` (без `new_ocp`) | `pt-tests` |
-| `legacy/release-sets` | `QM/release-sets` | `dev2` | `release-sets` |
-| `legacy/mergemedia` | `MER/mergemedia` | `dev2` | `mergemedia` |
+| `legacy/queue-manager-service` | `QM/queue-manager-service` | `dev2` | `dev2/qms` |
+| `legacy/queue-manager-ui` | `QM/queue-manager-ui` | `dev2` | `dev2/qms-ui` |
+| `legacy/proxyappback` | `SOFTPHONE-API-DEMO/proxyappback` | `master` (pull request'ы линии — в `dev2`) | `dev2/proxyappback` |
+| `legacy/softphone-api-demo` | `SOFTPHONE-API-DEMO/softphone-api-demo` | `master` | `dev2/softphone-api-demo` |
+| `legacy/tests` | `PT/tests` | `dev2` (без `new_ocp`) | `dev2/pt-tests` |
+| `legacy/release-sets` | `QM/release-sets` | `dev2` | `dev2/release-sets` |
+| `legacy/mergemedia` | `MER/mergemedia` | `dev2` | `dev2/mergemedia` |
 | `legacy/jssip-phone` | `JSSIP/jssip-phone` | `master` | — |
 | `legacy/screen-backend`, `legacy/screen-frontend` | `SCREEN/backend`, `SCREEN/frontend` | `master` | — |
 | `legacy/soft-phone-api-demo-test` | `SADT/soft-phone-api-demo-test` | `dev` | — |
@@ -50,10 +50,11 @@
   сборка `PR-<номер>`, этапы «Ворота» → «Проверки» (записи 0032, 0039
   монорепозитория).
 - Бинарники, образы и `Promote` идут шагом `dev2Binaries` в сборке
-  pull request'а (`qms/PR-<номер>`) и в сборке ветви `dev2`; прогон на
-  зонах — общее задание `e2e`; ярусы сборки — запись 0040.
-- Ветвь `dev`: сборка `dev` тех же заданий (`qms`, `qms-ui`,
-  `proxyappback`, `mergemedia`, `pt-tests`) и задание `e2e` с `LINE=dev`.
+  pull request'а (`dev2/qms/PR-<номер>`) и в сборке ветви `dev2`; прогон на
+  зонах — общее задание `dev2/e2e`; ярусы сборки — запись 0040.
+- Ветвь `dev`: сборка `dev` тех же заданий (`dev2/qms`, `dev2/qms-ui`,
+  `dev2/proxyappback`, `dev2/mergemedia`, `dev2/pt-tests`) и задание `dev2/e2e`
+  с `LINE=dev`.
 - Узлы: `BinaryBuilder` (4 исполнителя), `TEST_NODE` (2), `QMS_DEV`,
   `QMS_TEST`, `QMS_FEATURE`, `QMS_PROD`, `test-zone-1`, `test-zone-2`.
 - Запуск заданий меняет контур и навыкам плагина запрещён.

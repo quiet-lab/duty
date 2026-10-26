@@ -198,7 +198,7 @@ workspace herdr (`tab-run.sh`: `herdr tab create`, `herdr pane run`);
 "${CLAUDE_PLUGIN_ROOT}/scripts/tab-run.sh" grep-log -- 'grep -c "FAILED" out.txt | tee n.txt'
 
 # Ожидание сборки Jenkins (номер или last) — тоже во вкладке.
-"${CLAUDE_PLUGIN_ROOT}/scripts/tab-run.sh" pr-2581 -- "${CLAUDE_PLUGIN_ROOT}/scripts/jwait.sh" qms/PR-2581 last
+"${CLAUDE_PLUGIN_ROOT}/scripts/tab-run.sh" pr-2581 -- "${CLAUDE_PLUGIN_ROOT}/scripts/jwait.sh" dev2/qms/PR-2581 last
 
 # У агента: одним вызовом дождаться done, код — в выводе и коде выхода.
 "${CLAUDE_PLUGIN_ROOT}/scripts/wait-done.sh" "$DUTY_TASK/runs/checks" --timeout-s 590
@@ -389,7 +389,7 @@ python3 -I claude-plugins/duty/scripts/gates.py        # таблица pull req
 python3 -I claude-plugins/duty/scripts/gates.py now    # узлы Jenkins, агенты, занятость
 python3 -I claude-plugins/duty/scripts/branches.py all --mine   # ветви origin
 python3 -I claude-plugins/duty/scripts/cleanup-candidates.py "$PWD"   # сухой перечень
-claude-plugins/duty/scripts/jwait.sh qms/PR-2581 last   # завершённая сборка: done 0
+claude-plugins/duty/scripts/jwait.sh dev2/qms/PR-2581 last   # завершённая сборка: done 0
 claude -p '/duty:gates' --model haiku --output-format json < /dev/null
 bash -n claude-plugins/duty/scripts/dispatch.sh       # разбор сценария выноса
 bash claude-plugins/duty/scripts/dispatch.sh list     # перечень workspace задач

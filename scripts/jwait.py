@@ -283,7 +283,7 @@ def write_done(out: Path, code: int) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument('job', help='задание: qms/PR-2580 или адрес задания')
+    p.add_argument('job', help='задание: dev2/qms/PR-2580 или адрес задания')
     p.add_argument('build', help='номер сборки или last')
     p.add_argument('--out', default='', help='каталог итога')
     a = p.parse_args()

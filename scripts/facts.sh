@@ -41,7 +41,7 @@ for c in json.load(sys.stdin)["computer"]:
     busy = [e["currentExecutable"]["url"] for e in c["executors"] + c["oneOffExecutors"] if e.get("currentExecutable")]
     n = c["numExecutors"]
     state = "вне сети" if c["offline"] else f"занято {len(busy)}/{n}"
-    print("-", c["displayName"], state, " ".join(u.split("/job/", 1)[-1] for u in busy)[:200])'
+    print("-", c["displayName"], state, " ".join(u.split("/job/", 1)[-1].replace("/job/", "/") for u in busy)[:200])'
 
 section 'Машина'
 cat /proc/loadavg; nproc; free -g | head -2; df -h /tmp | tail -1

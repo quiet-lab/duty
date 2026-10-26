@@ -164,8 +164,41 @@ cmd_list() {
     done
 }
 
+# Процессы ожидания задачи, пережившие закрытие workspace: signals.py wait
+# с держателем <имя> (по реестру ожиданий) и wait-done.sh/inotifywait, чей
+# каталог или аргументы лежат в каталоге задачи. Печатает PID через запятую.
+find_orphans() {
+    local name=$1 task=$2 pid comm cmdline cwd waits found=" "
+    task=$(realpath -m "$task")
+    waits=$(python3 -I "$signals" list --waits --json) || return 1
+    for pid in $(jq -r --arg n "$name" '.waits[] | select(.holder == $n and .alive) | .pid' <<< "$waits"); do
+        found+="$pid "
+    done
+    for pid in $(ls /proc | grep -E '^[0-9]+$'); do
+        [ "$pid" != "$$" ] || continue
+        comm=$(cat "/proc/$pid/comm" 2> /dev/null) || continue
+        cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2> /dev/null) || continue
+        # Только сами процессы ожидания: inotifywait или оболочка, чей
+        # сценарий — wait-done.sh; редактор или grep с этим именем не в счёт.
+        case $comm in
+            inotifywait) ;;
+            bash | sh) case $cmdline in
+                    "bash "*wait-done.sh* | "/usr/bin/bash "*wait-done.sh* | "sh "*wait-done.sh*) ;;
+                    *) continue ;;
+                esac ;;
+            *) continue ;;
+        esac
+        cwd=$(readlink "/proc/$pid/cwd" 2> /dev/null || true)
+        if [[ $cmdline == *"$task/"* || $cmdline == *"$task " || $cwd == "$task" || $cwd == "$task/"* ]]; then
+            found+="$pid "
+        fi
+    done
+    # shellcheck disable=SC2086
+    printf '%s\n' $found | sort -un | paste -sd, -
+}
+
 cmd_close() {
-    local name=$1 task ws status target agent_tab tabs tab marks resource signal_note
+    local name=$1 orphans task ws status target agent_tab tabs tab marks resource signal_note
     task="$results/$name"
     [ -f "$task/brief.md" ] || die "задачи $name нет: $task/brief.md"
     ws=$(task_workspace "$task")
@@ -214,6 +247,18 @@ cmd_close() {
     ! herdr workspace list | jq -e --arg w "$ws" '.result.workspaces[] | select(.workspace_id == $w)' > /dev/null \
         || die "workspace $ws остался в herdr workspace list"
     printf 'closed=%s\nworkspace=%s\nreport=%s\nsignal=%s\n' "$name" "$ws" "$task/report.md" "$signal_note"
+
+    # Сирот не убиваем: завершить их по известному PID должен исполнитель
+    # или главная сессия.
+    if ! orphans=$(find_orphans "$name" "$task"); then
+        warn "перечень ожиданий задачи $name не получен"
+        printf 'orphans=unknown\n'
+    elif [ -n "$orphans" ]; then
+        printf 'orphans=%s\n' "$orphans"
+        warn "остались процессы ожидания задачи $name: завершить по PID (kill <pid>), не по имени"
+    else
+        printf 'orphans=none\n'
+    fi
 }
 
 cmd_start() {

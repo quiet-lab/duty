@@ -62,7 +62,17 @@ def jenkins(url: str, env: dict[str, str]) -> dict | None:
         return None
 
 
+def is_feed(status: dict) -> bool:
+    """Статус «Лента сборок PR-…» (ключ `<префикс>pr-feed/<задание>-<номер>`).
+
+    Лента показывает ход всех этапов и не решает о слиянии; со статусами ворот
+    её смешивать нельзя: она новее и перекрыла бы итог ворот.
+    """
+    return "pr-feed/" in (status.get("key") or "") or (status.get("name") or "").startswith("Лента сборок PR-")
+
+
 def gate_summary(statuses: list[dict], env: dict[str, str]) -> tuple[str, str]:
+    statuses = [s for s in statuses if not is_feed(s)]
     if not statuses:
         return "нет сборок", "—"
     builds = ", ".join(f"{s['key']}: {s['state']}" for s in statuses)

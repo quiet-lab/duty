@@ -101,6 +101,8 @@ def green(sha: str) -> str:
     """Итог сборок коммита: зелёные, красные, идут или нет сборок."""
     latest: dict[str, dict] = {}
     for s in gates.bb(f"/rest/build-status/1.0/commits/{sha}")["values"]:
+        if gates.is_feed(s):
+            continue
         if s["key"] not in latest or s.get("dateAdded", 0) > latest[s["key"]].get("dateAdded", 0):
             latest[s["key"]] = s
     states = {s["state"] for s in latest.values()}

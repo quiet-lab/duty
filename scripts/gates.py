@@ -68,7 +68,7 @@ def is_feed(status: dict) -> bool:
     Лента показывает ход всех этапов и не решает о слиянии; со статусами ворот
     её смешивать нельзя: она новее и перекрыла бы итог ворот.
     """
-    return "pr-feed/" in status.get("key", "") or status.get("name", "").startswith("Лента сборок PR-")
+    return "pr-feed/" in (status.get("key") or "") or (status.get("name") or "").startswith("Лента сборок PR-")
 
 
 def gate_summary(statuses: list[dict], env: dict[str, str]) -> tuple[str, str]:

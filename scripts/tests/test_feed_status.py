@@ -25,6 +25,9 @@ class FeedStatusTest(unittest.TestCase):
         self.assertTrue(gates.is_feed({"key": "x", "name": "Лента сборок PR-7"}))
         self.assertFalse(gates.is_feed(GATE))
 
+    def test_is_feed_tolerates_null_fields(self):
+        self.assertFalse(gates.is_feed({"key": None, "name": None}))
+
     def test_gate_summary_ignores_newer_feed(self):
         builds, gate = gates.gate_summary([GATE, FEED_RUNNING], {})
         self.assertEqual(builds, "dev2/qms/PR-1: SUCCESSFUL")

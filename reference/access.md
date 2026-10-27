@@ -31,6 +31,7 @@
 | `legacy/tests` | `PT/tests` | `dev2` (без `new_ocp`) | `dev2/pt-tests` |
 | `legacy/release-sets` | `QM/release-sets` | `dev2` | `dev2/release-sets` |
 | `legacy/mergemedia` | `MER/mergemedia` | `dev2` | `dev2/mergemedia` |
+| `legacy/phone-rotator` | `QM/phone-rotator` | `dev2` | `dev2/phone-rotator` |
 | `legacy/jssip-phone` | `JSSIP/jssip-phone` | `master` | — |
 | `legacy/screen-backend` | `SCREEN/backend` | `master` | — |
 | `legacy/soft-phone-api-demo-test` | `SADT/soft-phone-api-demo-test` | `dev` | — |

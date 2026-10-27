@@ -32,7 +32,7 @@
 | `legacy/release-sets` | `QM/release-sets` | `dev2` | `dev2/release-sets` |
 | `legacy/mergemedia` | `MER/mergemedia` | `dev2` | `dev2/mergemedia` |
 | `legacy/jssip-phone` | `JSSIP/jssip-phone` | `master` | — |
-| `legacy/screen-backend`, `legacy/screen-frontend` | `SCREEN/backend`, `SCREEN/frontend` | `master` | — |
+| `legacy/screen-backend` | `SCREEN/backend` | `master` | — |
 | `legacy/soft-phone-api-demo-test` | `SADT/soft-phone-api-demo-test` | `dev` | — |
 | `legacy/adservice` | `AD/adservice` | `master` | — |
 | `legacy/ocp-docs-frontend` | `ODS/ocp-docs-frontend` | `master` | — |

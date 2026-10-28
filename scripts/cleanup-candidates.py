@@ -21,14 +21,16 @@ import time
 from pathlib import Path
 
 _args = sys.argv[1:]
-if any(a in ("-h", "--help") for a in _args):
-    print(__doc__)
-    sys.exit(0)
 EXCLUDES: list[str] = []
 _positional: list[str] = []
 while _args:
     _a = _args.pop(0)
-    if _a == "--exclude" and _args:
+    if _a in ("-h", "--help"):
+        print(__doc__)
+        sys.exit(0)
+    elif _a == "--exclude":
+        if not _args:
+            sys.exit("--exclude требует шаблон ветви")
         EXCLUDES.append(_args.pop(0))
     elif _a.startswith("--exclude="):
         EXCLUDES.append(_a.removeprefix("--exclude="))

@@ -79,10 +79,22 @@ class ExcludeWorktreeTest(unittest.TestCase):
         wt = self.add_gone_worktree("feat-z")
         self.assertIn("удалить", self.row(self.candidates("--exclude", "other"), wt))
 
+    def test_repeated_exclude_protects_each_worktree(self) -> None:
+        a, b = self.add_gone_worktree("feat-a"), self.add_gone_worktree("feat-b")
+        out = self.candidates("--exclude", "feat-a", "--exclude", "feat-b")
+        self.assertIn("оставлено", self.row(out, a))
+        self.assertIn("оставлено", self.row(out, b))
+
+    def test_exclude_without_pattern_is_error(self) -> None:
+        env = {**os.environ, **GIT_ENV}
+        r = subprocess.run([sys.executable, "-I", str(SCRIPT), str(self.root), "--exclude"],
+                           capture_output=True, text=True, env=env, check=False)
+        self.assertNotEqual(r.returncode, 0)
+
     def test_detached_worktree_is_kept(self) -> None:
         wt = self.add_gone_worktree("feat-d")
         git(wt, "checkout", "--detach")
-        row = self.row(self.candidates("--exclude", "feat-d"), wt)
+        row = self.row(self.candidates(), wt)
         self.assertIn("оставлено", row)
         self.assertNotIn("worktree remove", row)
 

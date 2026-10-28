@@ -62,10 +62,12 @@ hooks/hooks.json             подключение хука SessionStart
 hooks/session-start.sh       при старте: workspace задач, реестр занятости, напоминание
 scripts/tests/test_busy.py   проверки реестра
 scripts/tests/test_signals.py проверки сигналов
+scripts/tests/test_runs_web.py проверки duty-runs-web и ключа --kind
 tests/probes/                пробы flow: песочница, записки, run-probe.sh
 scripts/cleanup-candidates.py перечень кандидатов на уборку
 scripts/dispatch.sh          запуск, перечень и закрытие workspace задач
 scripts/tab-run.sh           длинная команда в новой вкладке: cmd.sh, out.log, done
+scripts/runs-web.py          duty-runs-web: веб-просмотр прогонов tab-run.sh, живой out.log по SSE и inotify
 scripts/wait-done.sh         ожидание файла done по inotify со сроком
 scripts/jwait.sh, jwait.py   ожидание конца сборки Jenkins: report.md, done
 scripts/decision-number.sh   выдача номера записи решения
@@ -233,6 +235,32 @@ WebSocket не пропускает, поэтому CLI идёт прямо на
 
 Вкладка после `done` остаётся открытой для просмотра; закрывает её
 агент workspace вместе с остальными ресурсами задачи, когда пишет отчёт.
+
+## Веб-просмотр прогонов
+
+`scripts/runs-web.py` (duty-runs-web) — местный просмотр прогонов
+`tab-run.sh` на `http.server`, только стандартная библиотека и
+`inotifywait`:
+
+```sh
+python3 -I claude-plugins/duty/scripts/runs-web.py [--results <каталог>] [--port 8765] [--host 127.0.0.1]
+# адрес по умолчанию: http://127.0.0.1:8765/ ; --port 0 — свободный порт
+```
+
+Каталог результатов — `--results`, `$DUTY_RESULTS_DIR` или
+`~/work/telecom/axata/ocp-dev-stand/results`; прогоны ищутся в
+`<каталог>/<задача>/runs/<имя>/`. Главная страница при каждом запросе
+выполняет `dispatch.sh list`, `busy.py list`, `signals.py list --waits`
+и показывает их вывод, ниже — перечень прогонов: задача, имя, вид,
+состояние (идёт, ожидает запуска, завершён с кодом из `done`) и команда
+из `cmd.sh`. Страница прогона показывает поля `meta.txt`, команду и
+`out.log`; дозапись приходит через Server-Sent Events, файл отслеживает
+`inotifywait` (без опроса и таймеров), уход клиента завершает слежение,
+`done` прогона закрывает поток.
+
+Ключ `--kind <вид>` у `tab-run.sh` (например `tests`, `build`, `wait`)
+записывается строкой `kind` в `meta.txt` и показывается в перечне; без
+него поведение прежнее.
 
 ## Номера записей решений
 

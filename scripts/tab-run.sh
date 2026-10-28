@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Длинная команда во вкладке своего workspace herdr с итогом в файлы.
 #
-#   tab-run.sh <имя> [--cwd <каталог>] -- <команда…>
+#   tab-run.sh <имя> [--cwd <каталог>] [--kind <вид>] -- <команда…>
 #
 # Вкладка создаётся в workspace вызывающего ($HERDR_WORKSPACE_ID) в каталоге
 # --cwd (по умолчанию текущий), команда идёт в текущем каталоге вкладки.
@@ -11,6 +11,9 @@
 # кавычек пользователя. Каталог итогов — runs/<имя>/ в $DUTY_TASK (без
 # него — в текущем каталоге), он должен быть новым: прежняя отметка done
 # сразу отпустила бы ожидающего wait-done.sh.
+#
+# Необязательный --kind (например tests, build, wait) пишется строкой kind в
+# meta.txt и показывается в duty-runs-web (runs-web.py); без него поведение прежнее.
 #
 # Итог: out.log (stdout и stderr вместе, они же на экране вкладки),
 # meta.txt (каталог, started_ms, finished_ms, код) и последним done с кодом
@@ -29,15 +32,17 @@
 set -euo pipefail
 
 die() { printf 'tab-run.sh: %s\n' "$*" >&2; exit 2; }
-usage='вызов: tab-run.sh <имя> [--cwd <каталог>] -- <команда…>'
+usage='вызов: tab-run.sh <имя> [--cwd <каталог>] [--kind <вид>] -- <команда…>'
 
 [ $# -ge 3 ] || die "$usage"
 name=$1
 shift
 cwd=$PWD
+kind=
 while [ $# -gt 0 ] && [ "$1" != -- ]; do
     case $1 in
         --cwd) cwd=${2:?--cwd без значения}; shift 2 ;;
+        --kind) kind=${2:?--kind без значения}; shift 2 ;;
         *) die "неизвестный ключ $1; $usage" ;;
     esac
 done
@@ -47,6 +52,7 @@ shift
 [[ $name =~ ^[a-z0-9][a-z0-9_.-]{0,63}$ ]] || die "имя $name: только строчные латинские буквы, цифры, _ . -"
 [ "${HERDR_ENV:-}" = 1 ] || die 'сессия не в herdr (HERDR_ENV не 1)'
 [ -n "${HERDR_WORKSPACE_ID:-}" ] || die 'HERDR_WORKSPACE_ID не задан'
+[[ -z $kind || $kind =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] || die "вид $kind: только строчные латинские буквы, цифры, _ -"
 [ -d "$cwd" ] || die "каталога $cwd нет"
 command -v jq > /dev/null || die 'нет jq'
 
@@ -73,6 +79,7 @@ cwd=$(realpath "$cwd")
     done
     printf 'run_dir=%q\n' "$run_dir"
     printf 'printf "cwd: %%s\\nstarted_ms: %%s\\n" "$PWD" "$(date +%%s%%3N)" > "$run_dir/meta.txt"\n'
+    [ -z "$kind" ] || printf 'printf "kind: %%s\\n" %q >> "$run_dir/meta.txt"\n' "$kind"
     printf '{\n%s\n} 2>&1 | tee "$run_dir/out.log"\n' "$command"
     printf 'rc=${PIPESTATUS[0]}\n'
     printf 'printf "finished_ms: %%s\\ncode: %%s\\n" "$(date +%%s%%3N)" "$rc" >> "$run_dir/meta.txt"\n'

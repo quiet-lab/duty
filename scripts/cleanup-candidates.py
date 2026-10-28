@@ -7,7 +7,7 @@
 
 Аргументы: корень монорепозитория (необязательно, по умолчанию текущий
 каталог) и повторяемый --exclude <шаблон> — glob по имени ветви; такие ветви
-остаются в перечне со строкой «оставлено».
+и worktree, выписанные на них, остаются в перечне со строкой «оставлено».
 """
 
 import fnmatch
@@ -21,6 +21,9 @@ import time
 from pathlib import Path
 
 _args = sys.argv[1:]
+if any(a in ("-h", "--help") for a in _args):
+    print(__doc__)
+    sys.exit(0)
 EXCLUDES: list[str] = []
 _positional: list[str] = []
 while _args:
@@ -95,6 +98,10 @@ def size(path: Path) -> str:
 
 def add(kind: str, what: str, sz: str, verdict: str, cmd: str = "", sub: str = "", parent: str = "") -> None:
     rows.append((kind, sub, parent, what, sz, verdict, cmd))
+
+
+def is_excluded(branch: str) -> bool:
+    return any(fnmatch.fnmatchcase(branch, pat) for pat in EXCLUDES)
 
 
 def active_sessions() -> set[str]:
@@ -212,6 +219,12 @@ for repo, parent in submodules():
                 continue  # деревья ревизий стенда убирает instances-prune
             add("worktree", str(path), size(path), "оставлено: без ветви, чьё — неясно", "", str(rel), parent)
             continue
+        # Исключение действует на worktree ветви независимо от того, есть ли
+        # ветвь в origin: после её удаления там worktree иначе попал бы в кандидаты.
+        if is_excluded(branch):
+            add("worktree", f"{path} [{branch}]", size(path), "оставлено: ветвь исключена параметром --exclude",
+                "", str(rel), parent)
+            continue
         if sh("git", "status", "--porcelain", cwd=path):
             add("worktree", f"{path} [{branch}]", size(path), "оставлено: грязное дерево", "", str(rel), parent)
             continue
@@ -254,7 +267,7 @@ for repo, parent in submodules():
         if not b.startswith(OUR_PREFIXES) and sh("git", "log", "-1", "--format=%an", b, cwd=repo) != ME:
             add("ветвь", b, "—", "оставлено: чужая ветвь (автор не пользователь)", "", str(rel), parent)
             continue
-        if any(fnmatch.fnmatchcase(b, pat) for pat in EXCLUDES):
+        if is_excluded(b):
             add("ветвь", b, "—", "оставлено: исключена параметром --exclude", "", str(rel), parent)
         elif b in occupied:
             dirty = " (есть незакоммиченные изменения)" if sh("git", "status", "--porcelain", cwd=occupied[b]) else ""

@@ -22,6 +22,7 @@ import signal as os_signal
 import socket
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -114,7 +115,8 @@ def describe_run(run_dir: Path) -> dict[str, object]:
 
 def list_runs(results: Path) -> list[dict[str, object]]:
     """Прогоны всех задач, новые (по started_ms, затем по out.log) выше."""
-    runs = [describe_run(d) for d in results.glob("*/runs/*") if d.is_dir()]
+    runs = [describe_run(d) for d in results.glob("*/runs/*")
+            if d.is_dir() and SAFE_RE.match(d.name) and SAFE_RE.match(d.parent.parent.name)]
 
     def started(r: dict[str, object]) -> tuple[int, int]:
         meta = r["meta"]
@@ -176,14 +178,18 @@ def follow_log(run_dir: Path, send, sock: socket.socket | None = None) -> None:
     assert watch.stdout is not None
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     offset = 0
+    first = True
 
     def pump() -> None:
-        nonlocal offset
+        nonlocal offset, first
         try:
             with open(log, "rb") as f:
-                if offset == 0:
+                if first:
+                    first = False
                     size = os.fstat(f.fileno()).st_size
                     offset = max(0, size - TAIL_BYTES)
+                    if offset:
+                        send(sse_frame("log", f"[пропущено байт: {offset}]\n"))
                 f.seek(offset)
                 while chunk := f.read(CHUNK):
                     offset += len(chunk)
@@ -221,7 +227,8 @@ def follow_log(run_dir: Path, send, sock: socket.socket | None = None) -> None:
                 if not chunk:
                     send(sse_frame("fail", "inotifywait завершился"))
                     return
-    except (BrokenPipeError, ConnectionResetError):
+    except OSError:
+        # Обрыв соединения при записи: клиент ушёл, слежение завершается.
         return
     finally:
         # Процесс свой, известный по Popen.
@@ -243,11 +250,15 @@ def run_summary_cmd(argv: list[str]) -> str:
 
 def summary_sections(results: Path) -> list[tuple[str, str]]:
     py = sys.executable
-    return [
-        ("dispatch.sh list", run_summary_cmd(["bash", str(SCRIPTS / "dispatch.sh"), "list", "--results", str(results)])),
-        ("busy.py list", run_summary_cmd([py, "-I", str(SCRIPTS / "busy.py"), "list"])),
-        ("signals.py list --waits", run_summary_cmd([py, "-I", str(SCRIPTS / "signals.py"), "list", "--waits"])),
+    commands = [
+        ("dispatch.sh list", ["bash", str(SCRIPTS / "dispatch.sh"), "list", "--results", str(results)]),
+        ("busy.py list", [py, "-I", str(SCRIPTS / "busy.py"), "list"]),
+        ("signals.py list --waits", [py, "-I", str(SCRIPTS / "signals.py"), "list", "--waits"]),
     ]
+    # Команды независимы, поэтому идут параллельно: зависшая не складывается с остальными.
+    with ThreadPoolExecutor(max_workers=len(commands)) as pool:
+        outputs = list(pool.map(run_summary_cmd, [argv for _, argv in commands]))
+    return [(title, out) for (title, _), out in zip(commands, outputs)]
 
 
 def esc(value: object) -> str:
@@ -313,6 +324,7 @@ def render_run(run_dir: Path) -> bytes:
 
 class Handler(BaseHTTPRequestHandler):
     results: Path
+    allowed_hosts: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         sys.stderr.write("%s - %s\n" % (self.address_string(), format % args))
@@ -324,7 +336,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def host_allowed(self) -> bool:
+        """Защита от DNS rebinding: Host должен быть адресом, на котором слушает сервер."""
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
+        return host in self.allowed_hosts
+
     def do_GET(self) -> None:  # noqa: N802
+        if not self.host_allowed():
+            self.reply(403, page("Отказ", "<p>Недопустимый Host.</p>"))
+            return
         url = urlparse(self.path)
         query = parse_qs(url.query)
         if url.path == "/":
@@ -357,7 +377,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def make_server(results: Path, host: str, port: int) -> ThreadingHTTPServer:
-    handler = type("BoundHandler", (Handler,), {"results": results})
+    allowed = Handler.allowed_hosts | {host}
+    handler = type("BoundHandler", (Handler,), {"results": results, "allowed_hosts": allowed})
     server = ThreadingHTTPServer((host, port), handler)
     server.daemon_threads = True
     return server

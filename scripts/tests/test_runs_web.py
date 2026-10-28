@@ -96,6 +96,11 @@ class ListTest(unittest.TestCase):
         self.assertEqual(by["old"]["command"], "echo one\necho two | cat")
         self.assertEqual(by["old"]["task"], "a")
 
+    def test_unsafe_names_not_listed(self) -> None:
+        make_run(self.results, "a", "плохо")
+        make_run(self.results, "a", "ok")
+        self.assertEqual([r["name"] for r in rw.list_runs(self.results)], ["ok"])
+
     def test_empty(self) -> None:
         self.assertEqual(rw.list_runs(self.results), [])
 
@@ -121,6 +126,12 @@ class FollowTest(unittest.TestCase):
         frames: list[bytes] = []
         rw.follow_log(d, frames.append)
         self.assertEqual(frames, [rw.sse_frame("log", "привет\nмир\n"), rw.sse_frame("done", "3")])
+
+    def test_big_log_is_tailed(self) -> None:
+        d = make_run(self.results, "t", "r", log="x" * (rw.TAIL_BYTES + 10) + "\n", done="0\n")
+        frames: list[bytes] = []
+        rw.follow_log(d, frames.append)
+        self.assertTrue(frames[0].startswith(b"event: log\ndata: [\xd0\xbf\xd1\x80\xd0\xbe\xd0\xbf\xd1\x83\xd1\x89"))
 
     def test_append_then_done(self) -> None:
         d = make_run(self.results, "t", "r", log="first\n")
@@ -205,6 +216,14 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(self.get("/run?task=t&name=nope")[0], 404)
         self.assertEqual(self.get("/run?task=..&name=x")[0], 404)
         self.assertEqual(self.get("/other")[0], 404)
+
+    def test_foreign_host_rejected(self) -> None:
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=LIMIT_S)
+        try:
+            conn.request("GET", "/", headers={"Host": "evil.example"})
+            self.assertEqual(conn.getresponse().status, 403)
+        finally:
+            conn.close()
 
     def test_stream_finished(self) -> None:
         make_run(self.results, "t", "r", log="hello\n", done="0\n")

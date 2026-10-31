@@ -53,7 +53,7 @@ description: Исполнитель крупной задачи в своём wo
    ```
 
    Сценарий создаёт вкладку (`herdr tab create --workspace
-   "$HERDR_WORKSPACE_ID" --cwd <каталог> --label <имя> --no-focus`),
+   "$HERDR_WORKSPACE_ID" --cwd <каталог> --label "<имя задачи> · <модель> · <имя>" --no-focus`),
    пишет команду в `runs/<имя>/cmd.sh` и запускает её `herdr pane run`
    в текущем каталоге вкладки; вывод идёт в `runs/<имя>/out.log`
    и на экран вкладки, код завершения — в файл `runs/<имя>/done`.

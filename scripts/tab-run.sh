@@ -21,7 +21,8 @@
 # видит его целиком. При HERDR_ENV=1 вкладка показывает уведомление herdr
 # (звук done, при ненулевом коде request) и печатает «DUTY-DONE <имя>
 # rc=<код>» для herdr pane wait-output. В ответ — JSON с tab_id, pane_id
-# и run_dir.
+# и run_dir. Вывод снимают из out.log после done; затем вкладку закрывают:
+# herdr tab close <tab_id> (правило — agents/worker.md, п. 4).
 #
 # Переменные DUTY_TASK, DUTY_NAME и DUTY_ROLE вызывающего (если заданы)
 # экспортируются в начале cmd.sh и передаются herdr tab create --env: workspace

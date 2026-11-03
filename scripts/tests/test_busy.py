@@ -1,6 +1,7 @@
 """Проверки реестра занятости: запуск `python3 -I scripts/tests/test_busy.py`."""
 
 import contextlib
+import fcntl
 import io
 import json
 import os
@@ -238,6 +239,108 @@ class BusyTest(unittest.TestCase):
         code, _ = run("claim", "res", "--holder", "x", "--pid", str(os.getpid()))
         self.assertEqual(code, busy.EXIT_BUSY)
         self.assertEqual(json.loads(path.read_text(encoding="utf-8")), fresh)
+
+    def test_neighbor_does_not_see_unwritten_mark(self) -> None:
+        """Сосед читает реестр в момент между созданием отметки и записью её
+        содержимого: целой или пустой отметки там быть не должно."""
+        path = Path(self.tmp.name) / "res.json"
+        seen: list[object] = []
+        real_dump = json.dump
+
+        def dump(obj: object, fp: object, **kw: object) -> None:
+            seen.append(busy.read_mark(path))
+            real_dump(obj, fp, **kw)  # type: ignore[arg-type]
+
+        busy.json.dump = dump  # type: ignore[assignment]
+        self.addCleanup(setattr, busy.json, "dump", real_dump)
+        code, _ = run("claim", "res", "--holder", "a", "--pid", str(os.getpid()))
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, [None])
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["holder"], "a")
+        self.assertEqual(list(Path(self.tmp.name).glob(".*.tmp")), [])
+
+    def test_release_holds_removal_lock(self) -> None:
+        """release читает и удаляет под замком: сосед, снимающий устаревшую
+        отметку, в это время замок получить не может."""
+        root = Path(self.tmp.name)
+        run("claim", "res", "--holder", "a", "--pid", str(os.getpid()))
+        real_read = busy.read_mark
+        got: list[bool] = []
+
+        def read(where: Path) -> dict | None:
+            fd = os.open(root / ".removal.lock", os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                got.append(True)
+            except BlockingIOError:
+                got.append(False)
+            finally:
+                os.close(fd)
+            return real_read(where)
+
+        busy.read_mark = read  # type: ignore[assignment]
+        self.addCleanup(setattr, busy, "read_mark", real_read)
+        self.assertEqual(run("release", "res", "--holder", "a")[0], 0)
+        self.assertEqual(got, [False])
+        self.assertFalse((root / "res.json").exists())
+
+    def test_lock_wait_is_bounded(self) -> None:
+        """Замок занят зависшим держателем: claim и release завершаются кодом
+        «занято» с причиной, а не висят."""
+        root = Path(self.tmp.name)
+        (root / "res.json").write_text(
+            json.dumps(
+                {"resource": "res", "holder": "м", "pid": dead_pid(), "since_ms": 1}
+            ),
+            encoding="utf-8",
+        )
+        fd = os.open(root / ".removal.lock", os.O_CREAT | os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        real = busy.LOCK_WAIT_S
+        busy.LOCK_WAIT_S = 0.05
+        self.addCleanup(setattr, busy, "LOCK_WAIT_S", real)
+        for argv in (
+            ("claim", "res", "--holder", "x", "--pid", str(os.getpid())),
+            ("release", "res"),
+        ):
+            code, out = run(*argv)
+            self.assertEqual(code, busy.EXIT_BUSY, out)
+            self.assertIn("замок снятия отметок не получен", out)
+        self.assertTrue((root / "res.json").exists())
+
+    def test_release_race_against_claim_keeps_new_mark(self) -> None:
+        """release процессов и claim соседей: свежая отметка победителя не снимается чужим release."""
+        root = Path(self.tmp.name)
+        script = Path(busy.__file__).resolve()
+        env = {**os.environ, "DUTY_BUSY_DIR": self.tmp.name}
+        for round_no in range(8):
+            (root / "res.json").write_text(
+                json.dumps(
+                    {"resource": "res", "holder": "a", "pid": dead_pid(), "since_ms": 1}
+                ),
+                encoding="utf-8",
+            )
+            cmds = [
+                ["claim", "res", "--holder", f"h{i}", "--pid", str(os.getpid())]
+                for i in range(4)
+            ] + [["release", "res", "--holder", "a"]]
+            procs = [
+                subprocess.Popen(
+                    [sys.executable, str(script), *c],
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                for c in cmds
+            ]
+            for p in procs:
+                p.wait()
+            # Победитель claim либо снят release ранее; живой отметки двух держателей нет.
+            if (root / "res.json").exists():
+                data = json.loads((root / "res.json").read_text(encoding="utf-8"))
+                self.assertTrue(data["holder"].startswith("h"), f"круг {round_no}")
+            (root / "res.json").unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

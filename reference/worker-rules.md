@@ -18,7 +18,8 @@
   в своих worktree и ветвях, названных в `brief.md`.
 - Защищённые и именные ветви — `CLAUDE.md`, «Ветви»; признак именной ветви —
   `<плагин>/README.md`, «Раскладка».
-- Индекс и `git stash` — `CLAUDE.md`, «Субагенты в одном репозитории».
+- Индекс и `git stash` — `CLAUDE.md`, «Субагенты в одном репозитории»;
+  `git add -A`, `git add -u`, `git stash` отвергает хук forbid (`<плагин>/hooks/forbid.py`).
 - Push ветвей задачи как копий и pull request — `~/.claude/CLAUDE.md`,
   «Ветви, pull request'ы и конвейер»: push разрешён, пока его не запретят
   «Переданные», pull request записка не разрешает.
@@ -41,7 +42,14 @@
   по событию: файл `done` вкладки, `herdr pane wait-output`, inotify;
   условие другой задачи — `<плагин>/agents/worker.md`, п. 7.
 - Ожидание внутри хода и вкладки команд — `<плагин>/agents/worker.md`,
-  п. 3 и 4.
+  п. 3 и 4; вкладка открывается только через `scripts/tab-run.sh` (`herdr tab
+  create`, `pane run`, `pane send` отвергает хук forbid).
+- Туннель и сеть станции не переключаются (`nmcli`, `awg`, `amn-*`, `wg`,
+  `openvpn`, `resolvectl`, `ip link set up/down`); push с `--force` и в `dev`,
+  `dev2`, `master`, пароль литералом в `curl -u` и `sshpass -p`, чтение
+  `~/.config/axata/*` и печать окружения или секретных переменных запрещены;
+  пароли и токены — только из файлов через `set -a` и stdin, в вывод не
+  попадают (проверяет хук forbid, `<плагин>/hooks/forbid.py`).
 - Права root — `~/.claude/CLAUDE.md`, «Повышение привилегий».
 - `/tmp` — `CLAUDE.md`, «Субагенты в одном репозитории»: выводы и копии
   деревьев — в каталог задачи.

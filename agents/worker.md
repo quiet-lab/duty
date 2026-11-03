@@ -71,6 +71,8 @@ description: Исполнитель крупной задачи в своём wo
    в субагенте `Monitor` и `Bash` с `run_in_background: true`.
 4. Длинные команды (прогоны, сборки, ожидание Jenkins, замеры —
    всё дольше пары минут) — только во вкладке своего workspace:
+   (`herdr tab create`, `pane run` и `pane send` напрямую отвергает
+   хук forbid, `hooks/forbid.py`)
 
    ```sh
    bash <плагин>/scripts/tab-run.sh <имя> --cwd <каталог> -- '<команда>'

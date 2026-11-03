@@ -73,6 +73,7 @@ scripts/wait-done.sh         ожидание файла done по inotify со 
 scripts/state-waits.py       просроченные ожидания из раздела «Ожидания» state.md
 scripts/push-agent.sh        сообщение агенту задачи в панель herdr
 hooks/task-guard.py          сторожа сессии агента задачи
+hooks/forbid.py              запреты команд Bash агента задачи (туннель, kill по образцу, git, herdr, секреты)
 scripts/jwait.sh, jwait.py   ожидание конца сборки Jenkins: report.md, done
 scripts/decision-number.sh   номер и вставка записи решения в тематический каталог
 reference/access.md          доступы, REST, репозитории, задания Jenkins
@@ -124,6 +125,16 @@ dispatch, «Дальше»).
 | `PreToolUse` | `SendMessage` субагенту с отметкой остановки | снимает `.stopped` |
 | `SubagentStop` | подзадача с меткой без `subtasks/<имя>.done` | пишет `subtasks/<имя>.stopped`, координатору строка «возобнови или перезапусти» (`push-agent.sh --no-wait`, итог — `subtasks/push.log`) |
 | `Stop` | есть `.stopped` без `.done` и нет ожидания: прогона без `done` с живым `cmd.sh` (строка `pid:` в `meta.txt`), ожидания `signals.py wait` этой задачи, открытого вопроса `ask.py` | блокирует конец хода с перечнем подзадач; повторная остановка (`stop_hook_active`) проходит с уведомлением herdr «застой» |
+
+`hooks/forbid.py` (`PreToolUse` для `Bash`, только `DUTY_ROLE=worker`) отвергает
+команды, запрещённые правилами задач: переключение туннеля и сети станции,
+`pkill`/`killall`/`kill $(pgrep …)`, `git add -A/-u`, `git stash`, принудительный
+push и push в `dev`, `dev2`, `master`, `herdr tab create`/`pane run`/`pane send`
+в обход `tab-run.sh`, чтение `~/.config/axata/*`, печать окружения и секретных
+переменных, пароль литералом в `curl -u` и `sshpass -p`. Команда разбирается по
+словам и конвейерам; подстановки, `bash -c`, `eval` и команда после `--`
+у `tab-run.sh` проверяются рекурсивно. Отказ называет запрет и правило, но не
+повторяет команду. Проверки — `scripts/tests/test_forbid.py`.
 
 Координатор отличается от субагента полем `agent_id`: при `--agent` основная
 сессия получает только `agent_type`. Подзадача без метки (например, субагент

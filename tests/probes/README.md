@@ -1,7 +1,7 @@
 # Пробы flow плагина duty
 
-Регрессионный набор для `scripts/dispatch.sh`, `scripts/tab-run.sh`,
-`scripts/wait-done.sh`, `scripts/busy.py` и агента `agents/worker.md`.
+Регрессионный набор для сценариев плагина `dispatch.sh`, `tab-run.sh`,
+`wait-done.sh`, `busy.py`, `ask.py` и агента `agents/worker.md`.
 Каждая проба — записка и правила для `dispatch.sh`; исход проверяет
 главная сессия командами из таблицы. Пробы идут в живом herdr, расходуют
 токены агентов и меняют только песочницу и каталоги задач.
@@ -35,7 +35,7 @@ tests/probes/run-probe.sh <номер> [--sandbox <каталог>] [--main <и�
 `dispatch.sh`. Порядок запуска: 3, 2, 6, 1, 7, 5, 4.
 
 В таблице `$SB` — песочница, `$TASK` — каталог задачи
-`../ocp-dev-stand/results/<имя>/`, `$DISPATCH` — `scripts/dispatch.sh`.
+`../ocp-dev-stand/results/<имя>/`, `$DISPATCH` — `dispatch.sh` плагина.
 
 | № | Имя задачи | Модель | Что проверяет | Ожидаемый исход | Проверка главной сессией |
 |---|---|---|---|---|---|
@@ -43,7 +43,7 @@ tests/probes/run-probe.sh <номер> [--sandbox <каталог>] [--main <и�
 | 2 | `rules-midway` | haiku | перечитывание `rules.md` перед push | push не выполнен, в отчёте строка запрета | запрет дописать в `$TASK/rules.md` до отметки; отметку создать после появления строки «Watches established.» во вкладке агента (агент дошёл до ожидания): `touch $SB/marker/rules-go`; `git -C $SB/origin.git branch` (нет `probe/rules-midway`); `grep -n push $TASK/report.md` |
 | 6 | `overflow-handoff` | haiku | передача при переполнении контекста | `brief.md` с «Передача», `state.md`, `report.md` с «передача», workspace открыт; `second-step.txt` нет | `grep Передача $TASK/brief.md`; `grep -i передача $TASK/report.md`; `$DISPATCH list`; `ls $TASK/second-step.txt` (нет) |
 | 6б | `overflow-handoff` (продолжение) | haiku | продолжение с записанного шага | `second-step.txt` со строкой «второй шаг выполнен», workspace закрыт | `herdr agent prompt overflow-handoff "<текст>"` (текст — `briefs/overflow-handoff.resume.txt`; печатает `run-probe.sh 6b`); `cat $TASK/second-step.txt` |
-| 1 | `ask-user` | haiku | `AskUserQuestion` с уведомлением herdr, запись ответа | один вопрос с двумя вариантами, уведомление, строка ответа в `rules.md` | ответить в окне workspace; `tail -3 $TASK/rules.md`; `git -C $TASK/work log --oneline -2` |
+| 1 | `ask-user` | haiku | вопрос файлом и сигналом (`ask.py new`), уведомление herdr, ожидание ответа на необратимом шаге (`ask.py wait`) | файл `questions/01-readme.md` с шапкой, сигнал `question-ask-user-01`, коммит по варианту из ответа | `ask.py list --open`; `ask.py answer ask-user 01 '<вариант 2>' --ref 'ответ пользователя'`; `git -C $TASK/work log --oneline -2` |
 | 7 | `neighbours` | — | `/duty:cleanup`, `/duty:gates now` при открытом workspace пробы 6 | workspace виден в занятости, не закрыт | команды в `briefs/neighbours.md`; `$DISPATCH list` |
 | 5 | `jwait-probe` | haiku | `jwait.sh` во вкладке | номер сборки, результат, длительность; либо «сборок в ходу нет» | `cat $TASK/runs/jenkins/done`; `cat $TASK/runs/jenkins/meta.txt`; `head $TASK/report.md` |
 | 4 | `opus-subagents` | opus | субагент sonnet с явной моделью, таблица в отчёте | тесты зелёные, ветвь в `origin.git` | `git -C $SB/origin.git branch` (есть `probe/fix-pricing`); `cat $TASK/runs/tests2/done`; `grep -i sonnet $TASK/report.md` |

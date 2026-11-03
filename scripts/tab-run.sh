@@ -13,7 +13,7 @@
 # сразу отпустила бы ожидающего wait-done.sh.
 #
 # Необязательный --kind (например tests, build, wait) пишется строкой kind в
-# meta.txt и показывается в duty-runs-web (runs-web.py); без него поведение прежнее.
+# meta.txt и показывается в duty-runs-web (runs-web.py); без него строки kind нет.
 #
 # Итог: out.log (stdout и stderr вместе, они же на экране вкладки),
 # meta.txt (каталог, started_ms, finished_ms, код) и последним done с кодом
@@ -24,7 +24,7 @@
 # и run_dir. Вывод снимают из out.log после done; затем вкладку закрывают:
 # herdr tab close <tab_id> (правило — agents/worker.md, п. 4).
 #
-# Переменные DUTY_TASK, DUTY_NAME и DUTY_ROLE вызывающего (если заданы)
+# Переменные DUTY_TASK, DUTY_NAME, DUTY_ROLE, DUTY_SYMBOL и DUTY_MODEL вызывающего (если заданы)
 # экспортируются в начале cmd.sh и передаются herdr tab create --env: workspace
 # create задаёт окружение только корневой панели, новая вкладка его не
 # наследует, и команда (например, jwait.sh) иначе пишет итог в путь по
@@ -75,7 +75,7 @@ cwd=$(realpath "$cwd")
 {
     printf '#!/usr/bin/env bash\n'
     printf '# Прогон %s от tab-run.sh; идёт в текущем каталоге вкладки (%s).\n' "$name" "$cwd"
-    for var in DUTY_TASK DUTY_NAME DUTY_ROLE; do
+    for var in DUTY_TASK DUTY_NAME DUTY_ROLE DUTY_SYMBOL DUTY_MODEL; do
         [ -z "${!var:-}" ] || printf 'export %s=%q\n' "$var" "${!var}"
     done
     printf 'run_dir=%q\n' "$run_dir"
@@ -94,11 +94,12 @@ cwd=$(realpath "$cwd")
 bash -n "$run_dir/cmd.sh" || die "команда не разбирается bash: $run_dir/cmd.sh"
 
 env_args=()
-for var in DUTY_TASK DUTY_NAME DUTY_ROLE; do
+for var in DUTY_TASK DUTY_NAME DUTY_ROLE DUTY_SYMBOL DUTY_MODEL; do
     [ -z "${!var:-}" ] || env_args+=(--env "$var=${!var}")
 done
-# Подпись вкладки — «<имя задачи> · <модель> · <имя прогона>»: модель берётся из
-# метки workspace «имя · модель»; нет такой метки — подпись остаётся именем прогона.
+# Подпись вкладки — «<символ> <имя задачи> · <модель> · <имя прогона>»: начало
+# берётся из метки workspace «<символ> имя · модель»; нет такой метки — подпись
+# остаётся именем прогона.
 tab_label=$name
 ws_label=$(herdr workspace list 2> /dev/null | jq -r --arg w "$HERDR_WORKSPACE_ID" \
     '.result.workspaces[] | select(.workspace_id == $w) | .label' 2> /dev/null || true)

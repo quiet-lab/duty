@@ -342,6 +342,28 @@ class BusyTest(unittest.TestCase):
                 self.assertTrue(data["holder"].startswith("h"), f"круг {round_no}")
             (root / "res.json").unlink(missing_ok=True)
 
+    def test_failed_write_removes_temp_file(self) -> None:
+        root = Path(self.tmp.name)
+        real_dump = json.dump
+
+        def dump(obj: object, fp: object, **kw: object) -> None:
+            raise OSError("диск заполнен")
+
+        busy.json.dump = dump  # type: ignore[assignment]
+        self.addCleanup(setattr, busy.json, "dump", real_dump)
+        with self.assertRaises(OSError):
+            run("claim", "res", "--holder", "a", "--pid", str(os.getpid()))
+        self.assertEqual(list(root.glob(".*.tmp")), [])
+        self.assertFalse((root / "res.json").exists())
+
+    def test_release_without_mark_creates_nothing(self) -> None:
+        root = Path(self.tmp.name) / "новый"
+        os.environ["DUTY_BUSY_DIR"] = str(root)
+        code, out = run("release", "res")
+        self.assertEqual(code, 0)
+        self.assertIn("отметки нет", out)
+        self.assertFalse(root.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

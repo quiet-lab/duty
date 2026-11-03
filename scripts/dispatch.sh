@@ -9,6 +9,7 @@
 #   (общие ключи: [--rules <файл>] [--main <имя сессии>] [--root <каталог>]
 #               [--results <каталог>] [--plugin-dir <каталог>])
 #   dispatch.sh list [--root <каталог>] [--results <каталог>]
+#   dispatch.sh symbol [--root <каталог>] [--results <каталог>]   (свободный символ)
 #   dispatch.sh stalled [--root <каталог>] [--results <каталог>]
 #   dispatch.sh close <имя> [--root <каталог>] [--results <каталог>]
 #
@@ -16,8 +17,8 @@
 # запускается только по этому слову: навык /duty:dispatch передаёт его,
 # когда пользователь согласился.
 #
-# Символ workspace — первая свободная буква Ⓐ…Ⓩ среди открытых задач
-# (dispatch.sh list); по нему главная сессия и пользователь узнают задачу
+# Символ workspace — случайный эмодзи из scripts/symbols.txt, не занятый
+# открытыми задачами (dispatch.sh list); по нему главная сессия и пользователь узнают задачу
 # в подписях herdr и в шапке вопроса (ask.py). Метка workspace и вкладки —
 # «<символ> <имя> · <модель>»; имя агента herdr и сессии Claude — <имя>.
 # Агент получает окружение DUTY_ROLE=worker, DUTY_TASK, DUTY_NAME,
@@ -93,8 +94,11 @@ set -euo pipefail
 shopt -u patsub_replacement 2> /dev/null || true
 
 die() { printf 'dispatch.sh: %s\n' "$*" >&2; exit 1; }
-SYMBOLS=(Ⓐ Ⓑ Ⓒ Ⓓ Ⓔ Ⓕ Ⓖ Ⓗ Ⓘ Ⓙ Ⓚ Ⓛ Ⓜ Ⓝ Ⓞ Ⓟ Ⓠ Ⓡ Ⓢ Ⓣ Ⓤ Ⓥ Ⓦ Ⓧ Ⓨ Ⓩ)
-# Метка workspace без символа в начале: «Ⓐ имя · модель» → «имя · модель».
+# Набор символов: по одному эмодзи в строке (одна кодовая точка, один глиф).
+# Имя задачи начинается с a-z, поэтому первый токен метки, не содержащий a-z,
+# — всегда символ: эмодзи, а у задач прежних версий буква Ⓐ…Ⓩ.
+symbols_file=${DUTY_SYMBOLS_FILE:-$(dirname "${BASH_SOURCE[0]}")/symbols.txt}
+# Метка workspace без символа в начале: «🦊 имя · модель» → «имя · модель».
 JQ_BARE='def bare: sub("^[^a-z ]+ "; "");'
 
 warn() { printf 'dispatch.sh: предупреждение: %s\n' "$*" >&2; }
@@ -163,17 +167,23 @@ open_tasks() {
     done
 }
 
-# Первая буква Ⓐ…Ⓩ, которой нет у открытых задач.
+# Случайный эмодзи из набора, которого нет у открытых задач (символы прежних
+# версий — буквы Ⓐ…Ⓩ — в набор не входят и просто занимают место в used).
+# Код 1 — набор исчерпан или не читается.
 free_symbol() {
     local workspaces=$1 used=' ' dir sym
+    local -a free=()
+    [ -r "$symbols_file" ] || return 1
     while IFS= read -r dir; do
         [ -n "$dir" ] || continue
         used+="$(task_symbol "$dir") "
     done < <(open_tasks "$workspaces")
-    for sym in "${SYMBOLS[@]}"; do
-        [[ $used == *" $sym "* ]] || { printf '%s' "$sym"; return 0; }
-    done
-    return 1
+    while IFS= read -r sym; do
+        [ -n "$sym" ] || continue
+        [[ $used == *" $sym "* ]] || free+=("$sym")
+    done < "$symbols_file"
+    [ ${#free[@]} -gt 0 ] || return 1
+    printf '%s' "${free[RANDOM % ${#free[@]}]}"
 }
 
 # Где на экране Claude Code текст приглашения: input — в строке ввода (между
@@ -448,7 +458,7 @@ cmd_start() {
         done
         workspaces=$(herdr workspace list)
     fi
-    symbol=$(free_symbol "$workspaces") || die 'все символы Ⓐ…Ⓩ заняты открытыми задачами'
+    symbol=$(free_symbol "$workspaces") || die "нет свободного символа: все символы из $symbols_file заняты открытыми задачами или файл не читается"
     label="$symbol $name · $model_arg"
     agents=$(herdr agent list)
     jq -e --arg n "$name" '[.result.agents[] | select(.name == $n)] | length == 0' <<< "$agents" > /dev/null \
@@ -606,6 +616,7 @@ command=start
 case $1 in
     list) command=list; shift ;;
     stalled) command=stalled; shift ;;
+    symbol) command=symbol; shift ;;
     close) command=close; shift; [ $# -ge 1 ] || die 'close: нужно имя задачи'; positional=("$1"); shift ;;
     *) [ $# -ge 2 ] || die 'нужны <имя> и <модель>'; positional=("$1" "$2"); shift 2 ;;
 esac
@@ -633,4 +644,5 @@ case $command in
     stalled) require_tools herdr jq; resolve_paths; cmd_stalled ;;
     close) require_tools herdr jq python3; resolve_paths; cmd_close "${positional[0]}" ;;
     start) require_tools herdr jq claude python3; resolve_paths; cmd_start "${positional[@]}" ;;
+    symbol) require_tools herdr jq; resolve_paths; sym=$(free_symbol "$(herdr workspace list)") || die 'нет свободного символа'; printf '%s\n' "$sym" ;;
 esac

@@ -11,8 +11,8 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parents[1] / "ask.py"
 # Замер на станции (32 ядра), 5 прогонов: wait до выхода после answer — 0,2-0,3 с,
 # самая долгая операция теста; узел Jenkins медленнее на ядро в 4,5 раза: 1,35 с,
-# с тройным запасом 4 с. Предел — предохранитель от зависания.
-LIMIT_S = 4
+# с двойным запасом 2,7 с, округлено до 3 с. Предел — предохранитель от зависания.
+LIMIT_S = 3
 
 BRIEF = """# Задача probe
 
@@ -175,7 +175,7 @@ class AskTest(unittest.TestCase):
     def test_wait_returns_answer(self) -> None:
         self.new("block", "--irreversible")
         waiter = subprocess.Popen(
-            [sys.executable, "-I", str(SCRIPT), "wait", "01"],
+            [sys.executable, "-I", str(SCRIPT), "wait", "01", "--timeout-s", "30"],
             env=self.env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

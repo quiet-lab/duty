@@ -73,6 +73,14 @@ def age_minutes(mark: dict) -> int:
     return max(0, (now_ms() - int(mark.get("since_ms") or 0)) // 60_000)
 
 
+def overdue_mark(mark: dict, minutes: int) -> str:
+    """Пометка просрочки: «⚠ просрочено +N мин»; пусто — срока нет или не истёк."""
+    ttl = mark.get("ttl_min")
+    if not isinstance(ttl, int) or isinstance(ttl, bool) or minutes <= ttl:
+        return ""
+    return f"⚠ просрочено +{minutes - ttl} мин"
+
+
 def describe(mark: dict) -> str:
     since = time.strftime(
         "%Y-%m-%d %H:%M:%S UTC", time.gmtime(int(mark.get("since_ms") or 0) / 1000)
@@ -183,6 +191,8 @@ def cmd_claim(args: argparse.Namespace) -> int:
         "since_ms": now_ms(),
         "note": args.note or "",
     }
+    if args.ttl_min is not None:
+        mark["ttl_min"] = args.ttl_min
     for _ in range(3):
         if try_create(path, mark):
             print(f"занято ресурс {args.resource} держателем {args.holder}")
@@ -249,6 +259,7 @@ def all_marks() -> list[dict]:
             m["resource"] = p.stem
             m["alive"] = pid_alive(int(m.get("pid") or 0))
             m["minutes"] = age_minutes(m)
+            m["overdue"] = overdue_mark(m, m["minutes"])
             marks.append(m)
     return marks
 
@@ -261,12 +272,13 @@ def cmd_list(args: argparse.Namespace) -> int:
     if not marks:
         print("отметок нет")
         return 0
-    print("| ресурс | держатель | задача | заметка | pid жив | минут |")
-    print("|---|---|---|---|---|---|")
+    print("| ресурс | держатель | задача | заметка | pid жив | минут | срок, мин |")
+    print("|---|---|---|---|---|---|---|")
     for m in marks:
         print(
             f"| {m['resource']} | {m.get('holder')} | {m.get('task') or ''} | {m.get('note') or ''} "
-            f"| {'да' if m['alive'] else 'нет (устарела)'} | {m['minutes']} |"
+            f"| {'да' if m['alive'] else 'нет (устарела)'} | {m['minutes']} "
+            f"| {m.get('ttl_min') if m.get('ttl_min') is not None else '—'} {m['overdue']} |"
         )
     return 0
 
@@ -293,6 +305,11 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--holder", required=True)
     c.add_argument("--task")
     c.add_argument("--note")
+    c.add_argument(
+        "--ttl-min",
+        type=int,
+        help="срок отметки, мин (2× от замера); дольше — list помечает «просрочено»",
+    )
     c.add_argument(
         "--pid",
         type=int,

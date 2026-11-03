@@ -7,16 +7,17 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "signals.py"
 # Замер на станции (32 ядра), 5 прогонов: от запуска wait до его выхода
 # после signal — 0,14-0,19 с, самая долгая операция теста. Узел Jenkins
-# медленнее на ядро в 4,5 раза: 0,19 * 4,5 = 0,86 с; с тройным запасом
-# 2,6 с, округлено до 3 с. Предел — предохранитель от зависания, а не
+# медленнее на ядро в 4,5 раза: 0,19 * 4,5 = 0,86 с; с двойным запасом
+# 1,7 с, округлено до 2 с. Предел — предохранитель от зависания, а не
 # время ожидания события.
-LIMIT_S = 3
+LIMIT_S = 2
 
 
 class SignalsTest(unittest.TestCase):
@@ -39,10 +40,15 @@ class SignalsTest(unittest.TestCase):
                     f.close()
 
     def run_cmd(self, *argv: str, env: dict | None = None) -> subprocess.CompletedProcess:
+        # Срок у wait обязателен; тесты, которым срок безразличен, получают общий.
+        if argv[:1] == ("wait",) and "--timeout-s" not in argv:
+            argv = (*argv, "--timeout-s", str(LIMIT_S))
         return subprocess.run([sys.executable, "-I", str(SCRIPT), *argv], env=env or self.env,
                               capture_output=True, text=True, timeout=LIMIT_S)
 
     def start_wait(self, *argv: str) -> subprocess.Popen:
+        if "--timeout-s" not in argv:
+            argv = (*argv, "--timeout-s", str(LIMIT_S))
         p = subprocess.Popen([sys.executable, "-I", str(SCRIPT), "wait", *argv], env=self.env,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.procs.append(p)
@@ -249,6 +255,37 @@ class SignalsTest(unittest.TestCase):
         self.assertEqual(list(self.dir.glob("ds.waiting-*")), [])
         # Наблюдатель завершён и собран родителем: каталога процесса нет.
         self.assertFalse(Path(f"/proc/{children[0]}").exists())
+
+    def test_timeout_is_required(self) -> None:
+        r = subprocess.run([sys.executable, "-I", str(SCRIPT), "wait", "no-ttl"], env=self.env,
+                           capture_output=True, text=True, timeout=LIMIT_S)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--timeout-s", r.stderr)
+
+    def test_timeout_writes_state_md(self) -> None:
+        task = self.dir / "task"
+        task.mkdir()
+        (task / "state.md").write_text("# state\nШаг: 1\n", encoding="utf-8")
+        env = {**self.env, "DUTY_TASK": str(task)}
+        r = self.run_cmd("wait", "never2", "--timeout-s", "1", "--holder", "w1", env=env)
+        self.assertEqual(r.returncode, 124, r.stderr)
+        text = (task / "state.md").read_text(encoding="utf-8")
+        self.assertIn("Просрочено: ожидание сигнала never2 (w1)", text)
+
+    def test_list_marks_overdue_waits(self) -> None:
+        old = int(time.time() * 1000) - 130 * 60_000
+        mark = {"name": "late", "holder": "w1", "task": "t", "pid": os.getpid(),
+                "since_ms": old, "timeout_s": 3600}
+        (self.dir / f"late.waiting-w1.{os.getpid()}").write_text(json.dumps(mark), encoding="utf-8")
+        fresh = dict(mark, name="fresh", since_ms=int(time.time() * 1000), timeout_s=3600)
+        (self.dir / f"fresh.waiting-w2.{os.getpid()}").write_text(json.dumps(fresh), encoding="utf-8")
+        out = self.run_cmd("list", "--waits").stdout
+        late = next(line for line in out.splitlines() if line.startswith("| late "))
+        self.assertIn("⚠ просрочено +70 мин", late)
+        fresh_line = next(line for line in out.splitlines() if line.startswith("| fresh "))
+        self.assertNotIn("просрочено", fresh_line)
+        waits = json.loads(self.run_cmd("list", "--waits", "--json").stdout)["waits"]
+        self.assertEqual({w["name"]: w["ttl_min"] for w in waits}, {"late": 60, "fresh": 60})
 
 
 if __name__ == "__main__":

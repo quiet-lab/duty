@@ -17,9 +17,9 @@ SIGNALS = PLUGIN / "scripts" / "signals.py"
 ASK = PLUGIN / "scripts" / "ask.py"
 # Замер на станции (32 ядра), 5 прогонов: хук stop с опросом signals.py и ask.py
 # и отправкой через push-agent.sh — 0,25-0,4 с, самая долгая операция теста;
-# узел Jenkins медленнее на ядро в 4,5 раза: 1,8 с, с тройным запасом 5,4 с,
-# округлено до 6 с. Предел — предохранитель от зависания, а не время ожидания.
-LIMIT_S = 6
+# узел Jenkins медленнее на ядро в 4,5 раза: 1,8 с, с двойным запасом 3,6 с,
+# округлено до 4 с. Предел — предохранитель от зависания, а не время ожидания.
+LIMIT_S = 4
 
 BRIEF = """# Задача probe
 
@@ -350,6 +350,8 @@ class GuardTest(unittest.TestCase):
                 "stand-free",
                 "--holder",
                 "probe",
+                "--timeout-s",
+                str(LIMIT_S),
             ],
             env=self.env,
             stdout=subprocess.PIPE,

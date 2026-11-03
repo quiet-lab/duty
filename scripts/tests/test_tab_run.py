@@ -163,6 +163,20 @@ class TabRunTest(unittest.TestCase):
         self.assertIn("отправлено", (run_dir / "push.log").read_text())
         self.assertEqual(len(self.calls("notification", "show")), 1)
 
+    def test_second_signal_does_not_lose_done(self) -> None:
+        """Второй сигнал во время записи итога не должен оставить прогон без done."""
+        flag = self.root / "finishing"
+        real_date = shutil.which("date")
+        double = Path(self.env["PATH"].split(os.pathsep)[0]) / "date"
+        double.write_text(
+            f'#!/usr/bin/env bash\n[ ! -e "{flag}" ] || kill -TERM "$PPID"\n'
+            f'exec "{real_date}" "$@"\n'
+        )
+        double.chmod(0o755)
+        run_dir = self.tab_run("r1", f'touch "{flag}"')
+        waited = self.run_script(WAIT_DONE, str(run_dir), "--timeout-s", str(LIMIT_S))
+        self.assertEqual(waited.stdout.strip(), f"done rc=0 {run_dir}")
+
     def test_tab_closed_mid_run(self) -> None:
         ready = self.root / "ready"
         gate = self.root / "gate"

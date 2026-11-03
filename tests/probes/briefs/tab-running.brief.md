@@ -8,7 +8,7 @@
 
 1. Запустить вкладку: `bash {{PLUGIN}}/scripts/tab-run.sh waiter --cwd {{SANDBOX}} -- 'inotifywait -e create -e moved_to {{SANDBOX}}/marker'`. В ответе JSON с `tab_id`.
 2. Записать `$DUTY_TASK/state.md`: шаг 2, вкладка `waiter`, `tab_id`, следующий шаг — ждать `done`.
-3. Ждать внутри хода вызовом Bash с таймаутом 600000 мс: `bash {{PLUGIN}}/scripts/wait-done.sh "$DUTY_TASK/runs/waiter" --timeout-s 590`, код 124 — запустить снова. Файл-отметку в `{{SANDBOX}}/marker/` создаст главная сессия; самому её не создавать, не опрашивать, не использовать `sleep`.
+3. Ждать внутри хода вызовом Bash с таймаутом 600000 мс: `bash {{PLUGIN}}/scripts/wait-done.sh "$DUTY_TASK/runs/waiter" --timeout-s 590`, вывод `timeout` — запустить снова. Файл-отметку в `{{SANDBOX}}/marker/` создаст главная сессия; самому её не создавать, не опрашивать, не использовать `sleep`.
 4. По `done rc=0` закрыть вкладку: `herdr tab close <tab_id>`; обновить `state.md`.
 5. Выполнить «Завершение».
 

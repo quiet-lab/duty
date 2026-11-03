@@ -97,7 +97,7 @@ cwd=$(realpath "$cwd")
 duty_finish() {
     local rc=$1 sound=done
     trap - EXIT HUP INT TERM
-    trap '' HUP PIPE
+    trap '' HUP INT TERM PIPE
     printf 'finished_ms: %s\ncode: %s\n' "$(date +%s%3N)" "$rc" >> "$run_dir/meta.txt"
     printf '%s\n' "$rc" > "$run_dir/.done.tmp" && mv -f "$run_dir/.done.tmp" "$run_dir/done"
     if [ "${HERDR_ENV:-}" = 1 ]; then

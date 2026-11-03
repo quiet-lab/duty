@@ -10,12 +10,15 @@
 """
 
 import argparse
-import errno
+import contextlib
+import fcntl
 import json
 import os
 import re
+import signal
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 DEFAULT_DIR = "~/work/telecom/axata/ocp-dev-stand/busy"
@@ -56,7 +59,13 @@ def read_mark(path: Path) -> dict | None:
         return None
     except (OSError, ValueError):
         # Повреждённый файл не принадлежит живому держателю.
-        return {"resource": path.stem, "holder": "?", "pid": 0, "since_ms": 0, "note": "файл повреждён"}
+        return {
+            "resource": path.stem,
+            "holder": "?",
+            "pid": 0,
+            "since_ms": 0,
+            "note": "файл повреждён",
+        }
     return data if isinstance(data, dict) else None
 
 
@@ -65,29 +74,104 @@ def age_minutes(mark: dict) -> int:
 
 
 def describe(mark: dict) -> str:
-    since = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(int(mark.get("since_ms") or 0) / 1000))
-    return f"занято: {mark.get('holder')}, {mark.get('note') or 'без заметки'}, с {since}"
+    since = time.strftime(
+        "%Y-%m-%d %H:%M:%S UTC", time.gmtime(int(mark.get("since_ms") or 0) / 1000)
+    )
+    return (
+        f"занято: {mark.get('holder')}, {mark.get('note') or 'без заметки'}, с {since}"
+    )
 
 
 def try_create(path: Path, mark: dict) -> bool:
+    """Поставить отметку атомарно: сосед видит либо отсутствие файла, либо
+    целую отметку. Содержимое пишется во временный файл в том же каталоге
+    (имя с точкой, `*.json` его не берёт), `os.link` отказывает, если отметка
+    уже есть, как `O_CREAT|O_EXCL`."""
+    tmp = path.with_name(f".{path.stem}.{os.getpid()}.tmp")
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(mark, f, ensure_ascii=False)
+        os.link(tmp, path)
     except FileExistsError:
         return False
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(mark, f, ensure_ascii=False)
+    finally:
+        tmp.unlink(missing_ok=True)
     return True
+
+
+# Предел ожидания замка снятия, секунд (не таймер и не опрос: ожидание остаётся
+# событийным, `flock` блокируется до освобождения замка, предел только не даёт
+# ждать вечно). busy.py — однопоточный CLI-процесс, поэтому SIGALRM в главном
+# потоке допустим. Под замком одно чтение и одно удаление
+# файла: замер 2026-11-03 на станции, 2000 повторов, максимум 0,95 мс.
+# Узлы Jenkins медленнее на ядро в 4,5 раза (замер 2026-10-21): 0,95 * 4,5 * 3 =
+# 12,9 мс на одного держателя замка; в очереди до 16 участников: 12,9 * 16 = 0,21 с,
+# округлено вверх.
+LOCK_WAIT_S = 0.25
+
+
+class LockTimeout(Exception):
+    """Замок снятия отметок не получен за `LOCK_WAIT_S`."""
+
+
+def _on_alarm(signum: int, frame: object) -> None:
+    raise LockTimeout
+
+
+@contextlib.contextmanager
+def removal(root: Path) -> Iterator[None]:
+    """Замок сверки и удаления отметки (claim снимает устаревшую, release снимает).
+
+    Файловая система не умеет «удалить, если содержимое прежнее», а реестр
+    обещает одного держателя ресурса. Постановка отметки замка не берёт: пока
+    файл на месте, `os.link` отказывает, а убирает файл только этот блок.
+    Размножить замок нельзя: единственность отметки и есть ресурс. Ожидание
+    ограничено `LOCK_WAIT_S`: блокирующий `flock` прерывается таймером сигнала
+    (опроса нет), по истечении — `LockTimeout`. Предел работает только в главном
+    потоке однопоточного CLI: при вызове модуля из многопоточного кода (или из
+    процесса со своим `SIGALRM`) он не действует, `signal.signal` бросит `ValueError`. Замок снимает ядро и при гибели
+    процесса. Условие снятия: атомарное снятие без чтения (`renameat2` с
+    `RENAME_EXCHANGE`) или реестр на сервере событий.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    fd = os.open(root / ".removal.lock", os.O_CREAT | os.O_RDWR, 0o644)
+    old = signal.signal(signal.SIGALRM, _on_alarm)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, LOCK_WAIT_S)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        yield
+    finally:
+        signal.signal(signal.SIGALRM, old)
+        os.close(fd)
+
+
+def lock_timeout(cmd: str, resource: str) -> int:
+    print(
+        f"{cmd}: не удалось занять {resource}: замок снятия отметок "
+        f"не получен за {LOCK_WAIT_S} с",
+        file=sys.stderr,
+    )
+    return EXIT_BUSY
 
 
 def cmd_claim(args: argparse.Namespace) -> int:
     # Родитель самого сценария — короткая оболочка Bash вызова: отметка
     # с его pid устарела бы сразу после выхода, поэтому pid задаётся явно.
     if args.pid is None:
-        print("claim: нужен --pid долгоживущего держателя; из Bash сессии Claude — "
-              '--pid "$PPID"', file=sys.stderr)
+        print(
+            "claim: нужен --pid долгоживущего держателя; из Bash сессии Claude — "
+            '--pid "$PPID"',
+            file=sys.stderr,
+        )
         return EXIT_USAGE
     if args.pid <= 0 or not pid_alive(args.pid):
-        print(f"claim: процесс --pid {args.pid} не жив, отметка сразу устарела бы", file=sys.stderr)
+        print(
+            f"claim: процесс --pid {args.pid} не жив, отметка сразу устарела бы",
+            file=sys.stderr,
+        )
         return EXIT_USAGE
     path = mark_path(args.resource)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -109,31 +193,49 @@ def cmd_claim(args: argparse.Namespace) -> int:
         if pid_alive(int(old.get("pid") or 0)):
             print(describe(old))
             return EXIT_BUSY
-        print(f"снята устаревшая отметка {args.resource}: держатель {old.get('holder')}, pid {old.get('pid')} не жив")
         try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+            with removal(path.parent):
+                # Чтение и удаление — одна операция: без замка участник гонки удалил бы
+                # отметку победителя, поставленную между его чтением и удалением.
+                if read_mark(path) != old:
+                    continue
+                path.unlink(missing_ok=True)
+        except LockTimeout:
+            return lock_timeout("claim", args.resource)
+        print(
+            f"снята устаревшая отметка {args.resource}: держатель {old.get('holder')}, pid {old.get('pid')} не жив"
+        )
     print(f"не удалось занять {args.resource}", file=sys.stderr)
     return EXIT_BUSY
 
 
 def cmd_release(args: argparse.Namespace) -> int:
     path = mark_path(args.resource)
-    mark = read_mark(path)
-    if mark is None:
+    if not path.exists():
         print(f"{args.resource}: отметки нет")
         return 0
-    if args.holder and mark.get("holder") != args.holder:
-        if not args.force:
-            print(f"отметка {args.resource} принадлежит {mark.get('holder')}, а не {args.holder}; "
-                  "снять чужую можно с --force", file=sys.stderr)
-            return EXIT_BUSY
-        print(f"предупреждение: снята чужая отметка {args.resource} держателя {mark.get('holder')}")
     try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
+        # Чтение, сверка держателя и удаление — под замком: иначе отметка,
+        # снятая как устаревшая и поставленная заново соседом, была бы удалена.
+        with removal(path.parent):
+            mark = read_mark(path)
+            if mark is None:
+                print(f"{args.resource}: отметки нет")
+                return 0
+            if args.holder and mark.get("holder") != args.holder:
+                if not args.force:
+                    print(
+                        f"отметка {args.resource} принадлежит {mark.get('holder')}, а не {args.holder}; "
+                        "снять чужую можно с --force",
+                        file=sys.stderr,
+                    )
+                    return EXIT_BUSY
+                print(
+                    f"предупреждение: снята чужая отметка {args.resource} держателя {mark.get('holder')}"
+                )
+            path.unlink(missing_ok=True)
+    except LockTimeout:
+        return lock_timeout("release", args.resource)
     print(f"снято {args.resource}")
     return 0
 
@@ -162,8 +264,10 @@ def cmd_list(args: argparse.Namespace) -> int:
     print("| ресурс | держатель | задача | заметка | pid жив | минут |")
     print("|---|---|---|---|---|---|")
     for m in marks:
-        print(f"| {m['resource']} | {m.get('holder')} | {m.get('task') or ''} | {m.get('note') or ''} "
-              f"| {'да' if m['alive'] else 'нет (устарела)'} | {m['minutes']} |")
+        print(
+            f"| {m['resource']} | {m.get('holder')} | {m.get('task') or ''} | {m.get('note') or ''} "
+            f"| {'да' if m['alive'] else 'нет (устарела)'} | {m['minutes']} |"
+        )
     return 0
 
 
@@ -173,7 +277,9 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(f"свободно: {args.resource}")
         return 0
     if not pid_alive(int(mark.get("pid") or 0)):
-        print(f"свободно: {args.resource} (отметка держателя {mark.get('holder')} устарела)")
+        print(
+            f"свободно: {args.resource} (отметка держателя {mark.get('holder')} устарела)"
+        )
         return 0
     print(describe(mark))
     return EXIT_BUSY
@@ -187,8 +293,11 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--holder", required=True)
     c.add_argument("--task")
     c.add_argument("--note")
-    c.add_argument("--pid", type=int,
-                   help='обязателен: процесс держателя; из Bash сессии Claude — --pid "$PPID"')
+    c.add_argument(
+        "--pid",
+        type=int,
+        help='обязателен: процесс держателя; из Bash сессии Claude — --pid "$PPID"',
+    )
     c.set_defaults(fn=cmd_claim)
     r = sub.add_parser("release", help="снять свою отметку")
     r.add_argument("resource")

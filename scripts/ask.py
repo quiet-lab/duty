@@ -288,8 +288,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
         "--holder",
         name,
     ]
-    if args.timeout_s is not None:
-        argv += ["--timeout-s", str(args.timeout_s)]
+    argv += ["--timeout-s", str(args.timeout_s)]
     code = subprocess.run(argv, check=False).returncode
     if code != 0:
         return code
@@ -340,7 +339,8 @@ def build_parser() -> argparse.ArgumentParser:
     w = sub.add_parser("wait", help="ждать ответа на свой вопрос по сигналу")
     w.add_argument("nn")
     w.add_argument(
-        "--timeout-s", type=int, help="предохранитель; по умолчанию без срока"
+        "--timeout-s", type=int, required=True,
+        help="срок ожидания ответа, с (обязателен): оценка главной сессии, не меньше 2× ожидаемого"
     )
     return p
 

@@ -21,7 +21,9 @@
 # видит его целиком. При HERDR_ENV=1 вкладка показывает уведомление herdr
 # (звук done, при ненулевом коде request) и печатает «DUTY-DONE <имя>
 # rc=<код>» для herdr pane wait-output. В ответ — JSON с tab_id, pane_id
-# и run_dir. Вывод снимают из out.log после done; затем вкладку закрывают:
+# и run_dir, log (путь к out.log: его же строка «log:» в meta.txt; агент
+# передаёт путь сторожу прогресса — wait-done.sh --log <log> --stall-s <секунды>).
+# Вывод снимают из out.log после done; затем вкладку закрывают:
 # herdr tab close <tab_id> (правило — agents/worker.md, п. 4).
 #
 # Вместе с done вкладка будит агента задачи: push-agent.sh отправляет в его
@@ -87,6 +89,7 @@ cwd=$(realpath "$cwd")
     done
     printf 'run_dir=%q\n' "$run_dir"
     printf 'printf "cwd: %%s\\nstarted_ms: %%s\\n" "$PWD" "$(date +%%s%%3N)" > "$run_dir/meta.txt"\n'
+    printf 'printf "log: %%s\\n" "$run_dir/out.log" >> "$run_dir/meta.txt"\n'
     [ -z "$kind" ] || printf 'printf "kind: %%s\\n" %q >> "$run_dir/meta.txt"\n' "$kind"
     printf 'push=%q\n' "$here/push-agent.sh"
     printf 'run_name=%q\n' "$name"
@@ -140,4 +143,4 @@ herdr pane run "$pane_id" "bash $(printf '%q' "$run_dir/cmd.sh")" > /dev/null \
     || die "herdr pane run $pane_id не принял команду; вкладка $tab_id остаётся"
 
 jq -n --arg tab "$tab_id" --arg pane "$pane_id" --arg dir "$run_dir" \
-    '{tab_id: $tab, pane_id: $pane, run_dir: $dir}'
+    '{tab_id: $tab, pane_id: $pane, run_dir: $dir, log: ($dir + "/out.log")}'

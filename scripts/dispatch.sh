@@ -62,7 +62,8 @@
 #
 # list — открытые workspace задач (служебный блок brief.md в каталоге
 # результатов и живой workspace с тем же id и меткой): символ, состояние
-# агента, строка «Шаг:» из state.md и наличие report.md; по нему
+# агента, строка «Шаг:» из state.md, просроченные ожидания раздела «Ожидания»
+# («⚠ просрочено +N мин», state-waits.py) и наличие report.md; по нему
 # /duty:cleanup предлагает закрытие.
 #
 # stalled — задачи, которые можно продолжить: state.md есть, в его строке
@@ -89,6 +90,7 @@ warn() { printf 'dispatch.sh: предупреждение: %s\n' "$*" >&2; }
 plugin_root=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
 busy="$plugin_root/scripts/busy.py"
 signals="$plugin_root/scripts/signals.py"
+state_waits="$plugin_root/scripts/state-waits.py"
 
 # Корень монорепозитория: из сабмодуля — его надпроект.
 resolve_paths() {
@@ -129,6 +131,15 @@ task_step() {
     [ -n "$step" ] || { printf '—'; return; }
     [ ${#step} -le 100 ] || step="${step:0:99}…"
     printf '%s' "${step//|//}"
+}
+
+# Просроченные ожидания из раздела «Ожидания» state.md задачи (state-waits.py);
+# нет — «—».
+task_overdue() {
+    local out
+    out=$(python3 -I "$state_waits" "$1/state.md" 2> /dev/null) || out=
+    [ -n "$out" ] || { printf '—'; return; }
+    printf '%s' "${out//|//}"
 }
 
 # Есть ли у задачи открытый workspace с её меткой: 0 — есть.
@@ -215,7 +226,7 @@ try_rename() {
 cmd_list() {
     local workspaces dir name ws status report sym
     workspaces=$(herdr workspace list)
-    printf '| символ | задача | workspace | агент | шаг (state.md) | report.md | каталог |\n|---|---|---|---|---|---|---|\n'
+    printf '| символ | задача | workspace | агент | шаг (state.md) | ожидания | report.md | каталог |\n|---|---|---|---|---|---|---|---|\n'
     while IFS= read -r dir; do
         [ -n "$dir" ] || continue
         name=$(basename "$dir")
@@ -224,8 +235,8 @@ cmd_list() {
         status=$(agent_status "$(agent_target "$name" "$dir")")
         report='нет'
         [ -s "$dir/report.md" ] && report='есть'
-        printf '| %s | %s | `%s` | %s | %s | %s | `%s` |\n' "${sym:-—}" "$name" "$ws" "${status:-вышел}" \
-            "$(task_step "$dir")" "$report" "$dir"
+        printf '| %s | %s | `%s` | %s | %s | %s | %s | `%s` |\n' "${sym:-—}" "$name" "$ws" "${status:-вышел}" \
+            "$(task_step "$dir")" "$(task_overdue "$dir")" "$report" "$dir"
     done < <(open_tasks "$workspaces")
 }
 

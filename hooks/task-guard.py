@@ -37,7 +37,8 @@ SUBAGENT_TOOLS = {"Agent", "Task"}
 READ_ONLY_TYPES = {"Explore", "Plan", "claude-code-guide", "duty:inspector"}
 MESSAGE_LIMIT = 200
 # Подпроцессы signals.py и ask.py: 0,1 с на станции, на узлах в 4,5 раза дольше,
-# с тройным запасом 2 с; у herdr — ответ сервера, тот же порядок.
+# с двойным запасом 0,9 с; предел 5 с взят с округлением вверх на запуск
+# интерпретатора; у herdr — ответ сервера, тот же порядок.
 SUBPROCESS_LIMIT_S = 5
 
 DENY_WAIT = (

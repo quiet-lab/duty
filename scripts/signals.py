@@ -33,8 +33,8 @@ WAITING = ".waiting-"
 # Отметка ожидания: <имя>.waiting-<кто>.<pid>; pid делает имя уникальным на процесс.
 WAIT_REST_RE = re.compile(r"^([a-z0-9][a-z0-9_-]*)\.[0-9]+$")
 # Закрытие inotifywait: замер на станции (32 ядра) — 0,010-0,015 с от terminate
-# до выхода; на узле Jenkins в 4,5 раза медленнее на ядро: 0,07 с; с тройным
-# запасом 0,2 с, округлено вверх до 1 с.
+# до выхода; на узле Jenkins в 4,5 раза медленнее на ядро: 0,07 с; с двойным
+# запасом 0,14 с, округлено вверх до 1 с.
 CLOSE_WAIT_S = 1
 FATAL_SIGNALS = (os_signal.SIGTERM, os_signal.SIGINT, os_signal.SIGHUP)
 
@@ -87,6 +87,13 @@ def fmt_utc(ms: object) -> str:
         return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(n / 1000))
     except (OverflowError, ValueError, OSError):
         return "?"
+
+
+def overdue_mark(minutes: int, ttl_min: int | None) -> str:
+    """Пометка просрочки к строке перечня: «⚠ просрочено +N мин»; пусто — срок не истёк."""
+    if ttl_min is None or minutes <= ttl_min:
+        return ""
+    return f"⚠ просрочено +{minutes - ttl_min} мин"
 
 
 def write_atomic(path: Path, data: dict) -> None:
@@ -254,18 +261,19 @@ def cmd_wait(args: argparse.Namespace) -> int:
             if first is None or "Watches established." not in first:
                 print(f"wait: наблюдение не установлено: {first}", file=sys.stderr)
                 return EXIT_USAGE
-            deadline = None if args.timeout_s is None else time.monotonic() + args.timeout_s
+            deadline = time.monotonic() + args.timeout_s
             data = read_json(path)
             if data is None:
                 write_atomic(mark, {"name": args.name, "holder": holder,
                                     "task": os.environ.get("DUTY_TASK", ""),
-                                    "pid": os.getpid(), "since_ms": now_ms()})
+                                    "pid": os.getpid(), "since_ms": now_ms(),
+                                    "timeout_s": args.timeout_s})
                 created = True
                 print(f"wait: {args.name}: ждёт сигнал, отметка {mark.name}", file=sys.stderr, flush=True)
             while data is None:
                 line = watch.line(deadline)
                 if line is None:
-                    return _timeout(args)
+                    return _timeout(args, holder)
                 event, _, fname = line.partition(" ")
                 if fname != path.name:
                     continue
@@ -293,8 +301,19 @@ def cmd_wait(args: argparse.Namespace) -> int:
                 pass
 
 
-def _timeout(args: argparse.Namespace) -> int:
+def _timeout(args: argparse.Namespace, holder: str) -> int:
     print(f"wait {args.name}: срок {args.timeout_s} с истёк, сигнала нет", file=sys.stderr)
+    # Запись в state.md задачи: по ней агент и главная сессия видят просрочку
+    # (agents/worker.md, п. 8); без DUTY_TASK или state.md записывать некуда.
+    state = Path(os.environ.get("DUTY_TASK", "")) / "state.md"
+    if os.environ.get("DUTY_TASK") and state.is_file():
+        hhmm = time.strftime("%H:%M", time.gmtime())
+        try:
+            with state.open("a", encoding="utf-8") as f:
+                f.write(f"\nПросрочено: ожидание сигнала {args.name} ({holder}), срок "
+                        f"{max(1, args.timeout_s // 60)} мин истёк в {hhmm} UTC; сигнала нет\n")
+        except OSError as e:
+            print(f"wait: запись в {state} не удалась: {e}", file=sys.stderr)
     return EXIT_TIMEOUT
 
 
@@ -339,6 +358,9 @@ def collect() -> tuple[list[dict], list[dict]]:
                 data["task"] = "повреждён"
             data["alive"] = pid_alive(pid or 0)
             data["minutes"] = 0 if since is None else max(0, (now - since) // 60_000)
+            t_s = to_int(data.get("timeout_s"))
+            data["ttl_min"] = None if t_s is None else max(1, t_s // 60)
+            data["overdue"] = overdue_mark(data["minutes"], data["ttl_min"])
             waits.append(data)
     for w in waits:
         w["given"] = w["name"] in names
@@ -350,11 +372,12 @@ def cell(value: object) -> str:
 
 
 def print_waits(waits: list[dict]) -> None:
-    print("| ждёт сигнал | кто | задача | pid жив | минут | сигнал дан |")
-    print("|---|---|---|---|---|---|")
+    print("| ждёт сигнал | кто | задача | pid жив | минут | срок, мин | сигнал дан |")
+    print("|---|---|---|---|---|---|---|")
     for w in waits:
         print(f"| {w['name']} | {w['holder']} | {cell(w.get('task'))} "
               f"| {'да' if w['alive'] else 'нет (устарело)'} | {w['minutes']} "
+              f"| {'—' if w['ttl_min'] is None else w['ttl_min']} {w['overdue']} "
               f"| {'да' if w['given'] else 'нет'} |")
 
 
@@ -411,7 +434,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_signal)
     w = sub.add_parser("wait", help="ждать сигнал по событию")
     w.add_argument("name")
-    w.add_argument("--timeout-s", type=int, help="предохранитель: срок ожидания; по умолчанию без срока")
+    w.add_argument("--timeout-s", type=int, required=True,
+                   help="срок ожидания, с (обязателен): 2× от замера или оценки; по истечении код 124 и запись в state.md")
     w.add_argument("--holder", help="кто ждёт; по умолчанию DUTY_NAME, DUTY_HOLDER или pid<pid>")
     w.set_defaults(fn=cmd_wait)
     ls = sub.add_parser("list", help="сигналы и ожидания")

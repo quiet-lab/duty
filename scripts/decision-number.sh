@@ -1,106 +1,107 @@
 #!/usr/bin/env bash
-# Выдаёт следующий номер записи решения: наибольший существующий плюс один.
-# Использование: decision-number.sh <каталог docs/decisions> [--peek]
+# Номер и вставка записи решения в тематический каталог docs/decisions/<NN>-<тема>/.
 #
-# Номер выдаётся атомарно: замок — каталог (mkdir атомарен), снимается в trap только
-# держателем. Внутри git-репозитория
-# замок общий для всех worktree: <общий каталог git>/decision-number.lock,
-# вне git — <каталог>/.number-lock. Выданный номер сразу резервируется пустым
-# файлом NNNN-reserved.md, чтобы следующий вызов, пришедший после снятия
-# замка, увидел его и выдал другой номер; вызывающий переименовывает файл
-# в настоящее имя записи (mv) либо удаляет, если запись не создана.
-# С --peek номер только показывается, без замка и резервирования.
-# Номера считаются по файлам каталога, индексу git, деревьям всех местных
-# ветвей репозитория и каталогам всех его worktree (с незакоммиченными
-# файлами и резервами): задачи в разных worktree не получают один номер.
-# Вне git-репозитория — только по файлам каталога.
+#   decision-number.sh <каталог записей>
+#       печатает номер, который получит запись, вставленная последней
+#       в каталог: последний номер каталога плюс один; в пустом каталоге —
+#       последний номер предыдущих каталогов плюс один. Ничего не меняет.
+#   decision-number.sh <каталог записей> --insert <файл> [--after <номер>]
+#       вставляет запись сценарием scripts/renumber-decisions.py монорепозитория
+#       (insert --catalog <NN> --last или insert --after <номер>): последующие
+#       записи сдвигаются, ссылки на них переписываются; затем указатель
+#       docs/decisions/README.md порождается заново (--write-index).
+#       Печатает путь записи. Имя файла — тема латиницей через дефис
+#       (<тема>.md или NNNN-<тема>.md), номер ставит сценарий.
+#
+# Нумерация сквозная и повествовательная: номер — место записи в порядке
+# каталогов, а не её постоянный идентификатор. Ветви, вставившие записи
+# параллельно, сводятся при слиянии перенумерацией renumber-decisions.py.
+# Сценарий перенумерации — переменная DUTY_RENUMBER (по умолчанию
+# scripts/renumber-decisions.py корня репозитория каталога).
 set -euo pipefail
 
-dir="${1:-}"
-peek="${2:-}"
-if [[ -z "$dir" || ! -d "$dir" ]]; then
-    echo "использование: decision-number.sh <каталог docs/decisions> [--peek]" >&2
-    exit 2
-fi
-dir="$(cd "$dir" && pwd)"
+die() { printf 'decision-number.sh: %s\n' "$*" >&2; exit 2; }
 
-# Имена файлов записей из всех источников; ошибки git не роняют сценарий.
-list_names() {
-    local prefix ref wt d
-    find "$dir" -maxdepth 1 -type f -name '[0-9][0-9][0-9][0-9]-*.md' -printf '%f\n'
-    git -C "$dir" ls-files --cached -- . 2>/dev/null | sed 's|.*/||' || true
-    if git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        prefix="$(git -C "$dir" rev-parse --show-prefix 2>/dev/null || true)"
-        while read -r ref; do
-            [[ -n "$ref" ]] || continue
-            if [[ -n "$prefix" ]]; then
-                git -C "$dir" ls-tree --full-tree --name-only "$ref" -- "$prefix" 2>/dev/null || true
-            else
-                git -C "$dir" ls-tree --full-tree --name-only "$ref" 2>/dev/null || true
-            fi
-        done < <(git -C "$dir" for-each-ref --format='%(refname)' refs/heads 2>/dev/null || true) | sed 's|.*/||' || true
-        while read -r wt; do
-            d="$wt/$prefix"
-            if [[ -d "$d" ]]; then
-                find "$d" -maxdepth 1 -type f -name '[0-9][0-9][0-9][0-9]-*.md' -printf '%f\n' 2>/dev/null || true
-            fi
-        done < <(git -C "$dir" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' || true)
-    fi
+catalog=${1:-}
+[[ -n $catalog && -d $catalog ]] || die 'вызов: decision-number.sh <каталог docs/decisions/NN-тема> [--insert <файл> [--after <номер>]]'
+shift
+catalog=$(cd "$catalog" && pwd)
+decisions=$(dirname "$catalog")
+nn=$(basename "$catalog")
+[[ $nn =~ ^([0-9]{2})-[a-z0-9-]+$ ]] || die "$catalog — не тематический каталог <NN>-<тема>"
+nn=${BASH_REMATCH[1]}
+
+insert='' after=''
+while [ $# -gt 0 ]; do
+    case $1 in
+        --insert) insert=${2:?--insert без файла}; shift 2 ;;
+        --after) after=${2:?--after без номера}; shift 2 ;;
+        *) die "неизвестный ключ $1" ;;
+    esac
+done
+[ -z "$after" ] || [ -n "$insert" ] || die '--after только вместе с --insert'
+[[ -z $after || $after =~ ^[0-9]{1,4}$ ]] || die "--after $after: номер записи"
+
+# Номера записей по порядку каталогов: «<NN> <NNNN>» на строку. Источники
+# объединения <NNNN>.merge/ лежат глубже и не учитываются.
+numbers() {
+    local file c n
+    for file in "$decisions"/[0-9][0-9]-*/[0-9][0-9][0-9][0-9]-*.md; do
+        [ -f "$file" ] || continue
+        c=$(basename "$(dirname "$file")"); n=$(basename "$file")
+        printf '%s %s\n' "${c:0:2}" "${n:0:4}"
+    done | sort
 }
 
 next_number() {
-    local max=0 name n
-    list_names | while read -r name; do
-        # if, а не «&&»: при set -e и pipefail неподходящее имя последней
-        # строки сделало бы код выхода всего конвейера ненулевым.
-        if [[ "$name" =~ ^([0-9]{4})-.*\.md$ ]]; then
-            echo "${BASH_REMATCH[1]}"
-        fi
-    done | sort -u | tail -n1 | {
-        read -r max || max=0
-        printf '%04d\n' "$((10#${max:-0} + 1))"
-    }
+    local last
+    last=$(numbers | awk -v c="$nn" '$1 <= c { n = $2 } END { print n + 0 }')
+    printf '%04d\n' "$((10#$last + 1))"
 }
 
-if [[ "$peek" == "--peek" ]]; then
+if [ -z "$insert" ]; then
     next_number
     exit 0
 fi
 
-# Общий каталог git один на все worktree, поэтому параллельные вызовы из
-# разных worktree берут один и тот же замок.
-common="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-if [[ -n "$common" && -d "$common" ]]; then
-    lock="$common/decision-number.lock"
-else
-    lock="$dir/.number-lock"
-fi
-# Ожидание замка — по событию снятия через inotifywait, без опроса;
-# без inotifywait замок не ждётся, а вызов завершается кодом 3. Срок 30 с
-# в inotifywait — только страховка от замка, оставшегося после аварийного
-# завершения держателя; о занятом замке и способе его снять сообщается
-# один раз перед первым ожиданием, потому что путь замка спрятан в .git.
-# Снятие замка в trap ставится только после успешного mkdir: вызов,
-# прерванный во время ожидания, не должен удалять замок другого держателя.
-acquire() {
-    mkdir "$lock" 2>/dev/null
-}
+[ -f "$insert" ] || die "файла $insert нет"
+insert=$(realpath "$insert")
+slug=$(basename "$insert" .md)
+[[ $slug =~ ^([0-9]{4}-)?([a-z0-9][a-z0-9-]*)$ ]] || die "имя $slug: тема латиницей через дефис"
+slug=${BASH_REMATCH[2]}
+root=$(git -C "$decisions" rev-parse --show-toplevel 2> /dev/null) || die "$decisions не в git-репозитории"
+renumber=${DUTY_RENUMBER:-$root/scripts/renumber-decisions.py}
+[ -f "$renumber" ] || die "нет сценария перенумерации $renumber"
+
+# WARNING: замок на вставку в одном рабочем дереве. Почему иначе нельзя:
+# вставка переименовывает записи и переписывает ссылки во многих файлах
+# не одной атомарной операцией, две вставки в одном дереве теряют правки
+# друг друга. Разные worktree замок не делят (каталог git у каждого свой),
+# их номера сводит перенумерация при слиянии. Ожидание — событием снятия
+# (inotifywait), срок 30 с — страховка от замка, оставшегося после аварии
+# держателя. Условие снятия: renumber-decisions.py insert сам проверяет,
+# что дерево не изменилось за время вставки, и откатывает её при гонке.
+lock="$(git -C "$decisions" rev-parse --path-format=absolute --git-dir)/decision-insert.lock"
 announced=0
-until acquire; do
-    if ! command -v inotifywait >/dev/null; then
-        echo "замок $lock занят, а inotifywait не установлен" >&2
-        exit 3
-    fi
-    if [[ "$announced" == 0 ]]; then
-        echo "замок $lock занят; ожидание его снятия; оставшийся после аварии замок снимается rmdir $lock" >&2
+until mkdir "$lock" 2> /dev/null; do
+    command -v inotifywait > /dev/null || die "замок $lock занят, а inotifywait не установлен"
+    if [ "$announced" = 0 ]; then
+        printf 'decision-number.sh: замок %s занят, ожидание снятия; после аварии снимается rmdir %s\n' "$lock" "$lock" >&2
         announced=1
     fi
     # Замок мог исчезнуть между mkdir и подпиской: событие ловит удаление,
-    # а повторная проверка после подписки закрывает гонку.
-    inotifywait -qq -e delete_self,delete --timeout 30 "$lock" 2>/dev/null || true
+    # а повторный mkdir после подписки закрывает гонку.
+    inotifywait -qq -e delete_self,delete --timeout 30 "$lock" 2> /dev/null || true
 done
-trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+trap 'rmdir "$lock" 2> /dev/null || true' EXIT
 
-number="$(next_number)"
-: > "$dir/${number}-reserved.md"
-echo "$number"
+if [ -n "$after" ]; then
+    python3 -I "$renumber" insert --after "$((10#$after))" "$insert" >&2
+else
+    python3 -I "$renumber" insert --catalog "$nn" --last "$insert" >&2
+fi
+python3 -I "$renumber" --write-index >&2
+
+found=$(find "$decisions"/[0-9][0-9]-* -maxdepth 1 -type f -name "[0-9][0-9][0-9][0-9]-$slug.md" | head -1)
+[ -n "$found" ] || die "запись $slug после вставки не найдена"
+printf '%s\n' "$found"

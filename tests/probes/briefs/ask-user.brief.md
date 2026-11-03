@@ -8,7 +8,7 @@
 
 1. Прочитать `{{SANDBOX}}/repo/README.md`; `git clone {{SANDBOX}}/repo $DUTY_TASK/work`.
 2. Чем дополнить README, не решено; два равноправных способа: (а) короткая строка назначения, (б) таблица модулей `sandbox_pkg`. Для пробы шаг считается необратимым. Задать вопрос: `python3 -I {{PLUGIN}}/scripts/ask.py new readme --title 'Чем дополнить README песочницы' --step '2 — правка README' --depends 'текст коммита в клоне' --option 'строка назначения — одна строка, без таблицы' --option 'таблица модулей — по строке на модуль sandbox_pkg' --recommended 1 --irreversible`. Затем уведомление herdr по п. 5 агента.
-3. Ждать ответа во вкладке: `bash {{PLUGIN}}/scripts/tab-run.sh answer -- 'python3 -I {{PLUGIN}}/scripts/ask.py wait 01'`; `tab_id` и PID ожидания — в `state.md`; ждать фоновым вызовом `bash {{PLUGIN}}/scripts/wait-done.sh "$DUTY_TASK/runs/answer"`. Ответ даст главная сессия; самому не отвечать.
+3. Ждать ответа во вкладке: `bash {{PLUGIN}}/scripts/tab-run.sh answer -- 'python3 -I {{PLUGIN}}/scripts/ask.py wait 01'`; `tab_id` и PID ожидания — в `state.md`; ждать внутри хода вызовом Bash с таймаутом 600000 мс `bash {{PLUGIN}}/scripts/wait-done.sh "$DUTY_TASK/runs/answer" --timeout-s 590`, вывод `timeout` — запустить снова. Ответ даст главная сессия; самому не отвечать.
 4. Прочитать ответ из раздела «Ответ» файла `$DUTY_TASK/questions/01-readme.md`; в клоне выполнить выбранное (правка `README.md`), `git add README.md && git commit -m "Проба ask-user"`. Push не выполнять.
 5. Выполнить «Завершение».
 

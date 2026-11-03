@@ -7,7 +7,7 @@
 ## Следующие шаги
 
 1. `git clone {{SANDBOX}}/repo $DUTY_TASK/work`; в клоне `git switch -c probe/fix-pricing`.
-2. Вкладкой прогнать тесты: `bash {{PLUGIN}}/scripts/tab-run.sh tests1 --cwd $DUTY_TASK/work -- '{{SANDBOX}}/venv/bin/python -m pytest -q'`; ждать фоновым вызовом `wait-done.sh "$DUTY_TASK/runs/tests1"`; `tab_id` в `state.md`. Найти причину единственного падения.
+2. Вкладкой прогнать тесты: `bash {{PLUGIN}}/scripts/tab-run.sh tests1 --cwd $DUTY_TASK/work -- '{{SANDBOX}}/venv/bin/python -m pytest -q'`; ждать внутри хода вызовом Bash с таймаутом 600000 мс `wait-done.sh "$DUTY_TASK/runs/tests1" --timeout-s 590`, вывод `timeout` — запустить снова; `tab_id` в `state.md`. Найти причину единственного падения.
 3. Исправление кода и, если нужно, правку теста поручить инструментом `Agent` с `model: sonnet` (назвать явно). В поручении — пути `$DUTY_TASK/brief.md`, `$DUTY_TASK/rules.md`, клона `$DUTY_TASK/work` и причина падения; без пересказа записки. Самому код не править.
 4. Повторный прогон вкладкой `tests2` (новое имя), ждать `done`; ожидаем `rc=0`.
 5. `git add` только изменённых файлов по путям; коммит «Исправление порога скидки».

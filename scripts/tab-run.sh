@@ -24,6 +24,12 @@
 # и run_dir. Вывод снимают из out.log после done; затем вкладку закрывают:
 # herdr tab close <tab_id> (правило — agents/worker.md, п. 4).
 #
+# Вместе с done вкладка будит агента задачи: push-agent.sh отправляет в его
+# панель строку «done rc=<код> <каталог прогона>» (итог отправки — push.log
+# в каталоге прогона). Без DUTY_TASK отправки нет. Закрытие вкладки посреди
+# прогона даёт done с кодом 129, строка «pid:» в meta.txt — признак живого
+# прогона для хука Stop (hooks/task-guard.py).
+#
 # Переменные DUTY_TASK, DUTY_NAME, DUTY_ROLE, DUTY_SYMBOL и DUTY_MODEL вызывающего (если заданы)
 # экспортируются в начале cmd.sh и передаются herdr tab create --env: workspace
 # create задаёт окружение только корневой панели, новая вкладка его не
@@ -40,6 +46,7 @@ name=$1
 shift
 cwd=$PWD
 kind=
+here=$(realpath "$(dirname "${BASH_SOURCE[0]}")")
 while [ $# -gt 0 ] && [ "$1" != -- ]; do
     case $1 in
         --cwd) cwd=${2:?--cwd без значения}; shift 2 ;;
@@ -81,15 +88,36 @@ cwd=$(realpath "$cwd")
     printf 'run_dir=%q\n' "$run_dir"
     printf 'printf "cwd: %%s\\nstarted_ms: %%s\\n" "$PWD" "$(date +%%s%%3N)" > "$run_dir/meta.txt"\n'
     [ -z "$kind" ] || printf 'printf "kind: %%s\\n" %q >> "$run_dir/meta.txt"\n' "$kind"
+    printf 'push=%q\n' "$here/push-agent.sh"
+    printf 'run_name=%q\n' "$name"
+    # Закрытие вкладки посреди прогона (SIGHUP) и остановка сигналом тоже
+    # записывают done: без него wait-done.sh ждал бы вечно. Обработчик сигнала
+    # bash выполняет после конца конвейера, поэтому done не опережает команду.
+    cat << 'FINISH'
+duty_finish() {
+    local rc=$1 sound=done
+    trap - EXIT HUP INT TERM
+    trap '' HUP INT TERM PIPE
+    printf 'finished_ms: %s\ncode: %s\n' "$(date +%s%3N)" "$rc" >> "$run_dir/meta.txt"
+    printf '%s\n' "$rc" > "$run_dir/.done.tmp" && mv -f "$run_dir/.done.tmp" "$run_dir/done"
+    if [ "${HERDR_ENV:-}" = 1 ]; then
+        [ "$rc" = 0 ] || sound=request
+        herdr notification show "Вкладка $run_name завершена" --body "$run_dir" --sound "$sound" > /dev/null 2>&1 || true
+    fi
+    printf 'DUTY-DONE %s rc=%s\n' "$run_name" "$rc" || true
+    if [ -n "${DUTY_TASK:-}" ]; then
+        bash "$push" "$DUTY_TASK" "done rc=$rc $run_dir" >> "$run_dir/push.log" 2>&1 || true
+    fi
+    exit "$rc"
+}
+trap 'duty_finish 1' EXIT
+trap 'duty_finish 129' HUP
+trap 'duty_finish 130' INT
+trap 'duty_finish 143' TERM
+FINISH
+    printf 'printf "pid: %%s\\n" "$$" >> "$run_dir/meta.txt"\n'
     printf '{\n%s\n} 2>&1 | tee "$run_dir/out.log"\n' "$command"
-    printf 'rc=${PIPESTATUS[0]}\n'
-    printf 'printf "finished_ms: %%s\\ncode: %%s\\n" "$(date +%%s%%3N)" "$rc" >> "$run_dir/meta.txt"\n'
-    printf 'printf "%%s\\n" "$rc" > "$run_dir/.done.tmp" && mv -f "$run_dir/.done.tmp" "$run_dir/done"\n'
-    printf 'if [ "${HERDR_ENV:-}" = 1 ]; then\n'
-    printf '    sound=done; [ "$rc" = 0 ] || sound=request\n'
-    printf '    herdr notification show %q --body "$run_dir" --sound "$sound" > /dev/null 2>&1 || true\n' "Вкладка $name завершена"
-    printf 'fi\n'
-    printf 'printf "DUTY-DONE %%s rc=%%s\\n" %q "$rc"\n' "$name"
+    printf 'duty_finish "${PIPESTATUS[0]}"\n'
 } > "$run_dir/cmd.sh"
 bash -n "$run_dir/cmd.sh" || die "команда не разбирается bash: $run_dir/cmd.sh"
 

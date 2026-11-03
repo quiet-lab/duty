@@ -1,0 +1,141 @@
+"""Проверки «Недели в цифрах»: `python3 -I scripts/tests/test_week_stats.py`."""
+
+import importlib.util
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+SCRIPTS = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPTS))
+spec = importlib.util.spec_from_file_location("week_stats", SCRIPTS / "week-stats.py")
+assert spec and spec.loader
+ws = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ws)
+
+H = ws.HOUR_MS
+GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+
+
+def build(
+    job: str, number: int, result: str, start: int, dur: int, sha: str = ""
+) -> dict:
+    actions = [{"lastBuiltRevision": {"SHA1": sha}}] if sha else []
+    return {
+        "job": job,
+        "number": number,
+        "result": result,
+        "timestamp": start,
+        "duration": dur,
+        "building": False,
+        "actions": actions,
+    }
+
+
+class WeekStatsTest(unittest.TestCase):
+    def test_busy_merges_overlaps(self) -> None:
+        builds = [
+            build("a", 1, "SUCCESS", 0, 2 * H),
+            build("b", 1, "SUCCESS", H, 2 * H),
+            build("c", 1, "SUCCESS", 5 * H, H),
+        ]
+        self.assertEqual(ws.busy_ms(builds, 0, 10 * H), 4 * H)
+
+    def test_random_failure_is_rerun_success_on_same_revision(self) -> None:
+        builds = [
+            build("q", 1, "FAILURE", 0, 1, "aa"),
+            build("q", 2, "SUCCESS", 1, 1, "aa"),
+            build("q", 3, "FAILURE", 2, 1, "bb"),
+            build("r", 1, "FAILURE", 0, 1, "aa"),
+        ]
+        self.assertEqual(ws.random_failures(builds), (3, 1))
+
+    def test_review_stats_counts_new_form_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "review-rounds.tsv"
+            path.write_text(
+                "дата\tпроект\tзадача\tмодель\tуровень\tнаходок\tвоспроизведено\tисправлено\tтикет\n"
+                "2026-11-02\tp\tt1\topus\thigh\t5\t2\t2\tRP-1\n"
+                "2026-11-02\tp\tt2\tsonnet\tmedium\t3\t0\t0\t—\n"
+                "2026-11-02\tp\tt3\t1\tsonnet\tда\tстарая форма\n"
+                "2020-01-01\tp\tt4\topus\thigh\t9\t9\t9\tRP-2\n",
+                encoding="utf-8",
+            )
+            since = 1793577600000  # начало суток 2026-11-02 UTC
+            text = ws.review_stats(path, since)
+        self.assertEqual(
+            text,
+            "ревью 2: находок 8, воспроизведено ломающих 2, исправлено 2; "
+            "строк другой формы пропущено: 1",
+        )
+
+    def test_classify_path(self) -> None:
+        self.assertEqual(ws.classify_path(".", "apps.python/qms/x.py"), "код")
+        self.assertEqual(ws.classify_path(".", "apps.python/tests/test_x.py"), "тесты")
+        self.assertEqual(ws.classify_path("legacy/tests", "helpers/a.ts"), "тесты")
+        self.assertEqual(ws.classify_path(".", "docs/README.md"), "документация")
+        self.assertEqual(ws.classify_path(".", "scripts/x.py"), "конвейер")
+        self.assertEqual(
+            ws.classify_path("claude-plugins/duty", "scripts/x.py"), "правила"
+        )
+
+    def test_git_stats_and_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run([*GIT, "init", "-q", "-b", "master"], cwd=root, check=True)
+            (root / "src").mkdir()
+            (root / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+            subprocess.run([*GIT, "add", "src/a.py"], cwd=root, check=True)
+            subprocess.run(
+                [
+                    *GIT,
+                    "commit",
+                    "-q",
+                    "-m",
+                    "код",
+                    "-m",
+                    "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+                ],
+                cwd=root,
+                check=True,
+            )
+            rec = root / "docs" / "decisions" / "01-a"
+            rec.mkdir(parents=True)
+            (rec / "0001-x.md").write_text("# 0001. X\n", encoding="utf-8")
+            subprocess.run([*GIT, "add", "docs"], cwd=root, check=True)
+            subprocess.run([*GIT, "commit", "-q", "-m", "запись"], cwd=root, check=True)
+            stats = ws.git_stats(root, 0)
+            self.assertEqual(stats["commits"], 2)
+            self.assertEqual(stats["models"], {"Opus": 1, "без подписи Claude": 1})
+            self.assertEqual(stats["primary"], {"код": 1, "документация": 1})
+            self.assertEqual(ws.new_records(root, 0), 1)
+
+    def test_offline_table(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run([*GIT, "init", "-q"], cwd=tmp, check=True)
+            done = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPTS / "week-stats.py"),
+                    "--root",
+                    tmp,
+                    "--offline",
+                    "--results",
+                    tmp,
+                    "--review-stats",
+                    str(Path(tmp) / "нет.tsv"),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        self.assertIn("| Время жизни набора | не считалось (--offline) |", done.stdout)
+        self.assertIn("| Вопросов агентов в день | 0 |", done.stdout)
+        self.assertIn("| Ревью | не получено: нет", done.stdout)
+        self.assertIn("| Доля моделей в коммитах | коммитов нет |", done.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

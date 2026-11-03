@@ -51,7 +51,7 @@ for _ in 1 2 3 4 5 6 7 8; do
     case $out in
         *agent_blocked*)
             [ "$wait_blocked" = 1 ] || { printf 'агент %s ждёт ответа на диалог, строка не отправлена: %s\n' "$target" "$text"; exit 3; }
-            herdr agent wait "$target" --until idle --until working --until done > /dev/null 2>&1 \
+            herdr agent wait "$target" --until idle --until working --until "done" > /dev/null 2>&1 \
                 || { printf 'ожидание агента %s оборвалось: %s\n' "$target" "$text"; exit 3; }
             ;;
         *) printf 'herdr agent prompt %s: %s\n' "$target" "$out"; exit 3 ;;

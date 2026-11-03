@@ -45,6 +45,7 @@ report() { # PASS|FAIL сценарий детали
     [ "$1" = PASS ] || fails=1
 }
 
+# shellcheck disable=SC1090
 [ "$step" = setup ] || { [ -f "$state" ] || die 'нет state.env: сначала setup'; . "$state"; }
 save() { printf 'TABS=%q\nPANE=%q\nTRANSCRIPT=%q\n' "${TABS:-}" "${PANE:-}" "${TRANSCRIPT:-}" > "$state"; }
 
@@ -54,7 +55,7 @@ since() { tail -n +"$(($1 + 1))" "$TRANSCRIPT"; }
 # Непросмотренное окончание хода herdr показывает как done, а не idle: ждём оба.
 agent_wait() {
     local until=(--until "$1")
-    [ "$1" != idle ] || until+=(--until done)
+    [ "$1" != idle ] || until+=(--until "done")
     herdr agent wait "$AGENT" "${until[@]}" --timeout "$2" > /dev/null
 }
 # Запись транскрипта с текстом $1: тип записи и вложения.
@@ -173,7 +174,7 @@ D)
     [ -e "$dir/subtasks/s1.stopped" ] || inotifywait -qq -t 180 -e create "$dir/subtasks" 2> /dev/null || true
     agent_wait idle 240000 || true
     sess=${TRANSCRIPT%.jsonl}
-    sub=$(find "$sess/subagents" -name 'agent-*.jsonl' -newer "$dir/brief.md" 2> /dev/null | xargs -r ls -t | head -n 1)
+    sub=$(find "$sess/subagents" -name 'agent-*.jsonl' -newer "$dir/brief.md" -exec ls -t {} + 2> /dev/null | head -n 1)
     if [ -n "$sub" ]; then
         bg=$(jq -c 'select(.type == "user") | .message.content | arrays | .[] | select(.type == "tool_result") | tostring' "$sub" | grep -cF 'Субагент не ждёт в фоне' || true)
         mon=$(jq -c 'select(.type == "assistant") | .message.content[]? | select(.type == "tool_use" and .name == "Monitor")' "$sub" | wc -l)

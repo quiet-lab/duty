@@ -71,5 +71,5 @@ while true; do
         if [ -n "$timeout_s" ]; then echo timeout; exit 124; fi
         die "наблюдение за $dir оборвалось без done"
     fi
-    [ "$file" = done ] && finish
+    [ "$file" = "done" ] && finish
 done

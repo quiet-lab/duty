@@ -494,6 +494,80 @@ class GuardTest(unittest.TestCase):
         )
         self.assert_denied(self.hook("pre-tool", data), "Критерий готовности")
 
+    # --- ворота: вызов из навыка (по транскрипту) ---
+
+    def skill_transcript(self, entries: list[dict]) -> Path:
+        path = self.root / "transcript.jsonl"
+        path.write_text(
+            "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries),
+            encoding="utf-8",
+        )
+        return path
+
+    @staticmethod
+    def user(content: object, **extra: object) -> dict:
+        return {
+            "type": "user",
+            "message": {"role": "user", "content": content},
+            **extra,
+        }
+
+    @staticmethod
+    def skill_use() -> dict:
+        block = {"type": "tool_use", "name": "Skill", "input": {"skill": "simplify"}}
+        return {"type": "assistant", "message": {"content": [block]}}
+
+    def call_with(self, prompt: str, transcript: object) -> subprocess.CompletedProcess:
+        data = {
+            "tool_name": "Agent",
+            "tool_input": {"prompt": prompt, "subagent_type": "general-purpose"},
+            "transcript_path": str(transcript),
+        }
+        return self.hook("pre-tool", data, env=self.plain_env())
+
+    def test_gate_skill_slash_command_passes(self) -> None:
+        path = self.skill_transcript(
+            [
+                self.user(
+                    "<command-name>/code-review</command-name>\n<command-args>high</command-args>"
+                ),
+                self.user([{"type": "text", "text": "текст навыка"}], isMeta=True),
+            ]
+        )
+        self.assert_not_denied(self.call_with("Сделай.", path))
+
+    def test_gate_skill_tool_in_same_turn_passes(self) -> None:
+        path = self.skill_transcript(
+            [
+                self.user("проверь дифф"),
+                self.skill_use(),
+                self.user([{"type": "tool_result", "content": "ok"}]),
+                self.user([{"type": "text", "text": "текст навыка"}], isMeta=True),
+            ]
+        )
+        self.assert_not_denied(self.call_with("Сделай.", path))
+
+    def test_gate_skill_in_previous_turn_denied(self) -> None:
+        path = self.skill_transcript(
+            [
+                self.user("<command-name>/code-review</command-name>"),
+                self.skill_use(),
+                self.user([{"type": "text", "text": "теперь другое"}]),
+            ]
+        )
+        self.assert_denied(self.call_with("Сделай.", path), "Критерий готовности")
+
+    def test_gate_no_transcript_denied(self) -> None:
+        for path in (self.root / "нет.jsonl", ""):
+            with self.subTest(path=str(path)):
+                self.assert_denied(
+                    self.call_with("Сделай.", path), "Критерий готовности"
+                )
+
+    def test_gate_lines_pass_with_transcript(self) -> None:
+        path = self.skill_transcript([self.user("обычное сообщение")])
+        self.assert_not_denied(self.call_with(GATE_LINES + "Сделай.", path))
+
     def test_gate_broken_json_is_silent(self) -> None:
         r = self.hook("pre-tool", "{не json", env=self.plain_env())
         self.assertEqual((r.returncode, r.stdout), (0, ""))

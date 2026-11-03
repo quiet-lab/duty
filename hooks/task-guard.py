@@ -3,8 +3,8 @@
 
 Ворота действуют во всех сессиях с плагином: `pre-tool` для `Agent`/`Task`
 отклоняет приглашение без строк «Критерий готовности» и «Условие остановки»
-(проверка — `scripts/brief_check.py`); пропускаются типы только для чтения
-и `duty:runner`. Остальное ниже — только в сессии агента задачи
+(проверка — `scripts/brief_check.py`); пропускаются типы только для чтения,
+`duty:runner` и вызовы из навыка (по транскрипту сессии). Остальное ниже — только в сессии агента задачи
 (`DUTY_ROLE=worker`).
 
 Причина: субагент ставил наблюдение и заканчивал ход, уведомление к нему
@@ -44,6 +44,12 @@ READ_ONLY_TYPES = {"Explore", "Plan", "claude-code-guide", "duty:inspector"}
 # Рутина навыков /duty:* идёт на runner: под ворота постановки не попадает.
 GATE_FREE_TYPES = READ_ONLY_TYPES | {"duty:runner"}
 MESSAGE_LIMIT = 200
+# Хвост транскрипта сессии для распознавания запуска из навыка. Ход со всеми
+# вызовами и выводами инструментов обычно короче; больший ход читается
+# частично и считается «не из навыка»: отказ ворот безопаснее пропуска.
+# Чтение хвоста 2 МБ — единицы миллисекунд, предел хука 10 с.
+TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024
+COMMAND_RE = re.compile(r"<command-name>/?([^<\s]+)</command-name>")
 # Подпроцессы signals.py и ask.py: 0,1 с на станции, на узлах в 4,5 раза дольше,
 # с тройным запасом 2 с; у herdr — ответ сервера, тот же порядок.
 SUBPROCESS_LIMIT_S = 5
@@ -71,6 +77,63 @@ GATE_HINT = (
 )
 
 
+def last_turn_skill(transcript: object) -> str | None:
+    """Имя навыка, из которого идёт текущий ход; None — ход начат не навыком.
+
+    Ход начинается последним настоящим сообщением пользователя: запись
+    `user` без `tool_result` и без `isMeta` (развёрнутый текст навыка Claude Code
+    пишет как `isMeta`, он ходом не считается). Навык — slash-команда
+    (`<command-name>` в сообщении) либо вызов инструмента `Skill` после него.
+    Любая ошибка чтения — None.
+    """
+    try:
+        path = Path(str(transcript))
+        with path.open("rb") as stream:
+            size = stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
+            raw = stream.read()
+    except (OSError, ValueError):
+        return None
+    lines = raw.decode("utf-8", errors="replace").splitlines()
+    skill: str | None = None
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue  # обрезанная первая строка хвоста и посторонние записи
+        message = entry.get("message") if isinstance(entry, dict) else None
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        blocks = content if isinstance(content, list) else []
+        if entry.get("type") == "assistant":
+            for block in blocks:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_use"
+                    and block.get("name") == "Skill"
+                    and skill is None
+                ):
+                    raw_input = block.get("input")
+                    name = (
+                        raw_input.get("skill") if isinstance(raw_input, dict) else None
+                    )
+                    skill = str(name or "Skill")
+            continue
+        if entry.get("type") != "user" or entry.get("isMeta"):
+            continue
+        if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks):
+            continue
+        text = (
+            content
+            if isinstance(content, str)
+            else "".join(str(b.get("text", "")) for b in blocks if isinstance(b, dict))
+        )
+        found = COMMAND_RE.search(text)
+        return found.group(1) if found else skill
+    return None
+
+
 def gate(data: dict[str, object]) -> bool:
     """Ворота постановки: True — поручение отклонено."""
     raw_input = data.get("tool_input")
@@ -82,6 +145,12 @@ def gate(data: dict[str, object]) -> bool:
 
     missing = brief_check.check_prompt(str(tool_input.get("prompt", "")))
     if not missing:
+        return False
+    if last_turn_skill(data.get("transcript_path")) is not None:
+        # Субагентов навыков (/code-review, /simplify, deep-research) ставит
+        # текст навыка, а не модель: строк в нём нет и править его нельзя.
+        # Сообщения не печатаем: в сессии агента задачи следом работает
+        # pre_tool, и второй JSON в stdout сломал бы разбор ответа хука.
         return False
     pre_tool_output(
         permissionDecision="deny",

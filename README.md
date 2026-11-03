@@ -162,8 +162,8 @@ reference/worker-rules.md    общие запреты для rules.md зада�
 (цель, сделанное, решения пользователя), а форк этих сведений
 не получает. Запуск — детерминированный сценарий `scripts/dispatch.sh`,
 одна команда с проверкой каждого шага: каталог задачи с `brief.md`
-и `rules.md`; символ workspace — первая свободная буква `Ⓐ…Ⓩ` среди
-открытых задач; `herdr workspace create --label "<символ> <имя> · <модель>"
+и `rules.md`; символ workspace — случайный эмодзи из `scripts/symbols.txt`, не занятый
+открытыми задачами; `herdr workspace create --label "<символ> <имя> · <модель>"
 --env DUTY_ROLE=worker --env DUTY_TASK=<каталог> --env DUTY_NAME=<имя>
 --env DUTY_SYMBOL=<символ> --env DUTY_MODEL=<модель> --no-focus`; служебный блок в `brief.md`
 (workspace, символ, панель, имя агента, имя главной сессии, каталог плагина);

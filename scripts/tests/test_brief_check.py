@@ -148,6 +148,74 @@ class CheckBriefTest(unittest.TestCase):
         self.assertEqual(brief_check.check_brief(text), [])
 
 
+class ReviewFindingsTest(unittest.TestCase):
+    def brief(
+        self, done: str = "`pytest -q` зелёный", stop: str = "Падение теста."
+    ) -> str:
+        return FULL.replace("`pytest -q` — зелёный.", done).replace(
+            "Падение теста, не починенное за один подход.", stop
+        )
+
+    def test_path_like_fragment_is_not_command(self) -> None:
+        for done in (
+            "Всё работает, см. `README.md`.",
+            "См. `docs/a/b`.",
+            "См. `a.b.c`.",
+        ):
+            with self.subTest(done=done):
+                self.assertEqual(
+                    brief_check.check_brief(self.brief(done)),
+                    [brief_check.DONE_COMMAND_VIOLATION],
+                )
+
+    def test_command_forms(self) -> None:
+        for done in (
+            "`pytest`",
+            "`just test`",
+            "`./x.sh`",
+            "`python3 -m pytest -q`",
+            "```\nls\n```",
+        ):
+            with self.subTest(done=done):
+                self.assertEqual(brief_check.check_brief(self.brief(done)), [])
+
+    def test_heading_line_is_not_content(self) -> None:
+        text = self.brief(stop="### Подробности")
+        self.assertEqual(brief_check.check_brief(text), ["Условие остановки"])
+
+    def test_template_fragments_are_placeholders(self) -> None:
+        for value in (
+            "<команда> и <результат>",
+            "<a>, <b>",
+            "`<команда>`",
+            "{{X}} {{Y}}",
+        ):
+            with self.subTest(value=value):
+                text = f"Критерий готовности: {value}\nУсловие остановки: падение теста"
+                self.assertEqual(
+                    brief_check.check_prompt(text), ["Критерий готовности"]
+                )
+
+    def test_value_with_placeholder_part_is_value(self) -> None:
+        text = "Критерий готовности: wait-done.sh <каталог> зелёный\nУсловие остановки: падение теста"
+        self.assertEqual(brief_check.check_prompt(text), [])
+
+    def test_labeled_value_forms(self) -> None:
+        cases = (
+            "Критерий готовности:\n`pytest -q` зелёный\nУсловие остановки:\n- падение теста",
+            "1. Критерий готовности: `pytest -q` зелёный\n2. Условие остановки: падение теста",
+        )
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertEqual(brief_check.check_prompt(text), [])
+
+    def test_label_followed_by_label_is_empty(self) -> None:
+        text = "Критерий готовности:\nУсловие остановки: падение теста"
+        self.assertEqual(brief_check.check_prompt(text), ["Критерий готовности"])
+        text = "Критерий готовности:\n<команда>\nУсловие остановки: падение теста"
+        self.assertEqual(brief_check.check_prompt(text), ["Критерий готовности"])
+
+
 class CheckPromptTest(unittest.TestCase):
     DONE = "Критерий готовности: `pytest -q` зелёный"
     STOP = "Условие остановки: падение теста — отчёт"
@@ -168,7 +236,7 @@ class CheckPromptTest(unittest.TestCase):
         )
 
     def test_case_bullets_and_bold(self) -> None:
-        text = "- **критерий готовности:** `x`\n* УСЛОВИЕ ОСТАНОВКИ: стоп"
+        text = "- **критерий готовности:** `pytest`\n* УСЛОВИЕ ОСТАНОВКИ: стоп"
         self.assertEqual(brief_check.check_prompt(text), [])
 
     def test_headings(self) -> None:

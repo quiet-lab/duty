@@ -163,12 +163,30 @@ def run_repeats(config_path: Path, root: Path) -> list[str]:
                 or not item.get("reason")
             ):
                 raise ConfigError(f"{config_path}: у [[allowed]] нужны text и reason")
-            allowed.append(normalize(str(item["text"])))
+            phrase = normalize(str(item["text"]))
+            if not phrase:
+                raise ConfigError(
+                    f"{config_path}: [[allowed]] text пуст после нормализации"
+                )
+            allowed.append(phrase)
+    optional_raw = config.get("optional", [])
+    optional = (
+        {str(item) for item in optional_raw}
+        if isinstance(optional_raw, list)
+        else set()
+    )
 
     findings: list[str] = []
     index: dict[str, list[Sentence]] = {}
     for entry in entries:
         paths = expand(str(entry), root)
+        if not paths and str(entry) in optional:
+            print(
+                f"rules-lint.py: примечание: необязательный файл «{entry}» "
+                "не найден, не проверен",
+                file=sys.stderr,
+            )
+            continue
         if not paths:
             findings.append(f"{config_path.name}:1: в наборе нет файла для «{entry}»")
             continue
@@ -177,7 +195,7 @@ def run_repeats(config_path: Path, root: Path) -> list[str]:
                 key = normalize(sentence.text)
                 if len(key.split()) < min_words or len(key) < min_chars:
                     continue
-                if any(item in key for item in allowed):
+                if key in allowed:
                     continue
                 index.setdefault(key, []).append(sentence)
     for group in index.values():

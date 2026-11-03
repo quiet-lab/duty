@@ -27,17 +27,36 @@ INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 DASHES = {"", "—", "–", "-", "--"}
 
 
+TEMPLATE_RE = re.compile(r"\{\{.*?\}\}|<[^<>]*>")
+MARKER = r"(?:(?:[-*+]|\d+[.)])\s+)?"
+LABEL_RE = re.compile(
+    rf"^\s*{MARKER}(?:\*\*|__)?[А-ЯЁA-Z][^:`\n]{{0,50}}:(?:\*\*|__)?(?:\s|$)"
+)
+PATH_LIKE_RE = re.compile(r"\S*/\S*|\S+\.\w+")
+
+
 def is_placeholder(text: str) -> bool:
-    """Пустое значение, прочерк или незаполненный заполнитель."""
-    value = text.strip().strip("*_ ").strip()
-    if value in DASHES:
-        return True
-    return bool(re.fullmatch(r"\{\{.*\}\}", value) or re.fullmatch(r"<[^<>]*>", value))
+    """Пустое значение, прочерк или заполнитель: без `<...>`, `{{...}}` и кавычек меньше трёх букв."""
+    rest = TEMPLATE_RE.sub("", text.replace("`", ""))
+    return sum(ch.isalpha() for ch in rest) < 3
+
+
+def is_template_fragment(fragment: str) -> bool:
+    """Фрагмент в обратных кавычках без содержания: пуст или целиком заполнитель."""
+    return not TEMPLATE_RE.sub("", fragment).strip()
+
+
+def looks_like_path(fragment: str) -> bool:
+    """Одно слово с `/` или расширением, не начинающееся с `./`: путь или имя файла, не команда."""
+    value = fragment.strip()
+    return bool(PATH_LIKE_RE.fullmatch(value)) and not value.startswith("./")
 
 
 def is_empty_line(line: str) -> bool:
     """Строка без содержания: пустая, прочерк, заполнитель (с маркером списка)."""
-    return is_placeholder(BULLET_RE.sub("", line, count=1))
+    return HEADING_RE.match(line) is not None or is_placeholder(
+        BULLET_RE.sub("", line, count=1)
+    )
 
 
 def heading_name(title: str) -> str:
@@ -82,7 +101,17 @@ def body_of(
 
 
 def has_content(body: list[str]) -> bool:
-    return any(not is_empty_line(line) for line in body if not FENCE_RE.match(line))
+    """Есть содержание: строка не заголовок и не заполнитель; в блоке кода — любая непустая."""
+    fenced = False
+    for line in body:
+        if FENCE_RE.match(line):
+            fenced = not fenced
+        elif fenced:
+            if line.strip() and not is_template_fragment(line):
+                return True
+        elif not is_empty_line(line):
+            return True
+    return False
 
 
 def has_command(body: list[str]) -> bool:
@@ -92,12 +121,33 @@ def has_command(body: list[str]) -> bool:
         if FENCE_RE.match(line):
             fenced = not fenced
             continue
-        if fenced and not is_empty_line(line):
+        if fenced and line.strip() and not is_template_fragment(line):
             return True
     text = "\n".join(line for line in body if not FENCE_RE.match(line))
     return any(
-        not is_placeholder(fragment) for fragment in INLINE_CODE_RE.findall(text)
+        not is_template_fragment(fragment) and not looks_like_path(fragment)
+        for fragment in INLINE_CODE_RE.findall(text)
     )
+
+
+def labeled_values(lines: list[str], name: str) -> list[str]:
+    """Значения метки `name`: после двоеточия или на следующей непустой строке."""
+    pattern = re.compile(
+        rf"^\s*{MARKER}(?:\*\*|__)?{re.escape(name)}(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(.*)$",
+        re.IGNORECASE,
+    )
+    values: list[str] = []
+    for position, line in enumerate(lines):
+        match = pattern.match(line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if not value:
+            nxt = next((x for x in lines[position + 1 :] if x.strip()), "")
+            if nxt and not HEADING_RE.match(nxt) and not LABEL_RE.match(nxt):
+                value = BULLET_RE.sub("", nxt, count=1).strip()
+        values.append(value)
+    return values
 
 
 def has_read(
@@ -113,27 +163,7 @@ def has_read(
             and has_content(body_of(lines, headings, head, max_level=6))
         ):
             return True
-    pattern = re.compile(
-        rf"^\s*(?:[-*+]\s+)?(?:\*\*|__)?{READ_NAME}(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(.*)$",
-        re.IGNORECASE,
-    )
-    for position, line in enumerate(body):
-        match = pattern.match(line)
-        if not match:
-            continue
-        if not is_placeholder(match.group(1)):
-            return True
-        # Значение на следующих строках того же пункта (продолжение с отступом).
-        for follow in body[position + 1 :]:
-            if (
-                not follow.strip()
-                or BULLET_RE.match(follow)
-                or not follow[:1].isspace()
-            ):
-                break
-            if not is_placeholder(follow):
-                return True
-    return False
+    return any(not is_placeholder(v) for v in labeled_values(body, READ_NAME))
 
 
 def check_brief(text: str) -> list[str]:
@@ -164,15 +194,7 @@ def prompt_has(lines: list[str], headings: list[Heading], name: str) -> bool:
             body_of(lines, headings, head, max_level=6)
         ):
             return True
-    pattern = re.compile(
-        rf"^\s*(?:[-*+]\s+)?(?:\*\*|__)?{re.escape(name)}(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(.*)$",
-        re.IGNORECASE,
-    )
-    for line in lines:
-        match = pattern.match(line)
-        if match and not is_placeholder(match.group(1)):
-            return True
-    return False
+    return any(not is_placeholder(v) for v in labeled_values(lines, name))
 
 
 def check_prompt(text: str) -> list[str]:

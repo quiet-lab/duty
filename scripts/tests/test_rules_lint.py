@@ -137,16 +137,68 @@ class RulesLintTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertEqual(r.stdout.count("повтор"), 1)
 
+    def test_allowed_empty_text_is_config_error(self) -> None:
+        self.write("a.md", f"{SENTENCE}\n")
+        self.write("b.md", f"{SENTENCE}\n")
+        extra = '[[allowed]]\ntext = "…"\nreason = "x"\n'
+        r = self.repeats(["a.md", "b.md"], extra)
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("пуст", r.stderr)
+
+    def test_allowed_is_equality_not_substring(self) -> None:
+        self.write("a.md", f"{SENTENCE}\n")
+        self.write("b.md", f"{SENTENCE}\n")
+        whole = f'[[allowed]]\ntext = "{SENTENCE}"\nreason = "x"\n'
+        self.assertEqual(self.repeats(["a.md", "b.md"], whole).returncode, 0)
+        part = f'[[allowed]]\ntext = "{SENTENCE[:60]}"\nreason = "x"\n'
+        self.assertEqual(self.repeats(["a.md", "b.md"], part).returncode, 1)
+
+    def test_optional_missing_is_note_only(self) -> None:
+        self.write("a.md", "Текст.\n")
+        home = self.root / "home"
+        home.mkdir()
+        config = self.config(
+            ["a.md", "~/.claude/CLAUDE.md"], 'optional = ["~/.claude/CLAUDE.md"]'
+        )
+        r = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(LINT),
+                "repeats",
+                "--config",
+                str(config),
+                "--root",
+                str(self.root),
+            ],
+            env={"HOME": str(home)},
+            capture_output=True,
+            text=True,
+            timeout=LIMIT_S,
+            check=False,
+        )
+        self.assertEqual((r.returncode, r.stdout), (0, "0 находок\n"), r.stderr)
+        self.assertIn("не проверен", r.stderr)
+        # Не необязательные отсутствующие файлы по-прежнему находка.
+        config = self.config(
+            ["a.md", "~/.claude/CLAUDE.md", "нет.md"],
+            'optional = ["~/.claude/CLAUDE.md"]',
+        )
+        r = self.run_lint("repeats", "--config", str(config), "--root", str(self.root))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("нет.md", r.stdout)
+
     def test_brief_subcommand(self) -> None:
         good = (
-            "## Цель\n\nЦ.\n\n## Критерий готовности\n\n`true`\n\n"
-            "## Условие остановки\n\nС.\n\n## Ссылки\n\n- Прочитанное при постановке: `x`\n"
+            "## Цель\n\nЦель задачи.\n\n## Критерий готовности\n\n`true`\n\n"
+            "## Условие остановки\n\nСтоп при падении.\n\n## Ссылки\n\n- Прочитанное при постановке: `CLAUDE.md`\n"
         )
         path = self.root / "brief.md"
         path.write_text(good, encoding="utf-8")
         self.assertEqual(self.run_lint("brief", str(path)).returncode, 0)
         path.write_text(
-            good.replace("## Условие остановки\n\nС.\n\n", ""), encoding="utf-8"
+            good.replace("## Условие остановки\n\nСтоп при падении.\n\n", ""),
+            encoding="utf-8",
         )
         r = self.run_lint("brief", str(path))
         self.assertEqual(r.returncode, 1)

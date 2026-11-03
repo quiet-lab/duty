@@ -15,7 +15,7 @@
 - Главный checkout монорепозитория и сабмодулей не правится: работа —
   в своих worktree и ветвях, названных в `brief.md`.
 - `git add` — только по путям; `git add -A`, `git add -u`, `git stash`
-  запрещены.
+  запрещены (проверяет хук forbid, `hooks/forbid.py`).
 - Push, pull request, слияние, выкат, записи в Jira, Bitbucket,
   Confluence и Jenkins — только если они явно разрешены в `brief.md`
   или ниже; иначе — вопрос (`agents/worker.md`, п. 5).
@@ -39,13 +39,21 @@
   запуском загрузка за минуту ниже числа ядер, доступной памяти не меньше
   четверти. Зависимые или пересекающиеся подзадачи идут последовательно.
 - Процессы — останавливать только свои по известным PID; `pkill`,
-  `killall`, завершение по образцу запрещены.
+  `killall`, завершение по образцу запрещены (проверяет хук forbid, `hooks/forbid.py`).
+- Туннель и сеть станции не переключаются (`nmcli`, `awg`, `amn-*`,
+  `wg`, `openvpn`, `resolvectl`, `ip link set up/down`); push с `--force`
+  и в `dev`, `dev2`, `master`, пароль литералом в `curl -u` и `sshpass -p`,
+  чтение `~/.config/axata/*` и печать окружения или секретных переменных
+  запрещены; пароли и токены — только из файлов через `set -a` и stdin,
+  в вывод не попадают (проверяет хук forbid, `hooks/forbid.py`).
 - Таймеры, `sleep` и опрос запрещены; ожидание — по событию
   (файл `done` вкладки, `herdr pane wait-output`, `kill -0`); условие другой
   задачи — `signals.py wait <имя>` плагина.
 - Ожидание — внутри хода (`wait-done.sh --timeout-s 590`, `herdr pane
   wait-output`); `Monitor` и `run_in_background` для ожидания не используются,
   у субагентов их отвергает хук (`agents/worker.md`, п. 3 и 4).
+- Вкладка команды открывается только через `scripts/tab-run.sh`
+  (`herdr tab create`, `pane run`, `pane send` проверяет хук forbid, `hooks/forbid.py`).
 - Вкладка команды закрывается сразу после снятия её вывода (`herdr tab close <tab_id>`);
   к итоговому отчёту открытых вкладок команд нет (`agents/worker.md`, п. 4).
 - Права root — `sudo -A -p '<зачем, по-русски>' команда`.

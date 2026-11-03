@@ -78,5 +78,8 @@ for i in d.get("issues", []):
     print("-", i["key"], i["fields"]["status"]["name"], "|", i["fields"]["summary"][:90])
 print("всего:", d.get("total"))'
 
+section 'Повторы правил'
+python3 -I "$plugin/scripts/rules-lint.py" repeats --root "$root" | tail -5
+
 section 'Неделя в цифрах'
 python3 -I "$plugin/scripts/week-stats.py" --root "$root" | head -20

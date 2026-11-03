@@ -10,12 +10,14 @@
 """
 
 import argparse
-import errno
+import contextlib
+import fcntl
 import json
 import os
 import re
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 DEFAULT_DIR = "~/work/telecom/axata/ocp-dev-stand/busy"
@@ -56,7 +58,13 @@ def read_mark(path: Path) -> dict | None:
         return None
     except (OSError, ValueError):
         # Повреждённый файл не принадлежит живому держателю.
-        return {"resource": path.stem, "holder": "?", "pid": 0, "since_ms": 0, "note": "файл повреждён"}
+        return {
+            "resource": path.stem,
+            "holder": "?",
+            "pid": 0,
+            "since_ms": 0,
+            "note": "файл повреждён",
+        }
     return data if isinstance(data, dict) else None
 
 
@@ -65,8 +73,12 @@ def age_minutes(mark: dict) -> int:
 
 
 def describe(mark: dict) -> str:
-    since = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(int(mark.get("since_ms") or 0) / 1000))
-    return f"занято: {mark.get('holder')}, {mark.get('note') or 'без заметки'}, с {since}"
+    since = time.strftime(
+        "%Y-%m-%d %H:%M:%S UTC", time.gmtime(int(mark.get("since_ms") or 0) / 1000)
+    )
+    return (
+        f"занято: {mark.get('holder')}, {mark.get('note') or 'без заметки'}, с {since}"
+    )
 
 
 def try_create(path: Path, mark: dict) -> bool:
@@ -79,15 +91,41 @@ def try_create(path: Path, mark: dict) -> bool:
     return True
 
 
+@contextlib.contextmanager
+def removal(root: Path) -> Iterator[None]:
+    """Замок сверки и удаления устаревшей отметки.
+
+    Файловая система не умеет «удалить, если содержимое прежнее», а реестр
+    обещает одного держателя ресурса. Постановка отметки замка не берёт: пока
+    файл на месте, O_EXCL отказывает, а убирает файл только этот блок и release.
+    Размножить замок нельзя: единственность отметки и есть ресурс. Ожидание —
+    чтение и удаление файла соседом, замок снимает ядро и при гибели процесса,
+    срок не нужен. Условие снятия: хранилище с условным удалением.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    fd = os.open(root / ".removal.lock", os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def cmd_claim(args: argparse.Namespace) -> int:
     # Родитель самого сценария — короткая оболочка Bash вызова: отметка
     # с его pid устарела бы сразу после выхода, поэтому pid задаётся явно.
     if args.pid is None:
-        print("claim: нужен --pid долгоживущего держателя; из Bash сессии Claude — "
-              '--pid "$PPID"', file=sys.stderr)
+        print(
+            "claim: нужен --pid долгоживущего держателя; из Bash сессии Claude — "
+            '--pid "$PPID"',
+            file=sys.stderr,
+        )
         return EXIT_USAGE
     if args.pid <= 0 or not pid_alive(args.pid):
-        print(f"claim: процесс --pid {args.pid} не жив, отметка сразу устарела бы", file=sys.stderr)
+        print(
+            f"claim: процесс --pid {args.pid} не жив, отметка сразу устарела бы",
+            file=sys.stderr,
+        )
         return EXIT_USAGE
     path = mark_path(args.resource)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -109,11 +147,15 @@ def cmd_claim(args: argparse.Namespace) -> int:
         if pid_alive(int(old.get("pid") or 0)):
             print(describe(old))
             return EXIT_BUSY
-        print(f"снята устаревшая отметка {args.resource}: держатель {old.get('holder')}, pid {old.get('pid')} не жив")
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+        with removal(path.parent):
+            # Чтение и удаление — одна операция: без замка участник гонки удалил бы
+            # отметку победителя, поставленную между его чтением и удалением.
+            if read_mark(path) != old:
+                continue
+            path.unlink(missing_ok=True)
+        print(
+            f"снята устаревшая отметка {args.resource}: держатель {old.get('holder')}, pid {old.get('pid')} не жив"
+        )
     print(f"не удалось занять {args.resource}", file=sys.stderr)
     return EXIT_BUSY
 
@@ -126,10 +168,15 @@ def cmd_release(args: argparse.Namespace) -> int:
         return 0
     if args.holder and mark.get("holder") != args.holder:
         if not args.force:
-            print(f"отметка {args.resource} принадлежит {mark.get('holder')}, а не {args.holder}; "
-                  "снять чужую можно с --force", file=sys.stderr)
+            print(
+                f"отметка {args.resource} принадлежит {mark.get('holder')}, а не {args.holder}; "
+                "снять чужую можно с --force",
+                file=sys.stderr,
+            )
             return EXIT_BUSY
-        print(f"предупреждение: снята чужая отметка {args.resource} держателя {mark.get('holder')}")
+        print(
+            f"предупреждение: снята чужая отметка {args.resource} держателя {mark.get('holder')}"
+        )
     try:
         path.unlink()
     except FileNotFoundError:
@@ -162,8 +209,10 @@ def cmd_list(args: argparse.Namespace) -> int:
     print("| ресурс | держатель | задача | заметка | pid жив | минут |")
     print("|---|---|---|---|---|---|")
     for m in marks:
-        print(f"| {m['resource']} | {m.get('holder')} | {m.get('task') or ''} | {m.get('note') or ''} "
-              f"| {'да' if m['alive'] else 'нет (устарела)'} | {m['minutes']} |")
+        print(
+            f"| {m['resource']} | {m.get('holder')} | {m.get('task') or ''} | {m.get('note') or ''} "
+            f"| {'да' if m['alive'] else 'нет (устарела)'} | {m['minutes']} |"
+        )
     return 0
 
 
@@ -173,7 +222,9 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(f"свободно: {args.resource}")
         return 0
     if not pid_alive(int(mark.get("pid") or 0)):
-        print(f"свободно: {args.resource} (отметка держателя {mark.get('holder')} устарела)")
+        print(
+            f"свободно: {args.resource} (отметка держателя {mark.get('holder')} устарела)"
+        )
         return 0
     print(describe(mark))
     return EXIT_BUSY
@@ -187,8 +238,11 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--holder", required=True)
     c.add_argument("--task")
     c.add_argument("--note")
-    c.add_argument("--pid", type=int,
-                   help='обязателен: процесс держателя; из Bash сессии Claude — --pid "$PPID"')
+    c.add_argument(
+        "--pid",
+        type=int,
+        help='обязателен: процесс держателя; из Bash сессии Claude — --pid "$PPID"',
+    )
     c.set_defaults(fn=cmd_claim)
     r = sub.add_parser("release", help="снять свою отметку")
     r.add_argument("resource")

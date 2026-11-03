@@ -134,13 +134,10 @@ env_args=()
 for var in DUTY_TASK DUTY_NAME DUTY_ROLE DUTY_SYMBOL DUTY_MODEL; do
     [ -z "${!var:-}" ] || env_args+=(--env "$var=${!var}")
 done
-# Подпись вкладки — «<символ> <имя задачи> · <модель> · <имя прогона>»: начало
-# берётся из метки workspace «<символ> имя · модель»; нет такой метки — подпись
-# остаётся именем прогона.
-tab_label=$name
-ws_label=$(herdr workspace list 2> /dev/null | jq -r --arg w "$HERDR_WORKSPACE_ID" \
-    '.result.workspaces[] | select(.workspace_id == $w) | .label' 2> /dev/null || true)
-case $ws_label in *" · "*) tab_label="$ws_label · $name" ;; esac
+# Подпись вкладки команды — «▸ <имя прогона>», без символа workspace, имени
+# задачи и модели: панель агентов herdr группирует вкладки по workspace, и полная
+# подпись читалась бы как ещё один агент.
+tab_label="▸ $name"
 tab=$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd "$cwd" --label "$tab_label" --no-focus ${env_args[@]+"${env_args[@]}"})
 tab_id=$(jq -er '.result.tab.tab_id' <<< "$tab") || die "herdr tab create: $tab"
 pane_id=$(jq -er '.result.root_pane.pane_id' <<< "$tab") || die "herdr tab create: $tab"

@@ -34,6 +34,9 @@ BRIEF = """# Задача probe
 - агент herdr и сессия Claude: `probe`, модель `opus`
 """
 
+# Строки, которых требуют ворота постановки (scripts/brief_check.py).
+GATE_LINES = "Критерий готовности: `pytest -q` зелёный\nУсловие остановки: падение теста — отчёт\n"
+
 # Двойник herdr: дописывает argv строкой (поля через табуляцию), всё принимает.
 FAKE_HERDR = """#!/usr/bin/env bash
 printf '%s\\t' "$@" >> "$FAKE_HERDR_LOG"
@@ -176,7 +179,7 @@ class GuardTest(unittest.TestCase):
             {
                 "tool_name": "Agent",
                 "tool_input": {
-                    "prompt": "Подзадача: a1\nСделай.",
+                    "prompt": "Подзадача: a1\n" + GATE_LINES + "Сделай.",
                     "subagent_type": "general-purpose",
                 },
             },
@@ -189,7 +192,10 @@ class GuardTest(unittest.TestCase):
             "pre-tool",
             {
                 "tool_name": "Agent",
-                "tool_input": {"prompt": "Сделай.", "subagent_type": "general-purpose"},
+                "tool_input": {
+                    "prompt": GATE_LINES + "Сделай.",
+                    "subagent_type": "general-purpose",
+                },
             },
         )
         out = json.loads(r.stdout)["hookSpecificOutput"]
@@ -394,6 +400,206 @@ class GuardTest(unittest.TestCase):
         self.assertTrue((self.task / "questions" / "01-x.md").exists())
         r = self.hook("stop", {})
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    # --- ворота постановки: Agent/Task во всех сессиях ---
+
+    def plain_env(self) -> dict:
+        return {k: v for k, v in self.env.items() if not k.startswith("DUTY_")}
+
+    def agent_call(
+        self, prompt: str, env: dict | None, tool: str = "Agent", **extra: str
+    ):
+        tool_input = {"prompt": prompt, "subagent_type": "general-purpose", **extra}
+        return self.hook(
+            "pre-tool", {"tool_name": tool, "tool_input": tool_input}, env=env
+        )
+
+    def assert_denied(self, r: subprocess.CompletedProcess, *names: str) -> None:
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout)["hookSpecificOutput"]
+        self.assertEqual(out["permissionDecision"], "deny")
+        for name in names:
+            self.assertIn(name, out["permissionDecisionReason"])
+        self.assertIn("brief-template.md", out["permissionDecisionReason"])
+
+    def assert_not_denied(self, r: subprocess.CompletedProcess) -> None:
+        self.assertEqual(r.returncode, 0, r.stderr)
+        if r.stdout:
+            self.assertNotIn("permissionDecision", r.stdout)
+
+    def test_gate_denies_without_lines_in_any_session(self) -> None:
+        for label, env in (("без роли", self.plain_env()), ("worker", self.env)):
+            with self.subTest(session=label):
+                r = self.agent_call("Сделай.", env)
+                self.assert_denied(r, "Критерий готовности", "Условие остановки")
+
+    def test_gate_names_missing_line(self) -> None:
+        for env in (self.plain_env(), self.env):
+            r = self.agent_call("Критерий готовности: `pytest -q` зелёный", env)
+            self.assert_denied(r, "Условие остановки")
+            self.assertNotIn(
+                "не хватает: Критерий",
+                json.loads(r.stdout)["hookSpecificOutput"]["permissionDecisionReason"],
+            )
+            r = self.agent_call("Условие остановки: падение — отчёт", env)
+            self.assert_denied(r, "Критерий готовности")
+
+    def test_gate_allows_both_lines(self) -> None:
+        for env in (self.plain_env(), self.env):
+            self.assert_not_denied(self.agent_call(GATE_LINES + "Сделай.", env))
+
+    def test_gate_free_types(self) -> None:
+        for kind in (
+            "Explore",
+            "Plan",
+            "claude-code-guide",
+            "duty:inspector",
+            "duty:runner",
+        ):
+            for env in (self.plain_env(), self.env):
+                with self.subTest(kind=kind):
+                    self.assert_not_denied(
+                        self.agent_call("Найди.", env, subagent_type=kind)
+                    )
+
+    def test_gate_task_tool_like_agent(self) -> None:
+        self.assert_denied(
+            self.agent_call("Сделай.", self.plain_env(), tool="Task"),
+            "Условие остановки",
+        )
+        self.assert_not_denied(
+            self.agent_call(GATE_LINES, self.plain_env(), tool="Task")
+        )
+
+    def test_gate_headings_pass(self) -> None:
+        prompt = "## Критерий готовности\n\n`pytest -q` зелёный\n\n## Условие остановки\n\nпадение\n"
+        self.assert_not_denied(self.agent_call(prompt, self.plain_env()))
+
+    def test_gate_empty_values_denied(self) -> None:
+        for value in ("", "<команда и ожидаемый результат>"):
+            with self.subTest(value=value):
+                prompt = f"Критерий готовности: {value}\nУсловие остановки: падение"
+                self.assert_denied(
+                    self.agent_call(prompt, self.plain_env()), "Критерий готовности"
+                )
+
+    def test_gate_applies_to_subagent_calling_agent(self) -> None:
+        data = {
+            "tool_name": "Agent",
+            "tool_input": {"prompt": "Сделай."},
+            "agent_id": "id-1",
+        }
+        self.assert_denied(
+            self.hook("pre-tool", data, env=self.plain_env()), "Критерий готовности"
+        )
+        self.assert_denied(self.hook("pre-tool", data), "Критерий готовности")
+
+    # --- ворота: вызов из навыка (по транскрипту) ---
+
+    def skill_transcript(self, entries: list[dict]) -> Path:
+        path = self.root / "transcript.jsonl"
+        path.write_text(
+            "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries),
+            encoding="utf-8",
+        )
+        return path
+
+    @staticmethod
+    def user(content: object, **extra: object) -> dict:
+        return {
+            "type": "user",
+            "message": {"role": "user", "content": content},
+            **extra,
+        }
+
+    @staticmethod
+    def skill_use() -> dict:
+        block = {"type": "tool_use", "name": "Skill", "input": {"skill": "simplify"}}
+        return {"type": "assistant", "message": {"content": [block]}}
+
+    def call_with(self, prompt: str, transcript: object) -> subprocess.CompletedProcess:
+        data = {
+            "tool_name": "Agent",
+            "tool_input": {"prompt": prompt, "subagent_type": "general-purpose"},
+            "transcript_path": str(transcript),
+        }
+        return self.hook("pre-tool", data, env=self.plain_env())
+
+    def test_gate_skill_slash_command_passes(self) -> None:
+        path = self.skill_transcript(
+            [
+                self.user(
+                    "<command-name>/code-review</command-name>\n<command-args>high</command-args>"
+                ),
+                self.user([{"type": "text", "text": "текст навыка"}], isMeta=True),
+            ]
+        )
+        self.assert_not_denied(self.call_with("Сделай.", path))
+
+    def test_gate_skill_tool_in_same_turn_passes(self) -> None:
+        path = self.skill_transcript(
+            [
+                self.user("проверь дифф"),
+                self.skill_use(),
+                self.user([{"type": "tool_result", "content": "ok"}]),
+                self.user([{"type": "text", "text": "текст навыка"}], isMeta=True),
+            ]
+        )
+        self.assert_not_denied(self.call_with("Сделай.", path))
+
+    def test_gate_skill_in_previous_turn_denied(self) -> None:
+        path = self.skill_transcript(
+            [
+                self.user("<command-name>/code-review</command-name>"),
+                self.skill_use(),
+                self.user([{"type": "text", "text": "теперь другое"}]),
+            ]
+        )
+        self.assert_denied(self.call_with("Сделай.", path), "Критерий готовности")
+
+    def test_gate_no_transcript_denied(self) -> None:
+        for path in (self.root / "нет.jsonl", ""):
+            with self.subTest(path=str(path)):
+                self.assert_denied(
+                    self.call_with("Сделай.", path), "Критерий готовности"
+                )
+
+    def test_gate_lines_pass_with_transcript(self) -> None:
+        path = self.skill_transcript([self.user("обычное сообщение")])
+        self.assert_not_denied(self.call_with(GATE_LINES + "Сделай.", path))
+
+    def test_gate_broken_json_is_silent(self) -> None:
+        r = self.hook("pre-tool", "{не json", env=self.plain_env())
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_no_role_other_tools_and_events_silent(self) -> None:
+        env = self.plain_env()
+        for tool, tool_input in (
+            ("Bash", {"command": "ls"}),
+            ("Monitor", {"command": "x"}),
+            ("SendMessage", {"to": "a"}),
+        ):
+            with self.subTest(tool=tool):
+                r = self.hook(
+                    "pre-tool",
+                    {"tool_name": tool, "tool_input": tool_input, "agent_id": "id-1"},
+                    env=env,
+                )
+                self.assertEqual((r.returncode, r.stdout), (0, ""))
+        for event in ("subagent-stop", "stop"):
+            r = self.hook(event, {"agent_id": "id-1"}, env=env)
+            self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_hooks_json_gate_has_no_role_condition(self) -> None:
+        config = json.loads(
+            (PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8")
+        )
+        entries = {e["matcher"]: e for e in config["hooks"]["PreToolUse"]}
+        gate = entries["Agent|Task"]["hooks"][0]["command"]
+        self.assertNotIn("DUTY_ROLE", gate)
+        self.assertIn("task-guard.py", gate)
+        guard = entries["Monitor|Bash|SendMessage"]["hooks"][0]["command"]
+        self.assertIn("DUTY_ROLE", guard)
 
     # --- испорченный ввод ---
 

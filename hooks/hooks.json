@@ -1,5 +1,5 @@
 {
-  "description": "При старте сессии: открытые workspace задач, задачи для продолжения, очередь вопросов, реестр занятости, напоминание о /duty:dispatch. В сессии агента задачи: запрет фонового ожидания у субагентов и сторожа остановки",
+  "description": "При старте сессии: открытые workspace задач, задачи для продолжения, очередь вопросов, реестр занятости, напоминание о /duty:dispatch. Во всех сессиях: ворота постановки (поручение Agent без критерия готовности и условия остановки отклоняется). В сессии агента задачи: запрет фонового ожидания у субагентов и сторожа остановки",
   "hooks": {
     "SessionStart": [
       {
@@ -14,7 +14,17 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Monitor|Bash|Agent|Task|SendMessage",
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/task-guard.py\" pre-tool",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Monitor|Bash|SendMessage",
         "hooks": [
           {
             "type": "command",

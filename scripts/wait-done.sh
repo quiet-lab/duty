@@ -8,7 +8,9 @@
 # не теряется. Каталог создаёт tab-run.sh до возврата, поэтому ожидание
 # запускается после него. Печатает «done rc=<код> <каталог>» и выходит
 # с кодом из done; 124 — истёк --timeout-s (предел ожидания, а не такт
-# опроса), 2 — ошибка вызова или наблюдения.
+# опроса), 2 — ошибка вызова или наблюдения. Один вызов Bash ограничен 600 с:
+# агент ждёт с --timeout-s 590 и таймаутом вызова 600000 мс, а по коду 124
+# запускает ожидание снова (agents/worker.md, п. 4).
 
 set -euo pipefail
 
@@ -27,6 +29,7 @@ done
 [[ -z $timeout_s || $timeout_s =~ ^[0-9]+$ ]] || die "--timeout-s $timeout_s: нужно целое число секунд"
 [ -d "$dir" ] || die "каталога $dir нет"
 command -v inotifywait > /dev/null || die 'нет inotifywait: pacman -S inotify-tools'
+command -v setpriv > /dev/null || die 'нет setpriv: pacman -S util-linux'
 
 finish() {
     local code
@@ -36,7 +39,9 @@ finish() {
     exit "$code"
 }
 
-exec {events}< <(exec inotifywait -m -e moved_to -e close_write --format '%f' "$dir" 2>&1)
+# Наблюдатель с -m сам не заканчивается: при обычном выходе и SIGTERM его
+# снимает ловушка EXIT, при SIGKILL этого сценария — сигнал смерти родителя.
+exec {events}< <(exec setpriv --pdeathsig TERM inotifywait -m -e moved_to -e close_write --format '%f' "$dir" 2>&1)
 watcher=$!
 # Наблюдатель запущен этим сценарием, его PID известен.
 trap 'kill "$watcher" 2> /dev/null || true' EXIT

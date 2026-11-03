@@ -234,11 +234,11 @@ def registered_wait(task: Path) -> str | None:
     questions = json_lines(
         [
             str(SCRIPTS / "ask.py"),
+            "--results",
+            str(task.parent),
             "list",
             "--open",
             "--json",
-            "--results",
-            str(task.parent),
         ]
     )
     if isinstance(questions, list):

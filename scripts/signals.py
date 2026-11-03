@@ -163,8 +163,9 @@ class Watch:
 
     def __init__(self, directory: Path) -> None:
         # stderr объединён со stdout: «Watches established.» inotifywait пишет в stderr.
+        # Сигнал смерти родителя снимает наблюдателя и при SIGKILL ожидающего.
         self.proc = subprocess.Popen(
-            ["inotifywait", "-m", "-e", "moved_to", "-e", "create", "-e", "close_write", "--format", "%e %f", str(directory)],
+            ["setpriv", "--pdeathsig", "TERM", "inotifywait", "-m", "-e", "moved_to", "-e", "create", "-e", "close_write", "--format", "%e %f", str(directory)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             # Родитель блокирует сигналы на время запуска; наблюдателю маска не нужна.
             preexec_fn=lambda: os_signal.pthread_sigmask(os_signal.SIG_SETMASK, []))

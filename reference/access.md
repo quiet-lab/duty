@@ -103,7 +103,7 @@ curl -s -H "Authorization: Bearer $(cat ~/.config/axata/jira-pat)" \
 ## Команды с изменениями (только `/duty:after-merge`)
 
 ```sh
-# Удалить ветвь в origin (не из перечня защищённых, reference/layout.md).
+# Удалить ветвь в origin (не из перечня защищённых, README плагина, «Раскладка»).
 git -C <путь сабмодуля> push origin --delete <ветвь>
 
 # Перевод тикета: id перехода, у которого to.statusCategory.key == "done"

@@ -23,7 +23,7 @@ from pathlib import Path
 BB = "https://git.service-desk.site"
 CFG = Path.home() / ".config" / "axata"
 # Jenkins отдаёт сертификат внутреннего центра, поэтому проверка выключена,
-# как и в curl -k из docs/dev-contour-deploy-check.md.
+# как и в curl -k из docs/rollout.md.
 INSECURE = ssl._create_unverified_context()
 
 

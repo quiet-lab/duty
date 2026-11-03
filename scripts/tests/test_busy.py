@@ -34,24 +34,24 @@ class BusyTest(unittest.TestCase):
         os.environ["DUTY_BUSY_DIR"] = self.tmp.name
 
     def test_claim_creates_mark(self) -> None:
-        code, _ = run("claim", "dev-stand", "--holder", "a", "--note", "прогон", "--pid", str(os.getpid()))
+        code, _ = run("claim", "dev-stand-1", "--holder", "a", "--note", "прогон", "--pid", str(os.getpid()))
         self.assertEqual(code, 0)
-        data = json.loads((Path(self.tmp.name) / "dev-stand.json").read_text(encoding="utf-8"))
+        data = json.loads((Path(self.tmp.name) / "dev-stand-1.json").read_text(encoding="utf-8"))
         self.assertEqual(data["holder"], "a")
         self.assertEqual(data["pid"], os.getpid())
         self.assertIsInstance(data["since_ms"], int)
 
     def test_claim_without_pid_is_usage_error(self) -> None:
-        code, out = run("claim", "dev-stand", "--holder", "a")
+        code, out = run("claim", "dev-stand-1", "--holder", "a")
         self.assertEqual(code, 2)
         self.assertIn('--pid "$PPID"', out)
-        self.assertFalse((Path(self.tmp.name) / "dev-stand.json").exists())
+        self.assertFalse((Path(self.tmp.name) / "dev-stand-1.json").exists())
 
     def test_claim_with_dead_pid_is_usage_error(self) -> None:
-        code, out = run("claim", "dev-stand", "--holder", "a", "--pid", str(dead_pid()))
+        code, out = run("claim", "dev-stand-1", "--holder", "a", "--pid", str(dead_pid()))
         self.assertEqual(code, 2)
         self.assertIn("не жив", out)
-        self.assertFalse((Path(self.tmp.name) / "dev-stand.json").exists())
+        self.assertFalse((Path(self.tmp.name) / "dev-stand-1.json").exists())
 
     def test_repeat_claim_by_live_holder_is_busy(self) -> None:
         run("claim", "station", "--holder", "a", "--note", "замер", "--pid", str(os.getpid()))
@@ -62,25 +62,25 @@ class BusyTest(unittest.TestCase):
 
     def test_stale_pid_is_replaced(self) -> None:
         # Устаревшая отметка — файл, оставленный держателем, который завершился.
-        stale = {"resource": "pr-train", "holder": "old", "task": "", "pid": dead_pid(),
+        stale = {"resource": "studio-oktell-ocp", "holder": "old", "task": "", "pid": dead_pid(),
                  "since_ms": 0, "note": ""}
-        (Path(self.tmp.name) / "pr-train.json").write_text(json.dumps(stale), encoding="utf-8")
-        self.assertEqual(run("check", "pr-train")[0], 0)
-        code, out = run("claim", "pr-train", "--holder", "new", "--pid", str(os.getpid()))
+        (Path(self.tmp.name) / "studio-oktell-ocp.json").write_text(json.dumps(stale), encoding="utf-8")
+        self.assertEqual(run("check", "studio-oktell-ocp")[0], 0)
+        code, out = run("claim", "studio-oktell-ocp", "--holder", "new", "--pid", str(os.getpid()))
         self.assertEqual(code, 0)
         self.assertIn("устаревшая", out)
-        data = json.loads((Path(self.tmp.name) / "pr-train.json").read_text(encoding="utf-8"))
+        data = json.loads((Path(self.tmp.name) / "studio-oktell-ocp.json").read_text(encoding="utf-8"))
         self.assertEqual(data["holder"], "new")
 
     def test_release_foreign_needs_force(self) -> None:
-        run("claim", "docs-tree", "--holder", "a", "--pid", str(os.getpid()))
-        code, _ = run("release", "docs-tree", "--holder", "b")
+        run("claim", "dev-stand-2", "--holder", "a", "--pid", str(os.getpid()))
+        code, _ = run("release", "dev-stand-2", "--holder", "b")
         self.assertEqual(code, 3)
-        self.assertTrue((Path(self.tmp.name) / "docs-tree.json").exists())
-        code, out = run("release", "docs-tree", "--holder", "b", "--force")
+        self.assertTrue((Path(self.tmp.name) / "dev-stand-2.json").exists())
+        code, out = run("release", "dev-stand-2", "--holder", "b", "--force")
         self.assertEqual(code, 0)
         self.assertIn("предупреждение", out)
-        self.assertFalse((Path(self.tmp.name) / "docs-tree.json").exists())
+        self.assertFalse((Path(self.tmp.name) / "dev-stand-2.json").exists())
 
     def test_release_own(self) -> None:
         run("claim", "station", "--holder", "a", "--pid", str(os.getpid()))
@@ -89,15 +89,15 @@ class BusyTest(unittest.TestCase):
 
     def test_list(self) -> None:
         self.assertIn("отметок нет", run("list")[1])
-        run("claim", "dev-stand", "--holder", "a", "--task", "t.md", "--pid", str(os.getpid()))
+        run("claim", "dev-stand-1", "--holder", "a", "--task", "t.md", "--pid", str(os.getpid()))
         stale = {"resource": "station", "holder": "b", "task": "", "pid": dead_pid(),
                  "since_ms": 0, "note": ""}
         (Path(self.tmp.name) / "station.json").write_text(json.dumps(stale), encoding="utf-8")
         _, table = run("list")
-        self.assertIn("| dev-stand | a | t.md |", table)
+        self.assertIn("| dev-stand-1 | a | t.md |", table)
         self.assertIn("нет (устарела)", table)
         rows = json.loads(run("list", "--json")[1])
-        self.assertEqual({r["resource"]: r["alive"] for r in rows}, {"dev-stand": True, "station": False})
+        self.assertEqual({r["resource"]: r["alive"] for r in rows}, {"dev-stand-1": True, "station": False})
 
     def test_bad_name_rejected(self) -> None:
         with self.assertRaises(SystemExit):

@@ -247,9 +247,12 @@ cmd_stalled() {
         step=$(task_step "$dir")
         case $step in *завершено* | *Завершено* | *остановлена* | *Остановлена*) continue ;; esac
         grep -qiE '^(# .*)?(завершено|остановлена)' "$dir/state.md" && continue
-        # Продолжение под новым именем (<имя>-2, <имя>2, <имя>-r2) делает прежний каталог прошлым.
+        # Продолжение под новым именем (<имя>-2, <имя>2, <имя>-r2) делает
+        # прежний каталог прошлым; иные имена с тем же началом (<имя>-ui)
+        # — отдельные задачи.
         newer=''
         for other in "$results/$name"?*/; do
+            [[ $(basename "$other") =~ ^"$name"(-?r?)?[0-9]+$ ]] || continue
             [ -f "$other/brief.md" ] && { newer=1; break; }
         done
         [ -z "$newer" ] || continue
@@ -382,8 +385,19 @@ cmd_start() {
     fi
 
     workspaces=$(herdr workspace list)
-    jq -e --arg n "$name" "$JQ_BARE"' [.result.workspaces[] | select((.label | bare) == $n or (.label | bare | startswith($n + " · ")))] | length == 0' <<< "$workspaces" > /dev/null \
-        || die "workspace с меткой $name уже есть"
+    stale=$(jq -r --arg n "$name" "$JQ_BARE"' .result.workspaces[] | select((.label | bare) == $n or (.label | bare | startswith($n + " · "))) | .workspace_id' <<< "$workspaces")
+    if [ -n "$stale" ]; then
+        # Продолжение допускает прежний workspace задачи, в котором агент
+        # вышел: его закрывают, иначе подсказка хука о продолжении
+        # не сработала бы. Workspace с живым агентом не трогается.
+        [ -n "$resume" ] || die "workspace с меткой $name уже есть"
+        [ -z "$(agent_status "$(agent_target "$name" "$task")")" ] \
+            || die "в workspace задачи $name агент жив: продолжение не нужно"
+        for ws in $stale; do
+            herdr workspace close "$ws" > /dev/null || die "прежний workspace $ws не закрыт"
+        done
+        workspaces=$(herdr workspace list)
+    fi
     symbol=$(free_symbol "$workspaces") || die 'все символы Ⓐ…Ⓩ заняты открытыми задачами'
     label="$symbol $name · $model_arg"
     agents=$(herdr agent list)

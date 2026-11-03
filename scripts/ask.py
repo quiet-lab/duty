@@ -182,6 +182,14 @@ def cmd_new(args: argparse.Namespace) -> int:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(body)
         break
+    # Сигналы прежнего вопроса с тем же номером (каталог задачи пересоздан
+    # или файл удалён) — защёлки: без снятия ask.py wait отпустился бы сразу.
+    for kind in ("question", "answer"):
+        subprocess.run(
+            [sys.executable, "-I", str(SIGNALS), "clear", f"{kind}-{name}-{nn}"],
+            capture_output=True,
+            check=False,
+        )
     signal(f"question-{name}-{nn}", args.title)
     print(f"вопрос {nn}: {path}")
     print(
@@ -211,8 +219,11 @@ def cmd_answer(args: argparse.Namespace) -> int:
             f"\n{args.text.strip()}\n\n- ссылка: {ref}\n"
             f"- время: {fmt_utc(stamp)} (`answered_ms={stamp}`)\n"
         )
-    signal(f"answer-{args.task}-{nn}", args.text.strip()[:200])
     print(f"ответ записан: {path}")
+    if not signal(f"answer-{args.task}-{nn}", args.text.strip()[:200]):
+        return fail(
+            f"ответ записан, но агент не разбужен: повторить сигнал answer-{args.task}-{nn}"
+        )
     return 0
 
 
@@ -280,9 +291,13 @@ def cmd_wait(args: argparse.Namespace) -> int:
     if args.timeout_s is not None:
         argv += ["--timeout-s", str(args.timeout_s)]
     code = subprocess.run(argv, check=False).returncode
-    if code == 0:
-        print(parse(path)["answer"])
-    return code
+    if code != 0:
+        return code
+    answer = parse(path)["answer"]
+    if not answer:
+        return fail(f"сигнал ответа на вопрос {nn} есть, а раздел ответа в {path} пуст")
+    print(answer)
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:

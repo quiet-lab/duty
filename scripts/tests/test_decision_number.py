@@ -23,8 +23,13 @@ log = root / "calls.log"
 log.open("a", encoding="utf-8").write(" ".join(sys.argv[1:]) + "\n")
 if sys.argv[1:2] == ["insert"]:
     src = Path(sys.argv[-1])
-    catalog = sys.argv[sys.argv.index("--catalog") + 1] if "--catalog" in sys.argv else "01"
-    target = next((root / "docs" / "decisions").glob(catalog + "-*"))
+    decisions = root / "docs" / "decisions"
+    if "--catalog" in sys.argv:
+        catalog = sys.argv[sys.argv.index("--catalog") + 1]
+        target = next(decisions.glob(catalog + "-*"))
+    else:
+        after = int(sys.argv[sys.argv.index("--after") + 1])
+        target = next(decisions.glob(f"*/{after:04d}-*.md")).parent
     slug = src.stem.split("-", 1)[1] if src.stem[:4].isdigit() else src.stem
     src.rename(target / ("0099-" + slug + ".md"))
 """
@@ -117,6 +122,30 @@ class DecisionNumberTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         calls = (self.root / "calls.log").read_text(encoding="utf-8").splitlines()
         self.assertEqual(calls[0], f"insert --after 1 {draft}")
+
+    def test_insert_finds_record_in_target_catalog(self) -> None:
+        # Тема r1 уже есть в 01-architecture: путь берётся из каталога вставки.
+        for args in (("03-data",), ("01-architecture", "--after", "3")):
+            draft = Path(self.tmp.name) / "r1.md"
+            draft.write_text("# 0000. Тёзка\n", encoding="utf-8")
+            extra = list(args[1:])
+            r = self.run_script(
+                str(self.decisions / args[0]), "--insert", str(draft), *extra
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(
+                r.stdout.strip(), str(self.decisions / "03-data" / "0099-r1.md")
+            )
+            (self.decisions / "03-data" / "0099-r1.md").unlink()
+
+    def test_insert_after_missing_record(self) -> None:
+        draft = Path(self.tmp.name) / "x.md"
+        draft.write_text("# 0000. X\n", encoding="utf-8")
+        r = self.run_script(
+            str(self.decisions / "02-code"), "--insert", str(draft), "--after", "77"
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("записи 77 нет", r.stderr)
 
     def test_insert_waits_for_lock_event(self) -> None:
         lock = self.root / ".git" / "decision-insert.lock"

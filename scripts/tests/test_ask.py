@@ -192,6 +192,18 @@ class AskTest(unittest.TestCase):
         self.assertEqual(waiter.returncode, 0)
         self.assertIn("вариант 2", out)
 
+    def test_new_clears_stale_answer_signal(self) -> None:
+        # Каталог задачи пересоздан: вопрос 01 уже был отвечен, сигнал остался.
+        self.new()
+        self.run_cmd("answer", "probe", "01", "старый ответ")
+        (self.task / "questions" / "01-readme.md").unlink()
+        self.new("again", "--irreversible")
+        self.assertFalse((self.signals / "answer-probe-01.json").exists())
+        # Срок 1 с — сигнала нет, ожидание заканчивается по сроку (код 124).
+        r = self.run_cmd("wait", "01", "--timeout-s", "1")
+        self.assertEqual(r.returncode, 124, r.stderr)
+        self.assertNotIn("старый ответ", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

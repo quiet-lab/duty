@@ -78,8 +78,9 @@ renumber=${DUTY_RENUMBER:-$root/scripts/renumber-decisions.py}
 # не одной атомарной операцией, две вставки в одном дереве теряют правки
 # друг друга. Разные worktree замок не делят (каталог git у каждого свой),
 # их номера сводит перенумерация при слиянии. Ожидание — событием снятия
-# (inotifywait), срок 30 с — страховка от замка, оставшегося после аварии
-# держателя. Условие снятия: renumber-decisions.py insert сам проверяет,
+# (inotifywait); замок, не снятый за 30 с, считается оставшимся после
+# аварии держателя: сценарий завершается с подсказкой rmdir, а не ждёт
+# бесконечно. Условие снятия: renumber-decisions.py insert сам проверяет,
 # что дерево не изменилось за время вставки, и откатывает её при гонке.
 lock="$(git -C "$decisions" rev-parse --path-format=absolute --git-dir)/decision-insert.lock"
 announced=0
@@ -90,10 +91,22 @@ until mkdir "$lock" 2> /dev/null; do
         announced=1
     fi
     # Замок мог исчезнуть между mkdir и подпиской: событие ловит удаление,
-    # а повторный mkdir после подписки закрывает гонку.
-    inotifywait -qq -e delete_self,delete --timeout 30 "$lock" 2> /dev/null || true
+    # а повторный mkdir после подписки закрывает гонку. Код 2 — срок вышел.
+    code=0
+    inotifywait -qq -e delete_self,delete --timeout 30 "$lock" 2> /dev/null || code=$?
+    if [ "$code" = 2 ] && [ -d "$lock" ]; then
+        die "замок $lock не снят за 30 с; если вставка не идёт, снять: rmdir $lock"
+    fi
 done
 trap 'rmdir "$lock" 2> /dev/null || true' EXIT
+
+# Каталог, куда ляжет запись: при --after — каталог записи <номер>.
+target=$catalog
+if [ -n "$after" ]; then
+    anchor=$(find "$decisions"/[0-9][0-9]-* -maxdepth 1 -type f -name "$(printf '%04d' "$((10#$after))")-*.md" | head -1)
+    [ -n "$anchor" ] || die "записи $after нет"
+    target=$(dirname "$anchor")
+fi
 
 if [ -n "$after" ]; then
     python3 -I "$renumber" insert --after "$((10#$after))" "$insert" >&2
@@ -102,6 +115,6 @@ else
 fi
 python3 -I "$renumber" --write-index >&2
 
-found=$(find "$decisions"/[0-9][0-9]-* -maxdepth 1 -type f -name "[0-9][0-9][0-9][0-9]-$slug.md" | head -1)
+found=$(find "$target" -maxdepth 1 -type f -name "[0-9][0-9][0-9][0-9]-$slug.md" | head -1)
 [ -n "$found" ] || die "запись $slug после вставки не найдена"
 printf '%s\n' "$found"

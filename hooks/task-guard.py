@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Сторожа сессии агента задачи: хуки PreToolUse, SubagentStop и Stop.
+"""Хуки плагина duty: ворота постановки, сторожа сессии агента задачи.
+
+Ворота действуют во всех сессиях с плагином: `pre-tool` для `Agent`/`Task`
+отклоняет приглашение без строк «Критерий готовности» и «Условие остановки»
+(проверка — `scripts/brief_check.py`); пропускаются типы только для чтения
+и `duty:runner`. Остальное ниже — только в сессии агента задачи
+(`DUTY_ROLE=worker`).
 
 Причина: субагент ставил наблюдение и заканчивал ход, уведомление к нему
 не приходило, а координатор считал его работающим. Поэтому:
@@ -16,7 +22,7 @@
   остановка (`stop_hook_active`) пропускается с уведомлением herdr: условие
   может не разрешиться, а цикл блокировок расходует ход за ходом.
 
-Вне сессии агента задачи (`DUTY_ROLE` не `worker`) молчит. Сбой хука не должен
+Вне сессии агента задачи (`DUTY_ROLE` не `worker`) сторожа молчат. Сбой хука не должен
 мешать сессии: любая ошибка идёт в stderr с кодом 0.
 """
 
@@ -35,6 +41,8 @@ PID_RE = re.compile(r"^pid: (\d+)$", re.MULTILINE)
 SUBAGENT_TOOLS = {"Agent", "Task"}
 # Эти субагенты только читают и отвечают сразу: итог виден в их ответе.
 READ_ONLY_TYPES = {"Explore", "Plan", "claude-code-guide", "duty:inspector"}
+# Рутина навыков /duty:* идёт на runner: под ворота постановки не попадает.
+GATE_FREE_TYPES = READ_ONLY_TYPES | {"duty:runner"}
 MESSAGE_LIMIT = 200
 # Подпроцессы signals.py и ask.py: 0,1 с на станции, на узлах в 4,5 раза дольше,
 # с тройным запасом 2 с; у herdr — ответ сервера, тот же порядок.
@@ -51,6 +59,35 @@ UNTAGGED = (
     "Подзадача без строки «Подзадача: <имя>» в приглашении: её остановка без итога "
     "не отслеживается (agents/worker.md, п. 3)."
 )
+
+
+GATE_HINT = (
+    "Задача субагенту ставится с критерием готовности и условием остановки. "
+    "В приглашении не хватает: {missing}. Добавьте строки "
+    "«Критерий готовности: <команда и ожидаемый результат>» и "
+    "«Условие остановки: <сигнал, при котором работа прекращается и исполнитель "
+    "отчитывается>» (или заголовки с текстом под ними). Форма — "
+    "reference/brief-template.md плагина duty, раздел «Раздел для субагентов»."
+)
+
+
+def gate(data: dict[str, object]) -> bool:
+    """Ворота постановки: True — поручение отклонено."""
+    raw_input = data.get("tool_input")
+    tool_input = raw_input if isinstance(raw_input, dict) else {}
+    if tool_input.get("subagent_type") in GATE_FREE_TYPES:
+        return False
+    sys.path.insert(0, str(SCRIPTS))
+    import brief_check
+
+    missing = brief_check.check_prompt(str(tool_input.get("prompt", "")))
+    if not missing:
+        return False
+    pre_tool_output(
+        permissionDecision="deny",
+        permissionDecisionReason=GATE_HINT.format(missing=", ".join(missing)),
+    )
+    return True
 
 
 def task_dir() -> Path | None:
@@ -290,13 +327,18 @@ HANDLERS = {"pre-tool": pre_tool, "subagent-stop": subagent_stop, "stop": stop}
 
 
 def main(argv: list[str]) -> int:
-    if os.environ.get("DUTY_ROLE") != "worker":
+    worker = os.environ.get("DUTY_ROLE") == "worker"
+    if not worker and argv[1:2] != ["pre-tool"]:
         return 0
     try:
         handler = HANDLERS[argv[1]]
         data = json.load(sys.stdin)
         if isinstance(data, dict):
-            handler(data)
+            gated = argv[1] == "pre-tool" and data.get("tool_name") in SUBAGENT_TOOLS
+            if gated and gate(data):
+                return 0
+            if worker:
+                handler(data)
     except Exception as error:  # noqa: BLE001 - сбой хука не должен мешать сессии
         print(f"task-guard.py: {error!r}", file=sys.stderr)
     return 0

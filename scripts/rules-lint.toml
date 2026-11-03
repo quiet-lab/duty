@@ -1,0 +1,27 @@
+# Набор файлов правил для `scripts/rules-lint.py repeats`.
+# Пути — от корня монорепозитория, допустимы глобы и `~`. Файл или образец
+# без совпадений — находка.
+files = [
+    "~/.claude/CLAUDE.md",
+    "CLAUDE.md",
+    ".claude/rules/*.md",
+    "docs/isolation.md",
+    "docs/decisions/08-agents-and-docs/0064-*.md",
+    "docs/decisions/08-agents-and-docs/0065-*.md",
+    "claude-plugins/duty/README.md",
+    "claude-plugins/duty/agents/worker.md",
+    "claude-plugins/duty/reference/worker-rules.md",
+    "claude-plugins/duty/reference/brief-template.md",
+    "claude-plugins/duty/reference/report.md",
+    "claude-plugins/duty/skills/dispatch/SKILL.md",
+    "claude-plugins/duty/hooks/task-guard.py", # только докстринг модуля
+]
+
+# Порог повтора: нормализованное предложение не короче обоих значений.
+min_words = 8
+min_chars = 50
+
+# Фраза, которой повтор разрешён: нормализованный текст входит в предложение.
+# [[allowed]]
+# text = "…"
+# reason = "почему повтор допустим"

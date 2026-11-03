@@ -2,9 +2,12 @@
 # Вынос задачи в отдельный workspace herdr с агентом duty:worker.
 #
 # Использование:
-#   dispatch.sh <имя> <модель> [--brief <файл> | --goal <текст> | --resume]
-#               [--rules <файл>] [--main <имя сессии>] [--root <каталог>]
-#               [--results <каталог>] [--plugin-dir <каталог>]
+#   dispatch.sh <имя> <модель> --brief <файл> [--rules <файл>] ...
+#   dispatch.sh <имя> <модель> --goal <цель> --done '<критерий готовности с командой>'
+#               --stop '<условие остановки>' --read '<прочитанное при постановке>' ...
+#   dispatch.sh <имя> <модель> --resume ...
+#   (общие ключи: [--rules <файл>] [--main <имя сессии>] [--root <каталог>]
+#               [--results <каталог>] [--plugin-dir <каталог>])
 #   dispatch.sh list [--root <каталог>] [--results <каталог>]
 #   dispatch.sh stalled [--root <каталог>] [--results <каталог>]
 #   dispatch.sh close <имя> [--root <каталог>] [--results <каталог>]
@@ -23,6 +26,14 @@
 # а агента — по имени, при его отсутствии по панели из строки «- панель
 # агента:» того же блока. Значения служебного блока берутся из последнего
 # блока: --resume дописывает новый.
+#
+# Ворота постановки: записка (--brief или собранная из --goal по шаблону
+# reference/brief-template.md) проверяется до создания каталога задачи и до
+# обращений к herdr (scripts/rules-lint.py brief): обязательны разделы «Цель»,
+# «Критерий готовности» (с командой в обратных кавычках), «Условие остановки»,
+# «Ссылки» с подразделом «Прочитанное при постановке». Нарушение — отказ с
+# кодом 1 и именами разделов. --goal требует --done, --stop и --read; без
+# --brief, --goal и --resume запуск отклоняется. --resume записку не проверяет.
 #
 # --resume — продолжение задачи в прежнем каталоге: brief.md, rules.md
 # и state.md остаются, прежний workspace задачи без живого агента
@@ -78,6 +89,8 @@
 # и сам workspace закрываются; готово, когда workspace нет в herdr workspace list.
 
 set -euo pipefail
+# Значения ключей подставляются в шаблон как есть: «&» в них не метасимвол.
+shopt -u patsub_replacement 2> /dev/null || true
 
 die() { printf 'dispatch.sh: %s\n' "$*" >&2; exit 1; }
 SYMBOLS=(Ⓐ Ⓑ Ⓒ Ⓓ Ⓔ Ⓕ Ⓖ Ⓗ Ⓘ Ⓙ Ⓚ Ⓛ Ⓜ Ⓝ Ⓞ Ⓟ Ⓠ Ⓡ Ⓢ Ⓣ Ⓤ Ⓥ Ⓦ Ⓧ Ⓨ Ⓩ)
@@ -357,6 +370,41 @@ cmd_close() {
     fi
 }
 
+# Записка для --goal: шаблон с подстановкой значений ключей.
+render_brief() {
+    local template
+    template=$(< "$plugin_root/reference/brief-template.md")
+    template=${template//'{{NAME}}'/$name}
+    template=${template//'{{GOAL}}'/$goal}
+    template=${template//'{{DONE}}'/$done_cond}
+    template=${template//'{{STOP}}'/$stop_cond}
+    printf '%s\n' "${template//'{{READ}}'/$read_cond}"
+}
+
+# Ворота постановки: до каталога задачи и до обращений к herdr.
+gate_brief() {
+    local out
+    if [ -n "$resume" ]; then
+        [ -z "$done_cond$stop_cond$read_cond" ] || die '--done, --stop и --read не нужны с --resume'
+        return
+    fi
+    if [ -z "$brief_file" ] && [ -z "$goal" ]; then
+        [ -z "$done_cond$stop_cond$read_cond" ] || die '--done, --stop и --read задаются вместе с --goal'
+        die 'нужна записка: --brief <файл>, либо --goal с --done, --stop и --read (reference/brief-template.md), либо --resume'
+    fi
+    if [ -n "$brief_file" ]; then
+        [ -z "$done_cond$stop_cond$read_cond" ] || die '--done, --stop и --read задаются вместе с --goal'
+        out=$(python3 -I "$plugin_root/scripts/rules-lint.py" brief "$brief_file") \
+            || die "записка $brief_file не проходит ворота (reference/brief-template.md):"$'\n'"$out"
+        return
+    fi
+    [ -n "$done_cond" ] || die '--goal требует --done <критерий готовности с командой в обратных кавычках>'
+    [ -n "$stop_cond" ] || die '--goal требует --stop <условие остановки>'
+    [ -n "$read_cond" ] || die '--goal требует --read <прочитанное при постановке>'
+    out=$(render_brief | python3 -I "$plugin_root/scripts/rules-lint.py" brief -) \
+        || die "записка из --goal не проходит ворота (reference/brief-template.md):"$'\n'"$out"
+}
+
 cmd_start() {
     local name=$1 model_arg=$2 model task workspaces agents passed template rules
     local rc rename_out created ws pane started_at_ms state status prompt screen input tab symbol label
@@ -376,6 +424,7 @@ cmd_start() {
     [ -z "$brief_file" ] || [ -z "$goal" ] || die '--brief и --goal вместе не задаются'
     [ -z "$resume" ] || [ -z "$brief_file$goal$rules_file" ] || die '--resume продолжает прежние brief.md и rules.md: без --brief, --goal и --rules'
     [ -z "$brief_file" ] || [ -s "$brief_file" ] || die "записки $brief_file нет или она пуста"
+    gate_brief
     [ -z "$rules_file" ] || [ -s "$rules_file" ] || die "файла правил $rules_file нет или он пуст"
 
     task=$results/$name
@@ -426,9 +475,7 @@ cmd_start() {
     elif [ -n "$brief_file" ]; then
         cp "$brief_file" "$task/brief.md"
     else
-        template=$(< "$plugin_root/reference/brief-template.md")
-        template=${template//'{{NAME}}'/$name}
-        printf '%s\n' "${template//'{{GOAL}}'/${goal:-—}}" > "$task/brief.md"
+        render_brief > "$task/brief.md"
     fi
     if [ -z "$resume" ]; then
         passed='—'
@@ -563,11 +610,14 @@ case $1 in
     *) [ $# -ge 2 ] || die 'нужны <имя> и <модель>'; positional=("$1" "$2"); shift 2 ;;
 esac
 
-brief_file='' goal='' rules_file='' main='' root='' results='' plugin_dir='' resume=''
+brief_file='' goal='' done_cond='' stop_cond='' read_cond='' rules_file='' main='' root='' results='' plugin_dir='' resume=''
 while [ $# -gt 0 ]; do
     case $1 in
         --brief) brief_file=${2:?}; shift 2 ;;
         --goal) goal=${2:?}; shift 2 ;;
+        --done) done_cond=${2:?}; shift 2 ;;
+        --stop) stop_cond=${2:?}; shift 2 ;;
+        --read) read_cond=${2:?}; shift 2 ;;
         --rules) rules_file=${2:?}; shift 2 ;;
         --main) main=${2:?}; shift 2 ;;
         --root) root=${2:?}; shift 2 ;;
@@ -582,5 +632,5 @@ case $command in
     list) require_tools herdr jq; resolve_paths; cmd_list ;;
     stalled) require_tools herdr jq; resolve_paths; cmd_stalled ;;
     close) require_tools herdr jq python3; resolve_paths; cmd_close "${positional[0]}" ;;
-    start) require_tools herdr jq claude; resolve_paths; cmd_start "${positional[@]}" ;;
+    start) require_tools herdr jq claude python3; resolve_paths; cmd_start "${positional[@]}" ;;
 esac

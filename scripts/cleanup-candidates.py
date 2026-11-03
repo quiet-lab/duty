@@ -50,7 +50,7 @@ RESULTS = STAND / "results"
 SCRATCH = Path(f"/tmp/claude-{os.getuid()}")
 PROTECTED = {"dev", "dev2", "master", "new_ocp", "dev-local"}
 # Основные деревья стенда переводит на новую ревизию сам стенд; удаляются
-# только вместе со стендом (docs/dev-stand.md, «Остановка и очистка»).
+# только вместе со стендом (docs/stand/setup.md, «Остановка и очистка»).
 OUR_PREFIXES = ("dev2-RP-", "bugfix/RP-", "chore/", "feature/")
 ME = subprocess.run(["git", "config", "user.name"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
 STAND_MAIN = {STAND / "src" / n for n in ("qms", "ui", "tests", "jssip-phone")}

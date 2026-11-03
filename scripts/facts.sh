@@ -49,10 +49,12 @@ cat /proc/loadavg; nproc; free -g | head -2; df -h /tmp | tail -1
 section 'Занятость'
 python3 -I "$plugin/scripts/busy.py" list | head -30
 
+section 'Вопросы агентов без ответа'
+python3 -I "$plugin/scripts/ask.py" list --open | head -20
+
 section 'Текущая работа (todo.local.md)'
-# Снимок очереди — местный файл машины (в .gitignore); прежний todo.md
-# читается, пока он есть в репозитории проекта.
-todo="$root/todo.local.md"; [ -f "$todo" ] || todo="$root/todo.md"
+# Снимок очереди — местный файл машины (в .gitignore).
+todo="$root/todo.local.md"
 if [ -f "$todo" ]; then sed -n '/^## Текущая работа/,/^## /p' "$todo" | head -120; else echo 'снимка нет'; fi
 
 section 'Открытые задачи OpenSpec'
@@ -75,3 +77,6 @@ d = json.load(sys.stdin)
 for i in d.get("issues", []):
     print("-", i["key"], i["fields"]["status"]["name"], "|", i["fields"]["summary"][:90])
 print("всего:", d.get("total"))'
+
+section 'Неделя в цифрах'
+python3 -I "$plugin/scripts/week-stats.py" --root "$root" | head -20

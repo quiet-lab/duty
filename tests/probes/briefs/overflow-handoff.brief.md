@@ -6,20 +6,20 @@
 
 ## Следующие шаги
 
-1. Занять и освободить ресурс: `python3 -I {{PLUGIN}}/scripts/busy.py claim docs-tree --holder <метка> --task "$DUTY_TASK" --pid "$PPID" --note 'проба 06'`, затем `python3 -I {{PLUGIN}}/scripts/busy.py release docs-tree --holder <метка>`. Метка workspace — в служебном блоке этого файла. После шага 1 по правилам задачи контекст считается переполненным: перейти к «Передача» (раздел «Переполнение контекста» агента), шаг 2 не выполнять.
+1. Занять и освободить ресурс: `python3 -I {{PLUGIN}}/scripts/busy.py claim dev-stand-99 --holder <метка> --task "$DUTY_TASK" --pid "$PPID" --note 'проба 06'`, затем `python3 -I {{PLUGIN}}/scripts/busy.py release dev-stand-99 --holder <метка>`. Метка workspace — в служебном блоке этого файла. После шага 1 по правилам задачи контекст считается переполненным: перейти к «Передача» (раздел «Переполнение контекста» агента), шаг 2 не выполнять.
 2. Записать файл `$DUTY_TASK/second-step.txt` со строкой «второй шаг выполнен». Его выполняет продолжение, не первая половина.
 
 ## Команды проверки
 
 - `ls $DUTY_TASK/second-step.txt` — после продолжения файл есть, до него нет.
-- `python3 -I {{PLUGIN}}/scripts/busy.py list` — отметок `docs-tree` этой пробы нет.
+- `python3 -I {{PLUGIN}}/scripts/busy.py list` — отметок `dev-stand-99` этой пробы нет.
 
 ## Принятые решения
 
 - git и код монорепозитория не трогать; Jira, Bitbucket, Confluence, Jenkins не менять; push только в песочный `origin` (`{{SANDBOX}}/origin.git`), если разрешён ниже.
 - Песочница `{{SANDBOX}}/` вне проекта: правки только в клонах внутри `$DUTY_TASK/work/`.
 - Тесты песочницы: `{{SANDBOX}}/venv/bin/python -m pytest -q` (в системном `python3` pytest нет). Один тест падает намеренно: `tests/test_pricing.py::test_threshold_is_inclusive`.
-- Вопросов пользователю не задавать.
+- Вопросов не задавать (`ask.py` не вызывать).
 - Workspace при передаче не закрывать (правила задачи); после продолжения — закрыть.
 
 ## Ожидание в report.md

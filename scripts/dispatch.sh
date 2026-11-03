@@ -2,20 +2,32 @@
 # Вынос задачи в отдельный workspace herdr с агентом duty:worker.
 #
 # Использование:
-#   dispatch.sh <имя> <модель> [--brief <файл> | --goal <текст>]
+#   dispatch.sh <имя> <модель> [--brief <файл> | --goal <текст> | --resume]
 #               [--rules <файл>] [--main <имя сессии>] [--root <каталог>]
 #               [--results <каталог>] [--plugin-dir <каталог>]
 #   dispatch.sh list [--root <каталог>] [--results <каталог>]
+#   dispatch.sh stalled [--root <каталог>] [--results <каталог>]
 #   dispatch.sh close <имя> [--root <каталог>] [--results <каталог>]
 #
 # <модель> — haiku, sonnet, opus или fable. Fable (claude-fable-5-1)
 # запускается только по этому слову: навык /duty:dispatch передаёт его,
 # когда пользователь согласился.
 #
-# Метка workspace и вкладки — «<имя> · <модель>»; имя агента herdr и сессии
-# Claude — <имя>. list и close находят workspace по id из служебного блока
-# brief.md и метке «<имя>» либо «<имя> · …», а агента — по имени, при его
-# отсутствии по панели из строки «- панель агента:» того же блока.
+# Символ workspace — первая свободная буква Ⓐ…Ⓩ среди открытых задач
+# (dispatch.sh list); по нему главная сессия и пользователь узнают задачу
+# в подписях herdr и в шапке вопроса (ask.py). Метка workspace и вкладки —
+# «<символ> <имя> · <модель>»; имя агента herdr и сессии Claude — <имя>.
+# Агент получает окружение DUTY_ROLE=worker, DUTY_TASK, DUTY_NAME,
+# DUTY_SYMBOL и DUTY_MODEL. list и close находят workspace по id из
+# служебного блока brief.md и метке «<имя>», «<имя> · …» или «<символ> <имя> · …»,
+# а агента — по имени, при его отсутствии по панели из строки «- панель
+# агента:» того же блока. Значения служебного блока берутся из последнего
+# блока: --resume дописывает новый.
+#
+# --resume — продолжение задачи в прежнем каталоге: brief.md, rules.md
+# и state.md остаются, прежний workspace задачи без живого агента
+# закрывается, к brief.md дописывается новый служебный блок,
+# исполнитель продолжает с шага из state.md (agents/worker.md, п. 1).
 #
 # Запуск — шаги и критерий готовности каждого (проверяется командой):
 #   1. каталог задачи <results>/<имя>/ с brief.md, rules.md и runs/ — файлы
@@ -49,8 +61,14 @@
 # создано: workspace не закрывается, чтобы причину было видно в нём.
 #
 # list — открытые workspace задач (служебный блок brief.md в каталоге
-# результатов и живой workspace с тем же id и меткой): состояние агента
-# и наличие report.md; по нему /duty:cleanup предлагает закрытие.
+# результатов и живой workspace с тем же id и меткой): символ, состояние
+# агента, строка «Шаг:» из state.md и наличие report.md; по нему
+# /duty:cleanup предлагает закрытие.
+#
+# stalled — задачи, которые можно продолжить: state.md есть, в его строке
+# «Шаг:» нет слов «завершено» или «остановлена», живого агента нет (задачи
+# нет в list или агент вышел), и нет более нового каталога, имя которого
+# начинается с имени задачи (продолжение под новым именем).
 #
 # close — закрытие workspace задачи извне: агент в idle или done либо уже
 # вышел, report.md есть; отметки реестра держателя <имя> снимаются
@@ -62,6 +80,10 @@
 set -euo pipefail
 
 die() { printf 'dispatch.sh: %s\n' "$*" >&2; exit 1; }
+SYMBOLS=(Ⓐ Ⓑ Ⓒ Ⓓ Ⓔ Ⓕ Ⓖ Ⓗ Ⓘ Ⓙ Ⓚ Ⓛ Ⓜ Ⓝ Ⓞ Ⓟ Ⓠ Ⓡ Ⓢ Ⓣ Ⓤ Ⓥ Ⓦ Ⓧ Ⓨ Ⓩ)
+# Метка workspace без символа в начале: «Ⓐ имя · модель» → «имя · модель».
+JQ_BARE='def bare: sub("^[^a-z ]+ "; "");'
+
 warn() { printf 'dispatch.sh: предупреждение: %s\n' "$*" >&2; }
 
 plugin_root=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
@@ -93,6 +115,52 @@ require_tools() {
 # Id workspace из служебного блока brief.md задачи.
 task_workspace() {
     sed -n 's/^- workspace: `\([^`]*\)`.*/\1/p' "$1/brief.md" 2> /dev/null | tail -1
+}
+
+# Символ workspace из служебного блока brief.md задачи.
+task_symbol() {
+    sed -n 's/^- символ workspace: `\([^`]*\)`.*/\1/p' "$1/brief.md" 2> /dev/null | tail -1
+}
+
+# Строка «Шаг:» из state.md задачи, до 100 знаков; нет — «—».
+task_step() {
+    local step
+    step=$(sed -n 's/^\(\*\*\)\{0,1\}Шаг\(\*\*\)\{0,1\}: *//p' "$1/state.md" 2> /dev/null | head -1)
+    [ -n "$step" ] || { printf '—'; return; }
+    [ ${#step} -le 100 ] || step="${step:0:99}…"
+    printf '%s' "${step//|//}"
+}
+
+# Есть ли у задачи открытый workspace с её меткой: 0 — есть.
+workspace_open() {
+    local workspaces=$1 ws=$2 name=$3
+    jq -e --arg w "$ws" --arg n "$name" "$JQ_BARE"' .result.workspaces[] | select(.workspace_id == $w and ((.label | bare) == $n or (.label | bare | startswith($n + " · "))))' <<< "$workspaces" > /dev/null
+}
+
+# Каталоги задач с открытым workspace, по строке.
+open_tasks() {
+    local workspaces=$1 dir ws
+    for dir in "$results"/*/; do
+        dir=${dir%/}
+        [ -f "$dir/brief.md" ] || continue
+        ws=$(task_workspace "$dir")
+        [ -n "$ws" ] || continue
+        workspace_open "$workspaces" "$ws" "$(basename "$dir")" || continue
+        printf '%s\n' "$dir"
+    done
+}
+
+# Первая буква Ⓐ…Ⓩ, которой нет у открытых задач.
+free_symbol() {
+    local workspaces=$1 used=' ' dir sym
+    while IFS= read -r dir; do
+        [ -n "$dir" ] || continue
+        used+="$(task_symbol "$dir") "
+    done < <(open_tasks "$workspaces")
+    for sym in "${SYMBOLS[@]}"; do
+        [[ $used == *" $sym "* ]] || { printf '%s' "$sym"; return 0; }
+    done
+    return 1
 }
 
 # Где на экране Claude Code текст приглашения: input — в строке ввода (между
@@ -145,22 +213,51 @@ try_rename() {
 }
 
 cmd_list() {
-    local workspaces dir name ws status report
+    local workspaces dir name ws status report sym
     workspaces=$(herdr workspace list)
-    printf '| задача | workspace | агент | report.md | каталог |\n|---|---|---|---|---|\n'
-    for dir in "$results"/*/; do
-        dir=${dir%/}
-        [ -f "$dir/brief.md" ] || continue
+    printf '| символ | задача | workspace | агент | шаг (state.md) | report.md | каталог |\n|---|---|---|---|---|---|---|\n'
+    while IFS= read -r dir; do
+        [ -n "$dir" ] || continue
         name=$(basename "$dir")
         ws=$(task_workspace "$dir")
-        [ -n "$ws" ] || continue
-        jq -e --arg w "$ws" --arg n "$name" \
-            '.result.workspaces[] | select(.workspace_id == $w and (.label == $n or (.label | startswith($n + " · "))))' <<< "$workspaces" > /dev/null \
-            || continue
+        sym=$(task_symbol "$dir")
         status=$(agent_status "$(agent_target "$name" "$dir")")
         report='нет'
         [ -s "$dir/report.md" ] && report='есть'
-        printf '| %s | `%s` | %s | %s | `%s` |\n' "$name" "$ws" "${status:-вышел}" "$report" "$dir"
+        printf '| %s | %s | `%s` | %s | %s | %s | `%s` |\n' "${sym:-—}" "$name" "$ws" "${status:-вышел}" \
+            "$(task_step "$dir")" "$report" "$dir"
+    done < <(open_tasks "$workspaces")
+}
+
+# Задачи без живого агента с незавершённым state.md (см. шапку, stalled).
+cmd_stalled() {
+    local workspaces live=' ' dir name status step other newer
+    workspaces=$(herdr workspace list)
+    while IFS= read -r dir; do
+        [ -n "$dir" ] || continue
+        name=$(basename "$dir")
+        status=$(agent_status "$(agent_target "$name" "$dir")")
+        [ -z "$status" ] || live+="$name "
+    done < <(open_tasks "$workspaces")
+    printf '| задача | шаг (state.md) | каталог |\n|---|---|---|\n'
+    for dir in "$results"/*/; do
+        dir=${dir%/}
+        [ -f "$dir/brief.md" ] && [ -f "$dir/state.md" ] || continue
+        name=$(basename "$dir")
+        [[ $live != *" $name "* ]] || continue
+        step=$(task_step "$dir")
+        case $step in *завершено* | *Завершено* | *остановлена* | *Остановлена*) continue ;; esac
+        grep -qiE '^(# .*)?(завершено|остановлена)' "$dir/state.md" && continue
+        # Продолжение под новым именем (<имя>-2, <имя>2, <имя>-r2) делает
+        # прежний каталог прошлым; иные имена с тем же началом (<имя>-ui)
+        # — отдельные задачи.
+        newer=''
+        for other in "$results/$name"?*/; do
+            [[ $(basename "$other") =~ ^"$name"(-?r?)?[0-9]+$ ]] || continue
+            [ -f "$other/brief.md" ] && { newer=1; break; }
+        done
+        [ -z "$newer" ] || continue
+        printf '| %s | %s | `%s` |\n' "$name" "$step" "$dir"
     done
 }
 
@@ -203,8 +300,7 @@ cmd_close() {
     [ -f "$task/brief.md" ] || die "задачи $name нет: $task/brief.md"
     ws=$(task_workspace "$task")
     [ -n "$ws" ] || die "в $task/brief.md нет служебного блока с workspace"
-    herdr workspace list | jq -e --arg w "$ws" --arg n "$name" \
-        '.result.workspaces[] | select(.workspace_id == $w and (.label == $n or (.label | startswith($n + " · "))))' > /dev/null \
+    workspace_open "$(herdr workspace list)" "$ws" "$name" \
         || die "workspace $ws с меткой $name не открыт"
 
     target=$(agent_target "$name" "$task")
@@ -263,7 +359,7 @@ cmd_close() {
 
 cmd_start() {
     local name=$1 model_arg=$2 model task workspaces agents passed template rules
-    local rc rename_out created ws pane started_at_ms state status prompt screen input tab
+    local rc rename_out created ws pane started_at_ms state status prompt screen input tab symbol label
     local -a claude_args
 
     # Имя служит и меткой workspace, и именем агента herdr, и именем сессии
@@ -278,15 +374,33 @@ cmd_start() {
     esac
 
     [ -z "$brief_file" ] || [ -z "$goal" ] || die '--brief и --goal вместе не задаются'
+    [ -z "$resume" ] || [ -z "$brief_file$goal$rules_file" ] || die '--resume продолжает прежние brief.md и rules.md: без --brief, --goal и --rules'
     [ -z "$brief_file" ] || [ -s "$brief_file" ] || die "записки $brief_file нет или она пуста"
     [ -z "$rules_file" ] || [ -s "$rules_file" ] || die "файла правил $rules_file нет или он пуст"
 
     task=$results/$name
-    [ ! -e "$task" ] || die "каталог задачи $task уже есть: другое имя или продолжение в старом workspace"
+    if [ -n "$resume" ]; then
+        [ -s "$task/brief.md" ] && [ -s "$task/state.md" ] || die "--resume: в $task нет brief.md или state.md"
+    else
+        [ ! -e "$task" ] || die "каталог задачи $task уже есть: другое имя или продолжение --resume"
+    fi
 
     workspaces=$(herdr workspace list)
-    jq -e --arg n "$name" '[.result.workspaces[] | select(.label == $n or (.label | startswith($n + " · ")))] | length == 0' <<< "$workspaces" > /dev/null \
-        || die "workspace с меткой $name уже есть"
+    stale=$(jq -r --arg n "$name" "$JQ_BARE"' .result.workspaces[] | select((.label | bare) == $n or (.label | bare | startswith($n + " · "))) | .workspace_id' <<< "$workspaces")
+    if [ -n "$stale" ]; then
+        # Продолжение допускает прежний workspace задачи, в котором агент
+        # вышел: его закрывают, иначе подсказка хука о продолжении
+        # не сработала бы. Workspace с живым агентом не трогается.
+        [ -n "$resume" ] || die "workspace с меткой $name уже есть"
+        [ -z "$(agent_status "$(agent_target "$name" "$task")")" ] \
+            || die "в workspace задачи $name агент жив: продолжение не нужно"
+        for ws in $stale; do
+            herdr workspace close "$ws" > /dev/null || die "прежний workspace $ws не закрыт"
+        done
+        workspaces=$(herdr workspace list)
+    fi
+    symbol=$(free_symbol "$workspaces") || die 'все символы Ⓐ…Ⓩ заняты открытыми задачами'
+    label="$symbol $name · $model_arg"
     agents=$(herdr agent list)
     jq -e --arg n "$name" '[.result.agents[] | select(.name == $n)] | length == 0' <<< "$agents" > /dev/null \
         || die "агент herdr с именем $name уже есть"
@@ -305,26 +419,31 @@ cmd_start() {
     python3 -I "$signals" clear "task-done-$name" > /dev/null \
         || warn "сигнал task-done-$name не снят"
 
-    # Шаг 1. Каталог задачи.
+    # Шаг 1. Каталог задачи; при --resume файлы остаются прежними.
     mkdir -p "$task/runs"
-    if [ -n "$brief_file" ]; then
+    if [ -n "$resume" ]; then
+        :
+    elif [ -n "$brief_file" ]; then
         cp "$brief_file" "$task/brief.md"
     else
         template=$(< "$plugin_root/reference/brief-template.md")
         template=${template//'{{NAME}}'/$name}
         printf '%s\n' "${template//'{{GOAL}}'/${goal:-—}}" > "$task/brief.md"
     fi
-    passed='—'
-    [ -z "$rules_file" ] || passed=$(< "$rules_file")
-    rules=$(< "$plugin_root/reference/worker-rules.md")
-    rules=${rules//'{{NAME}}'/$name}
-    printf '%s\n' "${rules//'{{RULES}}'/$passed}" > "$task/rules.md"
+    if [ -z "$resume" ]; then
+        passed='—'
+        [ -z "$rules_file" ] || passed=$(< "$rules_file")
+        rules=$(< "$plugin_root/reference/worker-rules.md")
+        rules=${rules//'{{NAME}}'/$name}
+        printf '%s\n' "${rules//'{{RULES}}'/$passed}" > "$task/rules.md"
+    fi
     [ -s "$task/brief.md" ] && [ -s "$task/rules.md" ] && [ -d "$task/runs" ] \
         || die "шаг 1: файлы задачи в $task не созданы"
 
     # Шаг 2. Workspace.
-    created=$(herdr workspace create --cwd "$root" --label "$name · $model_arg" \
-        --env DUTY_ROLE=worker --env "DUTY_TASK=$task" --env "DUTY_NAME=$name" --no-focus)
+    created=$(herdr workspace create --cwd "$root" --label "$label" \
+        --env DUTY_ROLE=worker --env "DUTY_TASK=$task" --env "DUTY_NAME=$name" \
+        --env "DUTY_SYMBOL=$symbol" --env "DUTY_MODEL=$model_arg" --no-focus)
     ws=$(jq -er '.result.workspace.workspace_id' <<< "$created") || die "шаг 2: herdr workspace create: $created"
     pane=$(jq -er '.result.root_pane.pane_id' <<< "$created") || die "шаг 2: нет корневой панели: $created"
     herdr workspace list | jq -e --arg w "$ws" '.result.workspaces[] | select(.workspace_id == $w)' > /dev/null \
@@ -336,7 +455,8 @@ cmd_start() {
 
 ## Служебное (заполняет dispatch.sh)
 
-- workspace: \`$ws\`, метка \`$name · $model_arg\`
+- workspace: \`$ws\`, метка \`$label\`
+- символ workspace: \`$symbol\`
 - панель агента: \`$pane\`
 - агент herdr и сессия Claude: \`$name\`, модель \`$model\`
 - главная сессия для SendMessage: \`$main\`
@@ -352,6 +472,7 @@ BLOCK
     # позиционным аргументом: herdr agent prompt на только что запущенном
     # агенте набирает длинный текст в строку ввода, но Enter теряется.
     prompt="Прочитай $task/brief.md и выполняй."
+    [ -z "$resume" ] || prompt="Прочитай $task/brief.md и $task/state.md и продолжай с записанного шага."
     claude_args=(--agent duty:worker --model "$model" --name "$name")
     [ -z "$plugin_dir" ] || claude_args+=(--plugin-dir "$(realpath "$plugin_dir")")
     # herdr считает агента готовым у свободной строки ввода, а при приглашении
@@ -385,7 +506,7 @@ BLOCK
 
     # Подпись вкладки и агента у панели — только для глаз: сбой не останавливает запуск.
     tab=$(herdr agent get "$pane" 2> /dev/null | jq -r '.result.agent.tab_id // empty' || true)
-    [ -z "$tab" ] || herdr tab rename "$tab" "$name · $model_arg" > /dev/null || warn "вкладка $tab не переименована"
+    [ -z "$tab" ] || herdr tab rename "$tab" "$label" > /dev/null || warn "вкладка $tab не переименована"
     herdr pane report-metadata "$pane" --source duty --display-agent "$model_arg" > /dev/null \
         || warn "подпись агента у панели $pane не выставлена"
 
@@ -429,19 +550,20 @@ BLOCK
         esac
     fi
 
-    printf 'workspace=%s\npane=%s\nagent=%s\nmodel=%s\nstatus=%s\ntask=%s\nmain=%s\n' \
-        "$ws" "$pane" "$name" "$model" "$status" "$task" "$main"
+    printf 'workspace=%s\nsymbol=%s\npane=%s\nagent=%s\nmodel=%s\nstatus=%s\ntask=%s\nmain=%s\n' \
+        "$ws" "$symbol" "$pane" "$name" "$model" "$status" "$task" "$main"
 }
 
-[ $# -ge 1 ] || die 'нужна команда: <имя> <модель>, list или close <имя>'
+[ $# -ge 1 ] || die 'нужна команда: <имя> <модель>, list, stalled или close <имя>'
 command=start
 case $1 in
     list) command=list; shift ;;
+    stalled) command=stalled; shift ;;
     close) command=close; shift; [ $# -ge 1 ] || die 'close: нужно имя задачи'; positional=("$1"); shift ;;
     *) [ $# -ge 2 ] || die 'нужны <имя> и <модель>'; positional=("$1" "$2"); shift 2 ;;
 esac
 
-brief_file='' goal='' rules_file='' main='' root='' results='' plugin_dir=''
+brief_file='' goal='' rules_file='' main='' root='' results='' plugin_dir='' resume=''
 while [ $# -gt 0 ]; do
     case $1 in
         --brief) brief_file=${2:?}; shift 2 ;;
@@ -451,12 +573,14 @@ while [ $# -gt 0 ]; do
         --root) root=${2:?}; shift 2 ;;
         --results) results=${2:?}; shift 2 ;;
         --plugin-dir) plugin_dir=${2:?}; shift 2 ;;
+        --resume) resume=1; shift ;;
         *) die "неизвестный ключ $1" ;;
     esac
 done
 
 case $command in
     list) require_tools herdr jq; resolve_paths; cmd_list ;;
+    stalled) require_tools herdr jq; resolve_paths; cmd_stalled ;;
     close) require_tools herdr jq python3; resolve_paths; cmd_close "${positional[0]}" ;;
     start) require_tools herdr jq claude; resolve_paths; cmd_start "${positional[@]}" ;;
 esac

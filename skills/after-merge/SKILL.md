@@ -19,7 +19,7 @@ allowed-tools: Bash, Read, Edit
 Пусто или не разбирается — итог из одной строки об этом.
 
 Доступы и команды — `${CLAUDE_PLUGIN_ROOT}/reference/access.md`,
-защищённые ветви — `${CLAUDE_PLUGIN_ROOT}/reference/layout.md`.
+защищённые ветви — `${CLAUDE_PLUGIN_ROOT}/README.md`, раздел «Раскладка».
 Корень монорепозитория — `${CLAUDE_PROJECT_DIR}`.
 
 ## Шаги
@@ -30,7 +30,7 @@ allowed-tools: Bash, Read, Edit
    `title`, `links.self[0].href`. Готово, если `state` = `MERGED`;
    иначе остановка: «pull request не слит (state)», остальные шаги
    не выполняются.
-2. **Ветвь в origin.** Защищённая или чужая (layout.md) — не трогать,
+2. **Ветвь в origin.** Защищённая или чужая (README плагина, «Раскладка») — не трогать,
    в «Решения за пользователем». Иначе:
    `git -C <сабмодуль> push origin --delete <ветвь>`. Готово:
    `git -C <сабмодуль> ls-remote --heads origin <ветвь>` пуст. Ветвь

@@ -104,11 +104,11 @@ cat $task/second-step.txt
 CMD
             printf 'Ожидается: second-step.txt со строкой «второй шаг выполнен», workspace закрыт.\n' ;;
         1) cat <<CMD
-# ответить в окне workspace
-tail -3 $task/rules.md
+python3 -I $here/../../scripts/ask.py list --open    # вопрос ask-user 01
+python3 -I $here/../../scripts/ask.py answer ask-user 01 'вариант 2: таблица модулей' --ref 'ответ пользователя'
 git -C $task/work log --oneline -2
 CMD
-            printf 'Ожидается: один вопрос с двумя вариантами, уведомление, строка ответа в rules.md.\n' ;;
+            printf 'Ожидается: файл вопроса с шапкой, сигнал question-ask-user-01, ожидание до ответа, коммит по варианту 2.\n' ;;
         7) mkdir -p "$sandbox/.render"
             render "$here/briefs/neighbours.md" "$sandbox/.render/neighbours.md"
             cat "$sandbox/.render/neighbours.md"

@@ -17,7 +17,7 @@ allowed-tools: Bash, Read
 по имени ветви, ручные исключения (например, ветви работающих исполнителей).
 
 Правила раскладки, защищённые ветви и признаки чужого —
-`${CLAUDE_PLUGIN_ROOT}/reference/layout.md`. Остановленные контейнеры
+`${CLAUDE_PLUGIN_ROOT}/README.md`, раздел «Раскладка». Остановленные контейнеры
 и деревья стенда — по `${CLAUDE_PROJECT_DIR}/legacy/devlab/AGENTS.md`:
 экземпляры стенда снимает только `instances-down` со своими номерами,
 деревья ревизий — `instances-prune`.

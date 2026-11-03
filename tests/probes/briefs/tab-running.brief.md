@@ -21,7 +21,7 @@
 - git и код монорепозитория не трогать; Jira, Bitbucket, Confluence, Jenkins не менять; push только в песочный `origin` (`{{SANDBOX}}/origin.git`), если разрешён ниже.
 - Песочница `{{SANDBOX}}/` вне проекта: правки только в клонах внутри `$DUTY_TASK/work/`.
 - Тесты песочницы: `{{SANDBOX}}/venv/bin/python -m pytest -q` (в системном `python3` pytest нет). Один тест падает намеренно: `tests/test_pricing.py::test_threshold_is_inclusive`.
-- Вопросов пользователю не задавать.
+- Вопросов не задавать (`ask.py` не вызывать).
 - Workspace закрыть самому.
 
 ## Ожидание в report.md

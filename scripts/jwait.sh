@@ -9,6 +9,6 @@
 # Каталог по умолчанию — $DUTY_TASK/runs/jenkins-<задание>-<номер>, без
 # DUTY_TASK — ocp-dev-stand/results/wait/<задание>-<номер>. Ожидание —
 # по событию Jenkins CLI `console -f` по WebSocket, без опроса (jwait.py,
-# запись 0056 монорепозитория). Сборки не запускает.
+# запись 0051 монорепозитория). Сборки не запускает.
 set -euo pipefail
 exec python3 -I "$(dirname "$(readlink -f "$0")")/jwait.py" "$@"

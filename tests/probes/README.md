@@ -47,6 +47,7 @@ tests/probes/run-probe.sh <номер> [--sandbox <каталог>] [--main <и�
 | 7 | `neighbours` | — | `/duty:cleanup`, `/duty:gates now` при открытом workspace пробы 6 | workspace виден в занятости, не закрыт | команды в `briefs/neighbours.md`; `$DISPATCH list` |
 | 5 | `jwait-probe` | haiku | `jwait.sh` во вкладке | номер сборки, результат, длительность; либо «сборок в ходу нет» | `cat $TASK/runs/jenkins/done`; `cat $TASK/runs/jenkins/meta.txt`; `head $TASK/report.md` |
 | 4 | `opus-subagents` | opus | субагент sonnet с явной моделью, таблица в отчёте | тесты зелёные, ветвь в `origin.git` | `git -C $SB/origin.git branch` (есть `probe/fix-pricing`); `cat $TASK/runs/tests2/done`; `grep -i sonnet $TASK/report.md` |
+| 8 | `push-wake` | haiku | толчок `done` в простаивающую и работающую сессию, отказ фона в субагенте, `SubagentStop`, блокировка `Stop`, агент отсутствует | все сценарии PASS, вкладки закрыты | `tests/probes/push-wake/run.sh <каталог> setup\|A\|B\|C\|D\|E\|F\|teardown`: сценарий сам печатает PASS или FAIL |
 
 Записки и правила — `briefs/<имя>.brief.md`, `briefs/<имя>.rules.txt`.
 Имя для `dispatch.sh` совпадает с именем задачи в таблице, цифрового

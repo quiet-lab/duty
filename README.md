@@ -68,6 +68,8 @@ scripts/dispatch.sh          запуск, перечень и закрытие 
 scripts/tab-run.sh           длинная команда в новой вкладке: cmd.sh, out.log, done
 scripts/runs-web.py          duty-runs-web: веб-просмотр прогонов tab-run.sh, живой out.log по SSE и inotify
 scripts/wait-done.sh         ожидание файла done по inotify со сроком
+scripts/push-agent.sh        сообщение агенту задачи в панель herdr
+hooks/task-guard.py          сторожа сессии агента задачи
 scripts/jwait.sh, jwait.py   ожидание конца сборки Jenkins: report.md, done
 scripts/decision-number.sh   номер и вставка записи решения в тематический каталог
 reference/access.md          доступы, REST, репозитории, задания Jenkins
@@ -100,6 +102,23 @@ reference/worker-rules.md    общие запреты для rules.md зада�
 Хук молчит в сессии агента (`DUTY_ROLE=worker`) и вне herdr
 (`HERDR_ENV` не равно 1); сбой herdr даёт строку «herdr недоступен»
 и не прерывает старт.
+
+## Сторожа сессии агента задачи
+
+`hooks/task-guard.py` работает только при `DUTY_ROLE=worker`; сбой хука идёт
+в stderr и сессии не мешает.
+
+| Хук | Условие | Действие |
+|---|---|---|
+| `PreToolUse` | `Monitor` или `Bash` с `run_in_background: true` в субагенте (есть поле `agent_id`) | отказ с подсказкой ждать внутри хода |
+| `PreToolUse` | приглашение `Agent` со строкой `Подзадача: <имя>` | снимает прежние отметки подзадачи; без строки и не `Explore`, `Plan`, `claude-code-guide`, `duty:inspector` — напоминание координатору |
+| `PreToolUse` | `SendMessage` субагенту с отметкой остановки | снимает `.stopped` |
+| `SubagentStop` | подзадача с меткой без `subtasks/<имя>.done` | пишет `subtasks/<имя>.stopped`, координатору строка «возобнови или перезапусти» (`push-agent.sh --no-wait`, итог — `subtasks/push.log`) |
+| `Stop` | есть `.stopped` без `.done` и нет ожидания: прогона без `done` с живым `cmd.sh` (строка `pid:` в `meta.txt`), ожидания `signals.py wait` этой задачи, открытого вопроса `ask.py` | блокирует конец хода с перечнем подзадач; повторная остановка (`stop_hook_active`) проходит с уведомлением herdr «застой» |
+
+Координатор отличается от субагента полем `agent_id`: при `--agent` основная
+сессия получает только `agent_type`. Подзадача без метки (например, субагент
+навыка ревью) не отслеживается.
 
 ## Пробы
 
@@ -152,7 +171,8 @@ reference/worker-rules.md    общие запреты для rules.md зада�
 
 **Долгие команды** идут во вкладках своего workspace
 (`scripts/tab-run.sh`: `herdr tab create --no-focus`, `herdr pane run`),
-ожидание — `scripts/wait-done.sh` (inotify) фоновым вызовом Bash или
+ожидание — `scripts/wait-done.sh --timeout-s 590` (inotify) внутри
+хода или
 `herdr pane wait-output --match 'DUTY-DONE <вкладка>'`, без опроса.
 Размышляющие подзадачи — инструментом Agent внутри агента. Ресурсы
 реестра занятости — `scripts/busy.py claim|release` с `--holder <имя>`
@@ -250,11 +270,22 @@ WebSocket не пропускает, поэтому CLI идёт прямо на
 подряд), тишина дольше 90 с (три интервала ping контроллера) считается
 обрывом. Сборок `jwait.sh` не запускает.
 
-`--timeout-s` у `wait-done.sh` — предел ожидания, а не такт опроса:
-вызов из Bash агента ограничен 10 минутами, поэтому для долгой команды
-агент ставит `--timeout-s 590` и повторяет вызов либо запускает
-`wait-done.sh` фоном (`run_in_background`) и получает уведомление
-о его выходе.
+`--timeout-s` у `wait-done.sh` — предел ожидания, а не такт опроса: вызов
+из Bash агента ограничен 10 минутами, поэтому агент ставит `--timeout-s 590`,
+таймаут вызова 600000 мс и по коду 124 запускает ожидание снова. `Monitor` и
+`run_in_background` для ожидания не используются: после конца хода субагента
+уведомление к нему не приходит.
+
+При записи `done` вкладка сама будит агента задачи: `scripts/push-agent.sh`
+берёт имя агента и панель из служебного блока `brief.md` и отправляет
+`herdr agent prompt` строку `done rc=<код> <каталог прогона>`. Простаивающая
+сессия просыпается, работающая получает строку в очередь; агент на диалоге
+получает её после смены состояния, итог отправки — `push.log` в каталоге прогона.
+Панель без агента отвечает `agent_not_found`, в оболочку ничего не набирается.
+Закрытие вкладки посреди команды записывает `done` с кодом 129 (HUP; 130 — INT,
+143 — TERM), поэтому `wait-done.sh` не остаётся ждать вечно; при SIGKILL самого
+`wait-done.sh` его `inotifywait` снимает сигнал смерти родителя (`setpriv
+--pdeathsig`).
 
 Вкладку закрывает исполнитель сразу после снятия её вывода
 (`herdr tab close <tab_id>`, `tab_id` — в ответе `tab-run.sh`; вкладку

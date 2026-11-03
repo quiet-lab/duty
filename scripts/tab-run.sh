@@ -21,8 +21,9 @@
 # видит его целиком. При HERDR_ENV=1 вкладка показывает уведомление herdr
 # (звук done, при ненулевом коде request) и печатает «DUTY-DONE <имя>
 # rc=<код>» для herdr pane wait-output. В ответ — JSON с tab_id, pane_id
-# и run_dir. Вывод снимают из out.log после done; затем вкладку закрывают:
-# herdr tab close <tab_id> (правило — agents/worker.md, п. 4).
+# и run_dir. Вкладка закрывается сама последним действием после записи done
+# (tab_id лежит в runs/<имя>/tab); у агента остаётся чтение out.log и done
+# (правило — agents/worker.md, п. 4).
 #
 # Вместе с done вкладка будит агента задачи: push-agent.sh отправляет в его
 # панель строку «done rc=<код> <каталог прогона>» (итог отправки — push.log
@@ -108,6 +109,11 @@ duty_finish() {
     if [ -n "${DUTY_TASK:-}" ]; then
         bash "$push" "$DUTY_TASK" "done rc=$rc $run_dir" >> "$run_dir/push.log" 2>&1 || true
     fi
+    # Последним действием: закрытие вкладки шлёт HUP этому сценарию, но done
+    # записан, а ловушки сняты выше.
+    if [ "${HERDR_ENV:-}" = 1 ] && [ -f "$run_dir/tab" ]; then
+        herdr tab close "$(cat "$run_dir/tab")" > /dev/null 2>&1 || true
+    fi
     exit "$rc"
 }
 trap 'duty_finish 1' EXIT
@@ -135,6 +141,7 @@ case $ws_label in *" · "*) tab_label="$ws_label · $name" ;; esac
 tab=$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd "$cwd" --label "$tab_label" --no-focus ${env_args[@]+"${env_args[@]}"})
 tab_id=$(jq -er '.result.tab.tab_id' <<< "$tab") || die "herdr tab create: $tab"
 pane_id=$(jq -er '.result.root_pane.pane_id' <<< "$tab") || die "herdr tab create: $tab"
+printf '%s\n' "$tab_id" > "$run_dir/tab"
 
 herdr pane run "$pane_id" "bash $(printf '%q' "$run_dir/cmd.sh")" > /dev/null \
     || die "herdr pane run $pane_id не принял команду; вкладка $tab_id остаётся"

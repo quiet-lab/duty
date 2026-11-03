@@ -39,6 +39,10 @@ class StateWaitsTest(unittest.TestCase):
         now = calendar.timegm((2026, 11, 4, 0, 40, 0))
         self.assertEqual(state_waits.marks(text, now), ["⚠ просрочено +40 мин: ждём"])
 
+    def test_timeout_record_from_signals(self) -> None:
+        text = "## Ожидания\n\nПросрочено: ожидание сигнала x (w), срок 5 мин истёк в 11:00 UTC; сигнала нет\n"
+        self.assertEqual(len(state_waits.marks(text, NOW)), 1)
+
     def test_no_section(self) -> None:
         self.assertEqual(state_waits.marks("# state\nШаг: 1\n", NOW), [])
 

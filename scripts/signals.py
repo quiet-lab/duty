@@ -311,7 +311,7 @@ def _timeout(args: argparse.Namespace, holder: str) -> int:
         try:
             with state.open("a", encoding="utf-8") as f:
                 f.write(f"\nПросрочено: ожидание сигнала {args.name} ({holder}), срок "
-                        f"{max(1, args.timeout_s // 60)} мин истёк в {hhmm} UTC; сигнала нет\n")
+                        f"{max(1, -(-args.timeout_s // 60))} мин истёк в {hhmm} UTC; сигнала нет\n")
         except OSError as e:
             print(f"wait: запись в {state} не удалась: {e}", file=sys.stderr)
     return EXIT_TIMEOUT
@@ -359,7 +359,7 @@ def collect() -> tuple[list[dict], list[dict]]:
             data["alive"] = pid_alive(pid or 0)
             data["minutes"] = 0 if since is None else max(0, (now - since) // 60_000)
             t_s = to_int(data.get("timeout_s"))
-            data["ttl_min"] = None if t_s is None else max(1, t_s // 60)
+            data["ttl_min"] = None if t_s is None else max(1, -(-t_s // 60))
             data["overdue"] = overdue_mark(data["minutes"], data["ttl_min"])
             waits.append(data)
     for w in waits:

@@ -193,7 +193,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     signal(f"question-{name}-{nn}", args.title)
     print(f"вопрос {nn}: {path}")
     print(
-        f"ответ ждать: ask.py wait {nn}"
+        f"ответ ждать: ask.py wait {nn} --timeout-s <секунды>"
         if args.irreversible
         else "продолжать по рекомендуемому варианту с пометкой в state.md"
     )

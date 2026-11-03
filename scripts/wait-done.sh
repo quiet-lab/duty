@@ -89,11 +89,11 @@ while true; do
     left=
     if [ -n "$timeout_s" ]; then
         left=$(( deadline - SECONDS ))
-        (( left > 0 )) || { echo timeout; exit 124; }
+        (( left > 0 )) || { [ -f "$dir/done" ] && finish; echo timeout; exit 124; }
     fi
     if [ -n "$stall_s" ]; then
         sleft=$(( last + stall_s - SECONDS ))
-        (( sleft > 0 )) || { printf 'stall %s %s\n' "$(( SECONDS - last ))" "$dir"; exit 125; }
+        (( sleft > 0 )) || { [ -f "$dir/done" ] && finish; printf 'stall %s %s\n' "$(( SECONDS - last ))" "$dir"; exit 125; }
         if [ -z "$left" ] || (( sleft < left )); then left=$sleft; stalling=1; else stalling=; fi
     fi
     [ -z "$left" ] || read_args=(-t "$left")

@@ -49,7 +49,7 @@ if sigs=$(python3 -I "$root/scripts/signals.py" list --waits 2> /dev/null) && [ 
     add "$sigs"
 fi
 
-if printf '%s' "$text" | grep -q 'просрочено\|без срока'; then
+if printf '%s' "$text" | grep -q '⚠ просрочено\|⚠ без срока'; then
     add 'Есть просроченные ожидания (⚠): задача ждёт дольше срока. Спросить агента, что ждёт и почему (`SendMessage` или `herdr pane read`), не продлевать молча; причина — зависшая операция или сигнал, который не придёт, — решается по правилу починки падающего набора (скилл dispatch, «Дальше»).'
 fi
 

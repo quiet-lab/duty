@@ -38,7 +38,8 @@ def elapsed_min(hh: int, mm: int, now: float) -> int:
 
 def marks(text: str, now: float | None = None) -> list[str]:
     now = time.time() if now is None else now
-    out: list[str] = []
+    out: list[str] = [f"⚠ {line.strip()}" for line in text.splitlines()
+                      if line.startswith("Просрочено:")]  # запись signals.py wait
     for line in section(text):
         m = LINE_RE.match(line)
         if not m:

@@ -30,7 +30,7 @@ class WaitDoneStallTest(unittest.TestCase):
 
     def wait(self, *argv: str) -> subprocess.CompletedProcess:
         return subprocess.run(["bash", str(WAIT_DONE), str(self.run_dir), *argv],
-                              capture_output=True, text=True, timeout=LIMIT_S)
+                              check=False, capture_output=True, text=True, timeout=LIMIT_S)
 
     def test_stall_without_log_file(self) -> None:
         t0 = time.monotonic()

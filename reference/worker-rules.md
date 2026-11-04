@@ -41,7 +41,8 @@
 - Таймеры и опрос — `~/.claude/CLAUDE.md`, «Устройство кода». Ожидание —
   по событию: файл `done` вкладки, `herdr pane wait-output`, inotify;
   условие другой задачи — `<плагин>/agents/worker.md`, п. 7.
-- Ожидание внутри хода и вкладки команд — `<плагин>/agents/worker.md`,
+- Ожидание внутри хода, вкладки команд и показ хода ожидания
+  (`wait-done.sh --follow`, `wait-remote.sh`) — `<плагин>/agents/worker.md`,
   п. 3 и 4; вкладка открывается только через `scripts/tab-run.sh` (`herdr tab
   create`, `pane run`, `pane send` отвергает хук forbid).
 - Туннель и сеть станции не переключаются (`nmcli`, `awg`, `amn-*`, `wg`,

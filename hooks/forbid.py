@@ -159,7 +159,7 @@ PIPE_PRINTERS = {
 }
 SECRET_DIR_RE = re.compile(r"(\.config|XDG_CONFIG_HOME\}?)/axata(/|$)")
 PYTHON_RE = re.compile(r"python[0-9.]*")
-PYTHON_PRINT_RE = re.compile(r"\bprint\b|sys\.std(out|err)|\.write\(")
+PYTHON_PRINT_RE = re.compile(r"\bprint\b|sys\.std(out|err)")
 GREP_QUIET_LONG = {
     "--count",
     "--files-with-matches",
@@ -580,7 +580,9 @@ def check_secrets(
         code = [t for t in texts if SECRET_DIR_RE.search(t)] + [
             s for s in (stdin or []) if SECRET_DIR_RE.search(s)
         ]
-        if ("-c" in texts or stdin) and any(PYTHON_PRINT_RE.search(c) for c in code):
+        if (any(re.fullmatch(r"-[A-Za-z]*c", t) for t in texts) or stdin) and any(
+            PYTHON_PRINT_RE.search(c) for c in code
+        ):
             return "secret-file"
     if (
         name == "cp"

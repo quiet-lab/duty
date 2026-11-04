@@ -15,7 +15,7 @@
 - `git` — `git add -A/-u`, `git stash`, принудительный push, push в `dev`,
   `dev2`, `master`;
 - `herdr` — вкладки и ввод в панели в обход `scripts/tab-run.sh`;
-- `secret` — чтение `~/.config/axata/*`, печать окружения и секретов,
+- `secret` — вывод содержимого `~/.config/axata/*`, печать окружения и секретов,
   пароль литералом в `curl -u` и `sshpass -p`.
 
 Причина отказа называет запрет и правило, но не повторяет команду: в ней
@@ -73,10 +73,13 @@ DENY = {
         "Вместо этого: bash <плагин>/scripts/tab-run.sh <имя> -- <команда>."
     ),
     "secret-file": (
-        "Запрещено читать файлы ~/.config/axata/* (cat, grep, sed, cp и "
-        "подобные): rules.md задач «пароли и токены только из файлов через "
-        "set -a и stdin, в вывод не попадают». Вместо этого: "
-        "set -a; . ~/.config/axata/<файл>; set +a и передача через stdin."
+        "Запрещён вывод содержимого файлов ~/.config/axata/* (cat, less, "
+        "head, tail, grep без -c/-l/-q, sed без -i, awk, cut, tr, od, base64, "
+        "cp и tee вне ~/.config/axata/, python3 с print или sys.stdout): "
+        "rules.md задач «пароли и токены в вывод не попадают». Разрешено "
+        "читать в переменные и править на месте без вывода значений: "
+        "set -a; . ~/.config/axata/<файл>; set +a, python3 -I без печати, "
+        "sed -i, grep -c/-l/-q, test -f, ls -l, stat, cmp."
     ),
     "secret-env": (
         "Запрещено печатать окружение целиком или секретную переменную "
@@ -136,6 +139,7 @@ READERS = {
     "tac",
     "nl",
     "cut",
+    "tr",
 }
 PRINTERS = {"echo", "printf", "print"}
 # Команды после «|», которые печатают свой ввод на экран.
@@ -154,6 +158,15 @@ PIPE_PRINTERS = {
     "tr",
 }
 SECRET_DIR_RE = re.compile(r"(\.config|XDG_CONFIG_HOME\}?)/axata(/|$)")
+PYTHON_RE = re.compile(r"python[0-9.]*")
+PYTHON_PRINT_RE = re.compile(r"\bprint\b|sys\.std(out|err)|\.write\(")
+GREP_QUIET_LONG = {
+    "--count",
+    "--files-with-matches",
+    "--files-without-match",
+    "--quiet",
+    "--silent",
+}
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 VAR_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*))")
 RESERVED = {"!", "{", "}", "if", "then", "else", "elif", "do", "while", "until", "time"}
@@ -528,6 +541,21 @@ def has_secret_dir(words: list[Word]) -> bool:
     return any(SECRET_DIR_RE.search(w.text) for w in words)
 
 
+def prints_nothing(name: str, texts: list[str]) -> bool:
+    """Команда по ключам не выводит строки файла: счёт, имена, правка на месте."""
+    short = [t for t in texts if re.fullmatch(r"-[A-Za-z]+.*", t)]
+    if name in {"grep", "egrep", "fgrep", "rg"}:
+        if any(t in GREP_QUIET_LONG for t in texts):
+            return True
+        return any(re.fullmatch(r"-[A-Za-z]*[clLq][A-Za-z]*", t) for t in short)
+    if name == "sed":
+        return "--in-place" in texts or any(
+            t.startswith("--in-place=") or re.fullmatch(r"-[A-Za-z]*i.*", t)
+            for t in short
+        )
+    return False
+
+
 def check_secrets(
     name: str,
     args: list[Word],
@@ -535,12 +563,25 @@ def check_secrets(
     empty_env: bool,
     next_name: str | None,
     redirect_to_file: bool,
+    stdin: list[str] | None = None,
 ) -> str | None:
     texts = [a.text for a in args]
     operands = [t for t in texts if not t.startswith("-")]
     redir_words = [w for op, w in redirs if op in {"<", "<<<"}]
-    if name in READERS and has_secret_dir(args + redir_words):
+    if (
+        name in READERS
+        and has_secret_dir(args + redir_words)
+        and not prints_nothing(name, texts)
+    ):
         return "secret-file"
+    if name == "tee" and has_secret_dir(redir_words):
+        return "secret-file"
+    if PYTHON_RE.fullmatch(name):  # путь в переменной не виден: не блокируем
+        code = [t for t in texts if SECRET_DIR_RE.search(t)] + [
+            s for s in (stdin or []) if SECRET_DIR_RE.search(s)
+        ]
+        if ("-c" in texts or stdin) and any(PYTHON_PRINT_RE.search(c) for c in code):
+            return "secret-file"
     if (
         name == "cp"
         and has_secret_dir(args)
@@ -652,7 +693,13 @@ def check(src: str, depth: int = 0) -> str | None:
             or (check_git(args) if name == "git" else None)
             or (check_herdr(texts) if name == "herdr" else None)
             or check_secrets(
-                name, args, cmd.redirs, empty_env, next_name, redirect_to_file
+                name,
+                args,
+                cmd.redirs,
+                empty_env,
+                next_name,
+                redirect_to_file,
+                cmd.stdin,
             )
         )
         if found:

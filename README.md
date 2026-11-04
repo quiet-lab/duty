@@ -69,7 +69,8 @@ scripts/cleanup-candidates.py перечень кандидатов на убо�
 scripts/dispatch.sh          запуск, перечень и закрытие workspace задач
 scripts/tab-run.sh           длинная команда в новой вкладке: cmd.sh, out.log, done
 scripts/runs-web.py          duty-runs-web: веб-просмотр прогонов tab-run.sh, живой out.log по SSE и inotify
-scripts/wait-done.sh         ожидание файла done по inotify со сроком и сторожем прогресса журнала
+scripts/wait-done.sh         ожидание файла done по inotify со сроком, сторожем прогресса и показом хода журнала (`--follow`)
+scripts/wait-remote.sh       ожидание удалённого процесса по ssh (`tail --pid`) с показом хода журнала
 scripts/state-waits.py       просроченные ожидания из раздела «Ожидания» state.md
 scripts/push-agent.sh        сообщение агенту задачи в панель herdr
 hooks/task-guard.py          сторожа сессии агента задачи

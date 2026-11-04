@@ -108,12 +108,51 @@ if [ -n "$after" ]; then
     target=$(dirname "$anchor")
 fi
 
-if [ -n "$after" ]; then
-    python3 -I "$renumber" insert --after "$((10#$after))" "$insert" >&2
-else
-    python3 -I "$renumber" insert --catalog "$nn" --last "$insert" >&2
+# Файл записи с другой файловой системы (scratchpad на tmpfs) сценарий
+# перенумерации перенести переименованием не может (EXDEV): копия кладётся
+# в каталог git репозитория, исходный файл удаляется после успешной вставки.
+gitdir=$(git -C "$decisions" rev-parse --path-format=absolute --git-dir)
+source_file=''
+# Черновик внутри репозитория тоже копируется: откат не должен удалять
+# единственный экземпляр, который перенумерация успела переместить.
+if [ "$(stat -c %d "$insert")" != "$(stat -c %d "$decisions")" ] || [[ $insert == "$root"/* ]]; then
+    source_file=$insert
+    copy_dir=$(mktemp -d "$gitdir/decision-insert-src.XXXXXX")
+    insert=$copy_dir/$(basename "$source_file")
+    cp -- "$source_file" "$insert"
+    trap 'rmdir "$lock" 2> /dev/null || true; rm -rf "$copy_dir"' EXIT
 fi
-python3 -I "$renumber" --write-index >&2
+
+# Откат при обрыве вставки: перенумерация переименовывает записи через
+# временные имена и при ошибке оставляет каталог разобранным. До вставки
+# запоминаются изменённые пути; после ошибки пути, изменённые вставкой,
+# возвращаются к состоянию HEAD (отслеживаемые) или удаляются (новые).
+# Пути, изменённые до вставки, не трогаются.
+changed_paths() { git -C "$root" status --porcelain=v1 -z --no-renames -uall | tr '\0' '\n' | sed 's/^...//' | sort -u; }
+before=$(changed_paths)
+rollback() {
+    local path
+    printf 'decision-number.sh: вставка оборвалась, откат изменений\n' >&2
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        grep -qxF -- "$path" <<< "$before" && continue
+        if git -C "$root" cat-file -e "HEAD:$path" 2> /dev/null; then
+            git -C "$root" checkout -q HEAD -- "$path"
+        else
+            git -C "$root" rm -q --cached --ignore-unmatch -- "$path" 2> /dev/null || true
+            rm -f -- "$root/$path"
+        fi
+    done < <(changed_paths)
+    die 'вставка не выполнена, дерево возвращено в исходное состояние'
+}
+
+if [ -n "$after" ]; then
+    python3 -I "$renumber" insert --after "$((10#$after))" "$insert" >&2 || rollback
+else
+    python3 -I "$renumber" insert --catalog "$nn" --last "$insert" >&2 || rollback
+fi
+python3 -I "$renumber" --write-index >&2 || rollback
+[ -z "$source_file" ] || rm -f -- "$source_file"
 
 found=$(find "$target" -maxdepth 1 -type f -name "[0-9][0-9][0-9][0-9]-$slug.md" | head -1)
 [ -n "$found" ] || die "запись $slug после вставки не найдена"

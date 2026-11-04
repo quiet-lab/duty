@@ -1,6 +1,7 @@
 """Проверки decision-number.sh: `python3 -I scripts/tests/test_decision_number.py`."""
 
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ LIMIT_S = 3
 # Двойник renumber-decisions.py: пишет аргументы в журнал и при insert
 # переносит файл в каталог под следующим номером, как настоящий сценарий.
 FAKE = r"""
+import os
 import sys
 from pathlib import Path
 root = Path(__file__).resolve().parent.parent
@@ -23,6 +25,12 @@ log = root / "calls.log"
 log.open("a", encoding="utf-8").write(" ".join(sys.argv[1:]) + "\n")
 if sys.argv[1:2] == ["insert"]:
     src = Path(sys.argv[-1])
+    if os.environ.get("FAKE_FAIL"):
+        # Обрыв посреди переименований, как EXDEV в настоящем сценарии.
+        first = next((root / "docs" / "decisions").glob("*/0001-*.md"))
+        first.rename(first.with_name(".renumber-0-" + first.name))
+        src.rename(src.with_name(".renumber-1-" + src.name))
+        raise OSError("обрыв")
     decisions = root / "docs" / "decisions"
     if "--catalog" in sys.argv:
         catalog = sys.argv[sys.argv.index("--catalog") + 1]
@@ -172,6 +180,67 @@ class DecisionNumberTest(unittest.TestCase):
         out, _ = proc.communicate(timeout=LIMIT_S)
         self.assertEqual(proc.returncode, 0)
         self.assertTrue(out.strip().endswith("0099-locked.md"))
+
+    def other_fs_case(self) -> tuple[Path, Path]:
+        """Репозиторий на диске, черновик на tmpfs: разные файловые системы."""
+        disk = Path(tempfile.mkdtemp(dir="/var/tmp"))
+        self.addCleanup(shutil.rmtree, disk, True)
+        shm = Path(tempfile.mkdtemp(dir="/dev/shm"))
+        self.addCleanup(shutil.rmtree, shm, True)
+        if disk.stat().st_dev == shm.stat().st_dev:
+            self.skipTest("нет двух файловых систем")
+        self.root = disk / "repo"
+        shutil.copytree(Path(self.tmp.name) / "repo", self.root)
+        self.decisions = self.root / "docs" / "decisions"
+        self.env = {
+            **os.environ,
+            "DUTY_RENUMBER": str(self.root / "scripts" / "renumber-decisions.py"),
+        }
+        subprocess.run([*GIT, "add", "-A"], cwd=self.root, check=True)
+        subprocess.run([*GIT, "commit", "-qm", "init"], cwd=self.root, check=True)
+        draft = shm / "cross-fs.md"
+        draft.write_text("# 0000. Другая ФС\n", encoding="utf-8")
+        return self.root, draft
+
+    def test_insert_from_other_filesystem(self) -> None:
+        _, draft = self.other_fs_case()
+        r = self.run_script(str(self.decisions / "02-code"), "--insert", str(draft))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.decisions / "02-code" / "0099-cross-fs.md").exists())
+        self.assertFalse(draft.exists())
+        self.assertEqual(list((self.root / ".git").glob("decision-insert*")), [])
+
+    def test_failed_insert_rolls_back(self) -> None:
+        root, draft = self.other_fs_case()
+        self.env["FAKE_FAIL"] = "1"
+        r = self.run_script(str(self.decisions / "02-code"), "--insert", str(draft))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("откат", r.stderr)
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "-uall"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        self.assertEqual(status, "")
+        self.assertTrue(draft.exists())
+        self.assertEqual(list((root / ".git").glob("decision-insert*")), [])
+
+    def test_failed_insert_keeps_draft_inside_repo(self) -> None:
+        draft = self.root / "draft-in-repo.md"
+        draft.write_text("# 0000. Черновик\n", encoding="utf-8")
+        subprocess.run([*GIT, "add", "-A"], cwd=self.root, check=True)
+        subprocess.run([*GIT, "commit", "-qm", "init"], cwd=self.root, check=True)
+        draft.unlink()
+        draft.write_text("# 0000. Черновик\n", encoding="utf-8")
+        self.env["FAKE_FAIL"] = "1"
+        # Неотслеживаемый черновик: имя другое, чтобы его не было в HEAD.
+        new = self.root / "fresh-draft.md"
+        draft.rename(new)
+        r = self.run_script(str(self.decisions / "02-code"), "--insert", str(new))
+        self.assertEqual(r.returncode, 2)
+        self.assertTrue(new.exists())
 
 
 if __name__ == "__main__":

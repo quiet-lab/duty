@@ -83,6 +83,18 @@ class WaitFollowTest(unittest.TestCase):
         self.assertRegex(lines[1], rf"^done rc=3 {self.run_dir} за \d+ мин$")
         self.assertNotIn("старая", out)
 
+    def test_follow_restart_does_not_lose_lines(self) -> None:
+        argv = ["bash", str(WAIT_DONE), str(self.run_dir), "--log", str(self.log), "--stall-s", "30", "--follow"]
+        self.log.write_text("", encoding="utf-8")
+        first = subprocess.run([*argv, "--timeout-s", "1"], check=False, capture_output=True, text=True,
+                               timeout=LIMIT_S)
+        self.assertEqual(first.returncode, 124, first.stderr)
+        # Строки, записанные между двумя вызовами (перезапуск после timeout), не теряются.
+        self.log.write_text("между вызовами\n", encoding="utf-8")
+        (self.run_dir / "done").write_text("0\n", encoding="utf-8")
+        second = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=LIMIT_S)
+        self.assertIn("между вызовами", second.stdout)
+
     def test_follow_requires_log(self) -> None:
         r = subprocess.run(["bash", str(WAIT_DONE), str(self.run_dir), "--follow"],
                            check=False, capture_output=True, text=True, timeout=LIMIT_S)

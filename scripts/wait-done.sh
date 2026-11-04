@@ -18,7 +18,8 @@
 # строки журнала печатаются по мере записи, каждая с префиксом времени
 # «ЧЧ:ММ:СС», по тем же событиям inotify (смещение в журнале помнит сам
 # сценарий, второго процесса и такта нет); итог — «done rc=<код> <каталог>
-# за <N> мин». Порог --stall-s — из замера самой тихой операции, не меньше
+# за <N> мин» (время от первого запуска; смещение и время хранятся в
+# каталоге прогона, чтобы перезапуск после timeout не терял строки). Порог --stall-s — из замера самой тихой операции, не меньше
 # 300 с (agents/worker.md, п. 4). Один вызов Bash ограничен 600 с:
 # агент ждёт с --timeout-s 590 и таймаутом вызова 600000 мс, а по строке timeout
 # запускает ожидание снова (agents/worker.md, п. 4).
@@ -58,8 +59,21 @@ command -v inotifywait > /dev/null || die 'нет inotifywait: pacman -S inotify
 command -v setpriv > /dev/null || die 'нет setpriv: pacman -S util-linux'
 
 # Смещение в журнале: показываются только строки, появившиеся после запуска.
+# Перезапуск ожидания (после timeout) продолжает с сохранённого смещения
+# каталога прогона (.follow-off) и считает время от первого запуска
+# (.follow-start); без них смещение — текущий размер журнала.
 off=0
-[ -z "$follow" ] || [ ! -e "$log" ] || off=$(stat -c %s "$log")
+started_at=$(date +%s)
+if [ -n "$follow" ]; then
+    if [ -f "$dir/.follow-off" ] && [ -f "$dir/.follow-start" ]; then
+        off=$(< "$dir/.follow-off")
+        started_at=$(< "$dir/.follow-start")
+    else
+        [ ! -e "$log" ] || off=$(stat -c %s "$log")
+        printf '%s\n' "$started_at" > "$dir/.follow-start"
+        printf '%s\n' "$off" > "$dir/.follow-off"
+    fi
+fi
 
 # Печатает дописанные в журнал целые строки (final — и неоконченную).
 flush_log() {
@@ -76,6 +90,7 @@ flush_log() {
     fi
     [ -n "$chunk" ] || return 0
     off=$(( off + $(printf '%s' "$chunk" | wc -c) ))
+    printf '%s\n' "$off" > "$dir/.follow-off"
     while IFS= read -r line || [ -n "$line" ]; do
         printf '%(%H:%M:%S)T %s\n' -1 "$line"
     done <<< "${chunk%$'\n'}"
@@ -87,7 +102,7 @@ finish() {
     code=$(tr -d '[:space:]' < "$dir/done")
     [[ $code =~ ^[0-9]+$ ]] || die "в $dir/done не код: $code"
     if [ -n "$follow" ]; then
-        printf 'done rc=%s %s за %s мин\n' "$code" "$dir" "$(( (SECONDS + 30) / 60 ))"
+        printf 'done rc=%s %s за %s мин\n' "$code" "$dir" "$(( ($(date +%s) - started_at + 30) / 60 ))"
     else
         printf 'done rc=%s %s\n' "$code" "$dir"
     fi

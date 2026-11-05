@@ -537,8 +537,8 @@ class CheckTest(Base):
         code, out = self.findings(
             f'schema = 1\n[bitbucket]\nurl = "u"\ntoken_file = "{token}"\n'
             '[[forbid.rules]]\nwords = ["a", "b"]\nreason = "r"\n'
-            '[symbols]\nmain = "🍀"\ntasks = ["🌱", "🌲"]\ncolor = "#a6e3a1"\n',
-            user='[symbols]\noutside = ["🍺", "☕"]\noutside_color = "#F5C2E7"\n',
+            '[symbols]\nmain = "🍀"\ntasks = ["🌱", "🌲"]\ncolors = ["#a6e3a1"]\n',
+            user='[symbols]\noutside = ["🍺", "☕"]\noutside_colors = ["#F5C2E7", "#89b4fa"]\n',
         )
         self.assertEqual((code, out), (0, []))
 
@@ -561,21 +561,37 @@ class CheckTest(Base):
 
     def test_color_format(self) -> None:
         code, out = self.findings(
-            'schema = 1\n[symbols]\ncolor = "green"\n',
-            user='[symbols]\noutside_color = "#12345"\n',
+            'schema = 1\n[symbols]\ncolors = ["#a6e3a1", "green"]\n',
+            user='[symbols]\noutside_colors = ["#12345"]\n',
         )
         text = "\n".join(out)
         self.assertEqual(code, 1)
-        self.assertIn("symbols.color: цвет «green» не в формате #rrggbb", text)
-        self.assertIn("symbols.outside_color: цвет «#12345» не в формате #rrggbb", text)
+        self.assertIn("symbols.colors: цвет «green» не в формате #rrggbb", text)
+        self.assertNotIn("«#a6e3a1»", text)
+        self.assertIn(
+            "symbols.outside_colors: цвет «#12345» не в формате #rrggbb", text
+        )
 
-    def test_outside_color_user_layer_only(self) -> None:
-        code, out = self.findings('schema = 1\n[symbols]\noutside_color = "#a6e3a1"\n')
+    def test_outside_colors_user_layer_only(self) -> None:
+        code, out = self.findings(
+            'schema = 1\n[symbols]\noutside_colors = ["#a6e3a1"]\n'
+        )
         self.assertEqual(code, 1)
         self.assertIn(
-            "symbols.outside_color допустим только в пользовательском слое",
+            "symbols.outside_colors допустим только в пользовательском слое",
             "\n".join(out),
         )
+
+    def test_old_color_keys_unknown(self) -> None:
+        code, out = self.findings(
+            'schema = 1\n[symbols]\ncolor = "#a6e3a1"\n',
+            user='[symbols]\noutside_color = "#a6e3a1"\n',
+        )
+        text = "\n".join(out)
+        self.assertEqual(code, 1)
+        self.assertIn("symbols.color", text)
+        self.assertIn("symbols.outside_color", text)
+        self.assertIn("неизвестный ключ", text)
 
     def test_schema_version(self) -> None:
         self.assertIn("поддерживается 1", " ".join(self.findings("schema = 2\n")[1]))

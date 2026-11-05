@@ -12,6 +12,7 @@ from pathlib import Path
 PLUGIN = Path(__file__).resolve().parents[2]
 DISPATCH = PLUGIN / "scripts" / "dispatch.sh"
 SYMBOLS_FILE = PLUGIN / "scripts" / "symbols.txt"
+COLORS_FILE = PLUGIN / "scripts" / "colors.txt"
 
 # Двойник herdr: состояние workspace — файл ws.json; close убирает workspace из файла.
 # create отвечает workspace w9 и панелью p9, агент панели p9 — claude; аргументы
@@ -22,10 +23,12 @@ printf '\n' >> "$FAKE_DIR/herdr.log"
 case "$1 $2" in
     "--version "*) echo "herdr 0.9.5 ${FAKE_HERDR_BUILD-(duty-v0.9.5.1 4a69c66)}" ;;
     "workspace create")
+        [ "$3" = --help ] && exit 0
         while [ $# -gt 0 ]; do [ "$1" = --label ] && label=$2; shift; done
-        jq --arg l "$label" '.result.workspaces += [{workspace_id: "w9", label: $l}]' "$FAKE_DIR/ws.json" > "$FAKE_DIR/ws.tmp"
+        id=w$((9 + $(jq '.result.workspaces | length' "$FAKE_DIR/ws.json")))
+        jq --arg l "$label" --arg i "$id" '.result.workspaces += [{workspace_id: $i, label: $l}]' "$FAKE_DIR/ws.json" > "$FAKE_DIR/ws.tmp"
         mv "$FAKE_DIR/ws.tmp" "$FAKE_DIR/ws.json"
-        echo '{"result":{"workspace":{"workspace_id":"w9"},"root_pane":{"pane_id":"p9"}}}' ;;
+        echo '{"result":{"workspace":{"workspace_id":"'"$id"'"},"root_pane":{"pane_id":"p9"}}}' ;;
     "agent get")
         if [ "$3" = p9 ]; then
             echo '{"result":{"agent":{"agent":"claude","agent_status":"working","tab_id":"t1"}}}'
@@ -219,9 +222,24 @@ class SymbolsTest(unittest.TestCase):
         log = (self.dir / "herdr.log").read_text(encoding="utf-8")
         self.assertIn(f"DUTY_PROJECT={self.root.resolve()}", log)
 
-    def start_task(self, **env: str) -> subprocess.CompletedProcess:
+    def project_colors(self, colors: list[str]) -> None:
+        """Дописывает палитру symbols.colors в конфигурацию проекта."""
+        items = ", ".join(f'"{c}"' for c in colors)
+        with (self.root / ".duty" / "duty.toml").open("a", encoding="utf-8") as f:
+            f.write(f"colors = [{items}]\n")
+
+    def palette(self) -> list[str]:
+        return [c for c in COLORS_FILE.read_text(encoding="utf-8").splitlines() if c]
+
+    def task_color_line(self, name: str) -> str:
+        block = (self.results / name / "brief.md").read_text(encoding="utf-8")
+        lines = [x for x in block.splitlines() if x.startswith("- цвет workspace: ")]
+        self.assertEqual(len(lines), 1, block)
+        return lines[0].split("`")[1]
+
+    def start_task(self, name: str = "tsk", **env: str) -> subprocess.CompletedProcess:
         return self.run_cmd(
-            "tsk",
+            name,
             "sonnet",
             "--goal",
             "Сделать",
@@ -239,37 +257,38 @@ class SymbolsTest(unittest.TestCase):
 
     def test_start_reports_color_token(self) -> None:
         self.project_config(["🦊"])
-        with (self.root / ".duty" / "duty.toml").open("a", encoding="utf-8") as f:
-            f.write('color = "#a6e3a1"\n')
+        self.project_colors(["#a6e3a1"])
         r = self.start_task()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(
             "workspace\treport-metadata\tw9\t--source\tduty\t--token\tcolor=#a6e3a1\t",
             self.herdr_log(),
         )
+        self.assertEqual(self.task_color_line("tsk"), "#a6e3a1")
 
-    def test_start_without_color_sends_no_token(self) -> None:
+    def test_start_without_colors_uses_fallback_palette(self) -> None:
         self.project_config(["🦊"])
         r = self.start_task()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertNotIn("workspace\treport-metadata", self.herdr_log())
-        self.assertNotIn("color=", self.herdr_log())
+        color = self.task_color_line("tsk")
+        self.assertIn(color, self.palette())
+        self.assertIn(f"--token\tcolor={color}\t", self.herdr_log())
 
     def test_start_color_skipped_on_upstream_herdr(self) -> None:
         self.project_config(["🦊"])
-        with (self.root / ".duty" / "duty.toml").open("a", encoding="utf-8") as f:
-            f.write('color = "#a6e3a1"\n')
+        self.project_colors(["#a6e3a1"])
         r = self.start_task(FAKE_HERDR_BUILD="")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("не форк duty-v*", r.stderr)
         self.assertNotIn("workspace\treport-metadata", self.herdr_log())
 
-    def test_outside_repo_color_from_user_layer(self) -> None:
+    def test_outside_repo_colors_from_user_layer(self) -> None:
         outside = self.dir / "plain"
         outside.mkdir()
         self.user_cfg.parent.mkdir()
         self.user_cfg.write_text(
-            '[symbols]\noutside = ["🦊"]\noutside_color = "#f5c2e7"\n', encoding="utf-8"
+            '[symbols]\noutside = ["🦊"]\noutside_colors = ["#f5c2e7"]\n',
+            encoding="utf-8",
         )
         r = subprocess.run(
             [
@@ -295,6 +314,41 @@ class SymbolsTest(unittest.TestCase):
         )
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("--token\tcolor=#f5c2e7", self.herdr_log())
+
+    def test_two_tasks_get_different_colors(self) -> None:
+        self.project_config(["🦊", "🐺"])
+        self.project_colors(["#a6e3a1", "#f5c2e7"])
+        for name in ("one", "two"):
+            r = self.start_task(name)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotEqual(self.task_color_line("one"), self.task_color_line("two"))
+        self.assertEqual(
+            {self.task_color_line("one"), self.task_color_line("two")},
+            {"#a6e3a1", "#f5c2e7"},
+        )
+
+    def test_single_color_palette_is_reused(self) -> None:
+        self.project_config(["🦊", "🐺"])
+        self.project_colors(["#a6e3a1"])
+        for name in ("one", "two"):
+            r = self.start_task(name)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.task_color_line("one"), "#a6e3a1")
+        self.assertEqual(self.task_color_line("two"), "#a6e3a1")
+
+    def test_color_line_does_not_break_list_and_close(self) -> None:
+        # Блок со строкой цвета, как его пишет cmd_start; агент завершён, отчёт есть.
+        self.task("tsk", "🦊", "🦊 tsk · sonnet", "w1", report=True)
+        brief_path = self.results / "tsk" / "brief.md"
+        with brief_path.open("a", encoding="utf-8") as f:
+            f.write("- цвет workspace: `#a6e3a1`\n- проект: вне репозитория\n")
+        r = self.run_cmd("list")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("tsk", r.stdout)
+        self.assertIn("🦊", r.stdout)
+        r = self.run_cmd("close", "tsk")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("workspace=w1", r.stdout)
 
     def test_start_general_mode_line(self) -> None:
         r = self.run_cmd(

@@ -8,7 +8,6 @@ protected = ["main"]
 default_parent = "main"
 
 [symbols]
-color = "#89b4fa"
 main = "🦑"
 tasks = ["🐋", "🐙", "🐚", "🐟", "🐠", "🐡", "🐬", "🐳", "🦀", "🦈", "🦐",
          "🦞", "🦭", "🪼", "🫍"]

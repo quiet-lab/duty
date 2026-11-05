@@ -1,6 +1,6 @@
 {
   "name": "duty",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Дежурство по проекту: инспекция, вынос задач в workspace herdr, рутина субагентами на самых дешёвых моделях; проектное — в .duty/",
   "author": { "name": "Queue Manager" }
 }

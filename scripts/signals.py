@@ -27,7 +27,9 @@ import time
 from pathlib import Path
 
 # Каталог скрипта убран из sys.path ключом -I, поэтому модуль подключается по пути.
-_spec = importlib.util.spec_from_file_location("duty_config", Path(__file__).with_name("duty_config.py"))
+_spec = importlib.util.spec_from_file_location(
+    "duty_config", Path(__file__).with_name("duty_config.py")
+)
 duty_config = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(duty_config)
 
@@ -40,6 +42,7 @@ def config_path(key: str) -> Path:
         raise SystemExit(f"ошибка конфигурации: {error}")
     assert path is not None
     return path
+
 
 # Точек в имени нет, поэтому суффикс «.waiting-» отметки ожидания однозначен;
 # «_» допущен, чтобы имя задачи из dispatch.sh годилось как имя сигнала и ожидающего.
@@ -85,8 +88,11 @@ def valid_name(name: str) -> bool:
 def check_name(kind: str, name: str) -> bool:
     if valid_name(name):
         return True
-    print(f"недопустимое {kind}: {name!r} (латиница в нижнем регистре, цифры, «-» и «_», "
-          f"не с дефиса, не длиннее {NAME_MAX} знаков)", file=sys.stderr)
+    print(
+        f"недопустимое {kind}: {name!r} (латиница в нижнем регистре, цифры, «-» и «_», "
+        f"не с дефиса, не длиннее {NAME_MAX} знаков)",
+        file=sys.stderr,
+    )
     return False
 
 
@@ -130,13 +136,24 @@ def read_json(path: Path) -> dict | None:
     except (OSError, ValueError):
         data = None
     if not isinstance(data, dict):
-        return {"corrupt": True, "name": path.name.split(".")[0], "text": "повреждён", "from": "?",
-                "task": "", "at_ms": 0, "pid": 0, "since_ms": 0, "holder": "?"}
+        return {
+            "corrupt": True,
+            "name": path.name.split(".")[0],
+            "text": "повреждён",
+            "from": "?",
+            "task": "",
+            "at_ms": 0,
+            "pid": 0,
+            "since_ms": 0,
+            "holder": "?",
+        }
     return data
 
 
 def default_who(explicit: str | None) -> str:
-    return explicit or os.environ.get("DUTY_NAME") or os.environ.get("DUTY_HOLDER") or "?"
+    return (
+        explicit or os.environ.get("DUTY_NAME") or os.environ.get("DUTY_HOLDER") or "?"
+    )
 
 
 def signal_path(name: str) -> Path:
@@ -154,8 +171,13 @@ def cmd_signal(args: argparse.Namespace) -> int:
     d = signals_dir()
     d.mkdir(parents=True, exist_ok=True)
     path = signal_path(args.name)
-    data = {"name": args.name, "text": args.text, "from": default_who(args.who),
-            "task": os.environ.get("DUTY_TASK", ""), "at_ms": now_ms()}
+    data = {
+        "name": args.name,
+        "text": args.text,
+        "from": default_who(args.who),
+        "task": os.environ.get("DUTY_TASK", ""),
+        "at_ms": now_ms(),
+    }
     if not args.keep:
         write_atomic(path, data)
         print(f"сигнал {args.name} дан")
@@ -169,10 +191,15 @@ def cmd_signal(args: argparse.Namespace) -> int:
         except FileExistsError:
             old = read_json(path)
             if old is not None and not old.get("corrupt"):
-                print(f"сигнал {args.name} уже есть: {old.get('text') or ''} "
-                      f"(от {old.get('from') or '?'}, {fmt_utc(old.get('at_ms'))})")
+                print(
+                    f"сигнал {args.name} уже есть: {old.get('text') or ''} "
+                    f"(от {old.get('from') or '?'}, {fmt_utc(old.get('at_ms'))})"
+                )
                 return 0
-            print(f"предупреждение: файл сигнала {args.name} повреждён, перезаписан", file=sys.stderr)
+            print(
+                f"предупреждение: файл сигнала {args.name} повреждён, перезаписан",
+                file=sys.stderr,
+            )
             os.replace(tmp, path)
     finally:
         try:
@@ -190,10 +217,27 @@ class Watch:
         # stderr объединён со stdout: «Watches established.» inotifywait пишет в stderr.
         # Сигнал смерти родителя снимает наблюдателя и при SIGKILL ожидающего.
         self.proc = subprocess.Popen(
-            ["setpriv", "--pdeathsig", "TERM", "inotifywait", "-m", "-e", "moved_to", "-e", "create", "-e", "close_write", "--format", "%e %f", str(directory)],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            [
+                "setpriv",
+                "--pdeathsig",
+                "TERM",
+                "inotifywait",
+                "-m",
+                "-e",
+                "moved_to",
+                "-e",
+                "create",
+                "-e",
+                "close_write",
+                "--format",
+                "%e %f",
+                str(directory),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             # Родитель блокирует сигналы на время запуска; наблюдателю маска не нужна.
-            preexec_fn=lambda: os_signal.pthread_sigmask(os_signal.SIG_SETMASK, []))
+            preexec_fn=lambda: os_signal.pthread_sigmask(os_signal.SIG_SETMASK, []),  # noqa: PLW1509 — между fork и exec только сброс маски сигналов (pthread_sigmask), другого кода нет
+        )
         assert self.proc.stdout is not None
         self.fd = self.proc.stdout.fileno()
         self.buf = b""
@@ -233,15 +277,22 @@ def _raise_exit(signum: int, _frame: object) -> None:
 
 
 def corrupt_signal(name: str) -> int:
-    print(f"wait: файл сигнала {name} повреждён: не объект JSON; снять — signals.py clear {name}",
-          file=sys.stderr)
+    print(
+        f"wait: файл сигнала {name} повреждён: не объект JSON; снять — signals.py clear {name}",
+        file=sys.stderr,
+    )
     return EXIT_USAGE
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
     if not check_name("имя сигнала", args.name):
         return EXIT_USAGE
-    holder = args.holder or os.environ.get("DUTY_NAME") or os.environ.get("DUTY_HOLDER") or f"pid{os.getpid()}"
+    holder = (
+        args.holder
+        or os.environ.get("DUTY_NAME")
+        or os.environ.get("DUTY_HOLDER")
+        or f"pid{os.getpid()}"
+    )
     if not check_name("имя ожидающего", holder):
         return EXIT_USAGE
     d = signals_dir()
@@ -282,12 +333,23 @@ def cmd_wait(args: argparse.Namespace) -> int:
             deadline = time.monotonic() + args.timeout_s
             data = read_json(path)
             if data is None:
-                write_atomic(mark, {"name": args.name, "holder": holder,
-                                    "task": os.environ.get("DUTY_TASK", ""),
-                                    "pid": os.getpid(), "since_ms": now_ms(),
-                                    "timeout_s": args.timeout_s})
+                write_atomic(
+                    mark,
+                    {
+                        "name": args.name,
+                        "holder": holder,
+                        "task": os.environ.get("DUTY_TASK", ""),
+                        "pid": os.getpid(),
+                        "since_ms": now_ms(),
+                        "timeout_s": args.timeout_s,
+                    },
+                )
                 created = True
-                print(f"wait: {args.name}: ждёт сигнал, отметка {mark.name}", file=sys.stderr, flush=True)
+                print(
+                    f"wait: {args.name}: ждёт сигнал, отметка {mark.name}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             while data is None:
                 line = watch.line(deadline)
                 if line is None:
@@ -301,7 +363,10 @@ def cmd_wait(args: argparse.Namespace) -> int:
                 if data is not None and data.get("corrupt") and event == "CREATE":
                     data = None
         except EOFError:
-            print(f"wait: наблюдение за {d} оборвалось без сигнала {args.name}", file=sys.stderr)
+            print(
+                f"wait: наблюдение за {d} оборвалось без сигнала {args.name}",
+                file=sys.stderr,
+            )
             return EXIT_USAGE
         if data.get("corrupt"):
             return corrupt_signal(args.name)
@@ -320,7 +385,9 @@ def cmd_wait(args: argparse.Namespace) -> int:
 
 
 def _timeout(args: argparse.Namespace, holder: str) -> int:
-    print(f"wait {args.name}: срок {args.timeout_s} с истёк, сигнала нет", file=sys.stderr)
+    print(
+        f"wait {args.name}: срок {args.timeout_s} с истёк, сигнала нет", file=sys.stderr
+    )
     # Запись в state.md задачи: по ней агент и главная сессия видят просрочку
     # (agents/worker.md, п. 8); без DUTY_TASK или state.md записывать некуда.
     state = Path(os.environ.get("DUTY_TASK", "")) / "state.md"
@@ -328,8 +395,10 @@ def _timeout(args: argparse.Namespace, holder: str) -> int:
         hhmm = time.strftime("%H:%M", time.gmtime())
         try:
             with state.open("a", encoding="utf-8") as f:
-                f.write(f"\nПросрочено: ожидание сигнала {args.name} ({holder}), срок "
-                        f"{max(1, -(-args.timeout_s // 60))} мин истёк в {hhmm} UTC; сигнала нет\n")
+                f.write(
+                    f"\nПросрочено: ожидание сигнала {args.name} ({holder}), срок "
+                    f"{max(1, -(-args.timeout_s // 60))} мин истёк в {hhmm} UTC; сигнала нет\n"
+                )
         except OSError as e:
             print(f"wait: запись в {state} не удалась: {e}", file=sys.stderr)
     return EXIT_TIMEOUT
@@ -393,10 +462,12 @@ def print_waits(waits: list[dict]) -> None:
     print("| ждёт сигнал | кто | задача | pid жив | минут | срок, мин | сигнал дан |")
     print("|---|---|---|---|---|---|---|")
     for w in waits:
-        print(f"| {w['name']} | {w['holder']} | {cell(w.get('task'))} "
-              f"| {'да' if w['alive'] else 'нет (устарело)'} | {w['minutes']} "
-              f"| {'—' if w['ttl_min'] is None else w['ttl_min']} {w['overdue']} "
-              f"| {'да' if w['given'] else 'нет'} |")
+        print(
+            f"| {w['name']} | {w['holder']} | {cell(w.get('task'))} "
+            f"| {'да' if w['alive'] else 'нет (устарело)'} | {w['minutes']} "
+            f"| {'—' if w['ttl_min'] is None else w['ttl_min']} {w['overdue']} "
+            f"| {'да' if w['given'] else 'нет'} |"
+        )
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -414,7 +485,9 @@ def cmd_list(args: argparse.Namespace) -> int:
         print("| сигнал | от кого | текст | минут назад |")
         print("|---|---|---|---|")
         for s in sigs:
-            print(f"| {s['name']} | {cell(s.get('from'))} | {cell(s.get('text'))} | {s['minutes']} |")
+            print(
+                f"| {s['name']} | {cell(s.get('from'))} | {cell(s.get('text'))} | {s['minutes']} |"
+            )
     if waits:
         if sigs:
             print()
@@ -447,18 +520,30 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("signal", help="дать сигнал")
     s.add_argument("name")
     s.add_argument("text", nargs="?", default="")
-    s.add_argument("--from", dest="who", help="кто даёт; по умолчанию DUTY_NAME или DUTY_HOLDER")
-    s.add_argument("--keep", action="store_true", help="существующий сигнал не перезаписывать")
+    s.add_argument(
+        "--from", dest="who", help="кто даёт; по умолчанию DUTY_NAME или DUTY_HOLDER"
+    )
+    s.add_argument(
+        "--keep", action="store_true", help="существующий сигнал не перезаписывать"
+    )
     s.set_defaults(fn=cmd_signal)
     w = sub.add_parser("wait", help="ждать сигнал по событию")
     w.add_argument("name")
-    w.add_argument("--timeout-s", type=int, required=True,
-                   help="срок ожидания, с (обязателен): 2× от замера или оценки; по истечении код 124 и запись в state.md")
-    w.add_argument("--holder", help="кто ждёт; по умолчанию DUTY_NAME, DUTY_HOLDER или pid<pid>")
+    w.add_argument(
+        "--timeout-s",
+        type=int,
+        required=True,
+        help="срок ожидания, с (обязателен): 2× от замера или оценки; по истечении код 124 и запись в state.md",
+    )
+    w.add_argument(
+        "--holder", help="кто ждёт; по умолчанию DUTY_NAME, DUTY_HOLDER или pid<pid>"
+    )
     w.set_defaults(fn=cmd_wait)
     ls = sub.add_parser("list", help="сигналы и ожидания")
     ls.add_argument("--json", action="store_true")
-    ls.add_argument("--waits", action="store_true", help="только ожидания, с отметкой «сигнал дан»")
+    ls.add_argument(
+        "--waits", action="store_true", help="только ожидания, с отметкой «сигнал дан»"
+    )
     ls.set_defaults(fn=cmd_list)
     c = sub.add_parser("clear", help="снять сигнал и устаревшие ожидания")
     c.add_argument("name")

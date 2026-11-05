@@ -29,8 +29,13 @@ class WaitDoneStallTest(unittest.TestCase):
         self.log = self.run_dir / "out.log"
 
     def wait(self, *argv: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["bash", str(WAIT_DONE), str(self.run_dir), *argv],
-                              check=False, capture_output=True, text=True, timeout=LIMIT_S)
+        return subprocess.run(
+            ["bash", str(WAIT_DONE), str(self.run_dir), *argv],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=LIMIT_S,
+        )
 
     def test_stall_without_log_file(self) -> None:
         t0 = time.monotonic()
@@ -78,7 +83,9 @@ class WaitDoneStallTest(unittest.TestCase):
     def test_usage_errors(self) -> None:
         self.assertEqual(self.wait("--log", str(self.log)).returncode, 2)
         self.assertEqual(self.wait("--stall-s", "5").returncode, 2)
-        self.assertEqual(self.wait("--log", str(self.log), "--stall-s", "0").returncode, 2)
+        self.assertEqual(
+            self.wait("--log", str(self.log), "--stall-s", "0").returncode, 2
+        )
         other = self.run_dir.parent / "other.log"
         self.assertEqual(self.wait("--log", str(other), "--stall-s", "5").returncode, 2)
 

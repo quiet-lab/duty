@@ -14,8 +14,10 @@ import sys
 import time
 from pathlib import Path
 
-LINE_RE = re.compile(r"^\s*-\s+(?P<what>.+?):\s+pid\s+\d+\s+\S+"
-                     r"(?:,\s+с\s+(?P<hh>\d{1,2}):(?P<mm>\d{2}))?(?:,\s+срок\s+(?P<ttl>\d+)\s+мин)?\s*$")
+LINE_RE = re.compile(
+    r"^\s*-\s+(?P<what>.+?):\s+pid\s+\d+\s+\S+"
+    r"(?:,\s+с\s+(?P<hh>\d{1,2}):(?P<mm>\d{2}))?(?:,\s+срок\s+(?P<ttl>\d+)\s+мин)?\s*$"
+)
 
 
 def section(text: str) -> list[str]:
@@ -38,8 +40,11 @@ def elapsed_min(hh: int, mm: int, now: float) -> int:
 
 def marks(text: str, now: float | None = None) -> list[str]:
     now = time.time() if now is None else now
-    out: list[str] = [f"⚠ {line.strip()}" for line in text.splitlines()
-                      if line.startswith("Просрочено:")]  # запись signals.py wait
+    out: list[str] = [
+        f"⚠ {line.strip()}"
+        for line in text.splitlines()
+        if line.startswith("Просрочено:")
+    ]  # запись signals.py wait
     for line in section(text):
         m = LINE_RE.match(line)
         if not m:

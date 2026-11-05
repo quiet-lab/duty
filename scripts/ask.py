@@ -24,7 +24,9 @@ import time
 from pathlib import Path
 
 # Каталог скрипта убран из sys.path ключом -I, поэтому модуль подключается по пути.
-_spec = importlib.util.spec_from_file_location("duty_config", Path(__file__).with_name("duty_config.py"))
+_spec = importlib.util.spec_from_file_location(
+    "duty_config", Path(__file__).with_name("duty_config.py")
+)
 duty_config = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(duty_config)
 
@@ -37,6 +39,7 @@ def config_path(key: str) -> Path:
         raise SystemExit(f"ошибка конфигурации: {error}")
     assert path is not None
     return path
+
 
 SIGNALS = Path(__file__).resolve().parent / "signals.py"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
@@ -354,8 +357,10 @@ def build_parser() -> argparse.ArgumentParser:
     w = sub.add_parser("wait", help="ждать ответа на свой вопрос по сигналу")
     w.add_argument("nn")
     w.add_argument(
-        "--timeout-s", type=int, required=True,
-        help="срок ожидания ответа, с (обязателен): оценка главной сессии, не меньше 2× ожидаемого"
+        "--timeout-s",
+        type=int,
+        required=True,
+        help="срок ожидания ответа, с (обязателен): оценка главной сессии, не меньше 2× ожидаемого",
     )
     return p
 

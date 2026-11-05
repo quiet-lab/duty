@@ -46,8 +46,12 @@ exec bash -c "$1"
 def real_ssh_available() -> bool:
     if shutil.which("ssh") is None:
         return False
-    r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "localhost", "true"],
-                       check=False, capture_output=True, timeout=10)
+    r = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "localhost", "true"],
+        check=False,
+        capture_output=True,
+        timeout=10,
+    )
     return r.returncode == 0
 
 
@@ -61,9 +65,20 @@ class WaitFollowTest(unittest.TestCase):
 
     def test_follow_prints_lines_as_written(self) -> None:
         self.log.write_text("старая\n", encoding="utf-8")
-        proc = subprocess.Popen(["bash", str(WAIT_DONE), str(self.run_dir), "--log", str(self.log),
-                                 "--stall-s", "30", "--follow"],
-                                stdout=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(
+            [
+                "bash",
+                str(WAIT_DONE),
+                str(self.run_dir),
+                "--log",
+                str(self.log),
+                "--stall-s",
+                "30",
+                "--follow",
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
         self.addCleanup(proc.kill)
         assert proc.stdout is not None
         time.sleep(PAUSE_S)
@@ -84,20 +99,41 @@ class WaitFollowTest(unittest.TestCase):
         self.assertNotIn("старая", out)
 
     def test_follow_restart_does_not_lose_lines(self) -> None:
-        argv = ["bash", str(WAIT_DONE), str(self.run_dir), "--log", str(self.log), "--stall-s", "30", "--follow"]
+        argv = [
+            "bash",
+            str(WAIT_DONE),
+            str(self.run_dir),
+            "--log",
+            str(self.log),
+            "--stall-s",
+            "30",
+            "--follow",
+        ]
         self.log.write_text("", encoding="utf-8")
-        first = subprocess.run([*argv, "--timeout-s", "1"], check=False, capture_output=True, text=True,
-                               timeout=LIMIT_S)
+        first = subprocess.run(
+            [*argv, "--timeout-s", "1"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=LIMIT_S,
+        )
         self.assertEqual(first.returncode, 124, first.stderr)
         # Строки, записанные между двумя вызовами (перезапуск после timeout), не теряются.
         self.log.write_text("между вызовами\n", encoding="utf-8")
         (self.run_dir / "done").write_text("0\n", encoding="utf-8")
-        second = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=LIMIT_S)
+        second = subprocess.run(
+            argv, check=False, capture_output=True, text=True, timeout=LIMIT_S
+        )
         self.assertIn("между вызовами", second.stdout)
 
     def test_follow_requires_log(self) -> None:
-        r = subprocess.run(["bash", str(WAIT_DONE), str(self.run_dir), "--follow"],
-                           check=False, capture_output=True, text=True, timeout=LIMIT_S)
+        r = subprocess.run(
+            ["bash", str(WAIT_DONE), str(self.run_dir), "--follow"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=LIMIT_S,
+        )
         self.assertEqual(r.returncode, 2)
 
     def test_without_follow_log_lines_not_printed(self) -> None:
@@ -109,8 +145,21 @@ class WaitFollowTest(unittest.TestCase):
         th = threading.Thread(target=writer)
         th.start()
         self.addCleanup(th.join)
-        r = subprocess.run(["bash", str(WAIT_DONE), str(self.run_dir), "--log", str(self.log), "--stall-s", "30"],
-                           check=False, capture_output=True, text=True, timeout=LIMIT_S)
+        r = subprocess.run(
+            [
+                "bash",
+                str(WAIT_DONE),
+                str(self.run_dir),
+                "--log",
+                str(self.log),
+                "--stall-s",
+                "30",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=LIMIT_S,
+        )
         self.assertEqual(r.stdout, f"done rc=0 {self.run_dir}\n")
 
 
@@ -140,8 +189,12 @@ class WaitRemoteTest(unittest.TestCase):
         return p
 
     def start(self, pid: int, *argv: str) -> subprocess.Popen:
-        proc = subprocess.Popen(["bash", str(WAIT_REMOTE), "localhost", str(pid), str(self.log), *argv],
-                                stdout=subprocess.PIPE, text=True, env=self.env)
+        proc = subprocess.Popen(
+            ["bash", str(WAIT_REMOTE), "localhost", str(pid), str(self.log), *argv],
+            stdout=subprocess.PIPE,
+            text=True,
+            env=self.env,
+        )
         self.addCleanup(proc.kill)
         self.addCleanup(proc.wait)
         return proc
@@ -178,8 +231,13 @@ class WaitRemoteTest(unittest.TestCase):
         self.assertIn("timeout", out)
 
     def test_bad_pid(self) -> None:
-        r = subprocess.run(["bash", str(WAIT_REMOTE), "localhost", "abc", "x"],
-                           check=False, capture_output=True, text=True, timeout=LIMIT_S)
+        r = subprocess.run(
+            ["bash", str(WAIT_REMOTE), "localhost", "abc", "x"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=LIMIT_S,
+        )
         self.assertEqual(r.returncode, 2)
 
 
@@ -195,7 +253,9 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         self.assertRegex(out, r"remote done")
 
 
-@unittest.skipUnless(real_ssh_available(), "ssh на localhost по ключу недоступен (BatchMode)")
+@unittest.skipUnless(
+    real_ssh_available(), "ssh на localhost по ключу недоступен (BatchMode)"
+)
 class WaitRemoteRealSshTest(WaitRemoteTest):
     use_fake = False
 

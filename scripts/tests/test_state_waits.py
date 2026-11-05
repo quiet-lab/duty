@@ -6,9 +6,11 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import importlib.util  # noqa: E402
+import importlib.util
 
-_spec = importlib.util.spec_from_file_location("state_waits", Path(__file__).resolve().parents[1] / "state-waits.py")
+_spec = importlib.util.spec_from_file_location(
+    "state_waits", Path(__file__).resolve().parents[1] / "state-waits.py"
+)
 assert _spec and _spec.loader
 state_waits = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(state_waits)
@@ -32,7 +34,10 @@ STATE = """# state
 class StateWaitsTest(unittest.TestCase):
     def test_marks_overdue_and_missing_ttl(self) -> None:
         marks = state_waits.marks(STATE, NOW)
-        self.assertEqual(marks, ["⚠ просрочено +60 мин: сборка Jenkins", "⚠ без срока: старая строка"])
+        self.assertEqual(
+            marks,
+            ["⚠ просрочено +60 мин: сборка Jenkins", "⚠ без срока: старая строка"],
+        )
 
     def test_midnight_wraparound(self) -> None:
         text = "## Ожидания\n- ждём: pid 5 x, с 23:30, срок 30 мин\n"

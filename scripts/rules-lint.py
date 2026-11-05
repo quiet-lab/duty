@@ -234,7 +234,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
     repeats = sub.add_parser("repeats", help="повторы предложений между файлами правил")
     repeats.add_argument(
-        "--root", type=Path, default=None, help="корень проекта (иначе ищет duty_config.py)"
+        "--root",
+        type=Path,
+        default=None,
+        help="корень проекта (иначе ищет duty_config.py)",
     )
     brief = sub.add_parser("brief", help="обязательные разделы записки")
     brief.add_argument("file", help="файл записки или - (стандартный ввод)")

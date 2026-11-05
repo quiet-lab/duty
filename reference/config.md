@@ -79,18 +79,18 @@
 | Ключ | Тип | По умолчанию | Кто читает |
 |---|---|---|---|
 | `schema` | целое | — (обязателен) | `duty_config.py check` |
-| `project.name` | строка | имя каталога корня | подписи `dispatch.sh`, `week-stats.py`, каталог состояния |
+| `project.name` | строка | имя каталога корня | каталог состояния общего режима и `init` (`duty_config.py`); сценарии плагина имя не читают |
 | `paths.results` | строка | `<state>/<name>/results` | `dispatch.sh`, `ask.py`, `runs-web.py`, `cleanup-candidates.py`, `jwait.py` |
-| `paths.busy` | строка | `<state>/<name>/busy` | `busy.py`, `facts.sh`, хук `SessionStart` |
-| `paths.signals` | строка | `<state>/<name>/signals` | `signals.py`, `state-waits.py` |
+| `paths.busy` | строка | `<state>/<name>/busy` | `busy.py`, `gates.py`, `facts.sh` и хук `SessionStart` (через `busy.py list`) |
+| `paths.signals` | строка | `<state>/<name>/signals` | `signals.py` (его вызывают хуки `SessionStart` и `task-guard.py`) |
 | `paths.sandbox` | строка | `<results>/duty-tests/sandbox` | пробы `tests/probes/` |
 | `paths.state` | строка | `~/.local/state/duty` | только пользовательский слой: корень каталогов общего режима |
 | `git.protected` | список | `["main", "master"]` и ветвь `origin/HEAD` | `hooks/forbid.py` (push), `branches.py`, `cleanup-candidates.py` |
 | `git.working` | список | `[]` | `branches.py` (не показываются), `cleanup-candidates.py` (не удаляются) |
 | `git.keep_prefixes` | список | `["backup/", "saved/"]` | `branches.py`, `cleanup-candidates.py` |
-| `git.task_prefixes` | список | `[]` | `branches.py`, `cleanup-candidates.py`, `week-stats.py` |
-| `git.named_dev_branches` | логическое | `false` | `branches.py`, `cleanup-candidates.py` |
-| `git.default_parent` | строка | ветвь `origin/HEAD`, иначе `master` | `branches.py`, `gates.py` |
+| `git.task_prefixes` | список | `[]` | `branches.py`, `cleanup-candidates.py`, `facts.sh` |
+| `git.named_dev_branches` | логическое | `false` | `branches.py`, `cleanup-candidates.py`: включённый, делает ветвь без префикса и «/» именной ветвью разработчика (в `branches.py` — «оставить»); чужая местная ветвь (автор последнего коммита — не `user.name`) не удаляется и при выключенном ключе |
+| `git.default_parent` | строка | ветвь `origin/HEAD`, иначе `master` | `branches.py`, `cleanup-candidates.py` |
 | `git.parent_key` | строка | `"parent"` | `cleanup-candidates.py`, `branches.py` |
 | `git.forbid_add_all` | логическое | `true` | `hooks/forbid.py` |
 | `git.forbid_stash` | логическое | `true` | `hooks/forbid.py` |
@@ -98,39 +98,39 @@
 | `forbid.network` | логическое | `true` | `hooks/forbid.py` |
 | `forbid.herdr_direct` | логическое | `true` | `hooks/forbid.py` |
 | `[[forbid.rules]]` | `words` — список, `reason` — строка | `[]` | `hooks/forbid.py` |
-| `bitbucket.url` | строка | нет таблицы — без Bitbucket | `gates.py`, `branches.py`, навык `after-merge` |
+| `bitbucket.url` | строка | нет таблицы — без Bitbucket | `gates.py` (его используют `branches.py` и `week-stats.py`), навык `after-merge` |
 | `bitbucket.token_file` | строка | — | те же |
-| `bitbucket.user` | строка | — | `gates.py`, навык `gates` |
+| `bitbucket.user` | строка | — | только навык `gates` (текст; сценарии ключ не читают, `gates.py` берёт `role=AUTHOR` у токена) |
 | `bitbucket.sets_repo` | строка | `""` | `week-stats.py` |
 | `jenkins.env_file` | строка | нет таблицы — без Jenkins | `jwait.py`, `gates.py`, `facts.sh` |
 | `jenkins.cli_url` | строка | `""` (тогда `JENKINS_URL`) | `jwait.py` |
 | `jenkins.insecure_tls` | логическое | `false` | `jwait.py`, `gates.py` |
 | `jenkins.fake_job` | строка | `""` | `week-stats.py` |
-| `jenkins.nodes` | список | `[]` | навык `inspect`, `facts.sh` |
+| `jenkins.nodes` | список | `[]` | навыки `inspect` и `dispatch` (текст; сценарии ключ не читают) |
 | `jira.url` | строка | нет таблицы — тикеты не ведутся | `facts.sh`, навык `after-merge` |
 | `jira.token_file` | строка | — | те же |
-| `jira.ticket` | строка | — | `branches.py`, `gates.py`, навык `after-merge` |
-| `docs.rules` | список | `[]` | `rules-lint.py repeats` |
+| `jira.ticket` | строка | — | `branches.py`, навыки `gates` и `after-merge` |
+| `docs.rules` | список | `[]` | `rules-lint.py repeats`; правила проекта в агентах и навыках названы ссылкой на ключ |
 | `docs.rules_optional` | список | `[]` | `rules-lint.py repeats` |
-| `docs.review` | строка | `""` | `agents/worker.md`, навык `dispatch` |
-| `docs.decisions` | строка | `""` | навык `decision`, `week-stats.py` |
+| `docs.review` | строка | `""` | `agents/worker.md`, навыки `dispatch` и `docs-sweep` (текст) |
+| `docs.decisions` | строка | `""` | навык `decision`, `decision-number.sh`, `week-stats.py` |
 | `docs.decision_insert` | строка | `""` | навык `decision`, `decision-number.sh` |
 | `docs.decision_index` | строка | `""` | навык `decision` |
-| `docs.prose` | строка | `""` | навыки `decision`, `docs-sweep` |
-| `docs.lint` | строка | `""` | навыки `decision`, `docs-sweep` |
+| `docs.prose` | строка | `""` | навык `decision` |
+| `docs.lint` | строка | `""` | навык `docs-sweep` |
 | `docs.sweep_area` | список | `["docs/", "*.md"]` | навык `docs-sweep` |
 | `docs.sweep_exclude` | список | `[]` | навык `docs-sweep` |
-| `docs.openspec` | список | `[]` | `facts.sh`, навык `after-merge` |
+| `docs.openspec` | список | `[]` | навык `after-merge` |
 | `[[docs.post_change]]` | `paths` — список, `note` — строка | `[]` | навык `docs-sweep` |
-| `[[busy.resources]]` | `name`, `why`, `until` — строки | `[]` | `busy.py`, `README.md` проекта |
+| `[[busy.resources]]` | `name`, `why`, `until` — строки | `[]` | навыки `inspect` и `dispatch`, `reference/worker-rules.md` (текст); сценарии ключ не читают |
 | `cleanup.keep_trees` | список | `[]` | `cleanup-candidates.py` |
 | `cleanup.docker_keep_projects` | список | `[]` | `cleanup-candidates.py` |
 | `stats.test_repos` | список | `[]` | `week-stats.py` |
 | `stats.rules_paths` | список | `[".claude/"]` | `week-stats.py` |
 | `stats.pipeline_paths` | список | `["scripts/", ".github/"]` | `week-stats.py` |
-| `symbols.main` | строка | `""` | постоянный символ главной сессии репозитория |
-| `symbols.tasks` | список | `[]` (тогда `scripts/symbols.txt`) | `dispatch.sh symbol` |
-| `symbols.outside` | список | `[]` | только пользовательский слой: workspace вне репозиториев |
+| `symbols.main` | строка | `""` | никто (проверяет только `duty_config.py check`): постоянный символ главной сессии, из наборов задач исключается |
+| `symbols.tasks` | список | `[]` (тогда `scripts/symbols.txt`) | `dispatch.sh symbol` (`load_symbols`); `DUTY_SYMBOLS_FILE` перекрывает только этот ключ |
+| `symbols.outside` | список | `[]` (тогда `scripts/symbols.txt`, как у `symbols.tasks`) | `dispatch.sh symbol` (`load_symbols`); только пользовательский слой: workspace вне репозиториев |
 
 У массивов таблиц обязательны все поля. Символ — ровно одна кодовая
 точка (`len == 1`): флаг из нескольких точек вроде «🏳️‍🌈» и символ

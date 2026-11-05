@@ -394,7 +394,7 @@ def collect(args: argparse.Namespace) -> list[tuple[str, str]]:
     cfg = gates.config()
     root = cfg.root
     rows: list[tuple[str, str]] = []
-    absent = lambda section: f"не считалось: в .duty/duty.toml нет раздела [{section}]"  # noqa: E731
+    absent = lambda section: f"не считалось: в .duty/duty.toml нет раздела [{section}]"
 
     def guarded(label: str, fn) -> None:
         try:
@@ -497,7 +497,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ошибка конфигурации: {e}", file=sys.stderr)
         return 2
     if cfg.root is None:
-        print("корень проекта не найден: запустите из репозитория git или задайте --root", file=sys.stderr)
+        print(
+            "корень проекта не найден: запустите из репозитория git или задайте --root",
+            file=sys.stderr,
+        )
         return 2
     rows = collect(args)
     if args.json:

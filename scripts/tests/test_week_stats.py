@@ -106,9 +106,7 @@ class WeekStatsTest(unittest.TestCase):
         self.assertEqual(ws.classify_path("tests-repo", "helpers/a.ts"), "тесты")
         self.assertEqual(ws.classify_path(".", "docs/README.md"), "документация")
         self.assertEqual(ws.classify_path(".", "scripts/x.py"), "конвейер")
-        self.assertEqual(
-            ws.classify_path("plugins/duty", "scripts/x.py"), "правила"
-        )
+        self.assertEqual(ws.classify_path("plugins/duty", "scripts/x.py"), "правила")
 
     def test_git_stats_and_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

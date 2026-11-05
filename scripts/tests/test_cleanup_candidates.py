@@ -9,13 +9,24 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "cleanup-candidates.py"
 GIT_ENV = {
-    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
-    "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@t",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@t",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
 }
 
 
 def git(cwd: Path, *args: str) -> str:
-    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, env={**os.environ, **GIT_ENV})
+    r = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **GIT_ENV},
+        check=False,
+    )
     if r.returncode != 0:
         raise AssertionError(f"git {args}: {r.stderr}")
     return r.stdout.strip()
@@ -25,7 +36,7 @@ class ExcludeWorktreeTest(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        # Каталог проекта лежит внутри tmp, чтобы стенд (родитель/ocp-dev-stand) не выходил за него.
+        # Каталог проекта лежит внутри tmp, чтобы стенд (родитель корня проекта) не выходил за него.
         self.base = Path(tmp.name).resolve()
         self.root = self.base / "proj" / "root"
         origin = self.base / "origin.git"
@@ -40,9 +51,12 @@ class ExcludeWorktreeTest(unittest.TestCase):
         git(self.root, "init", "-b", "main")
         (self.root / ".duty").mkdir()
         (self.root / ".duty" / "duty.toml").write_text(
-            f'schema = 1\n[paths]\nresults = "{self.base / "results"}"\n', encoding="utf-8"
+            f'schema = 1\n[paths]\nresults = "{self.base / "results"}"\n',
+            encoding="utf-8",
         )
-        (self.root / ".gitmodules").write_text('[submodule "sub"]\n\tpath = sub\n\tparent = main\n', encoding="utf-8")
+        (self.root / ".gitmodules").write_text(
+            '[submodule "sub"]\n\tpath = sub\n\tparent = main\n', encoding="utf-8"
+        )
         self.sub = sub
 
     def add_gone_worktree(self, branch: str) -> Path:
@@ -54,10 +68,20 @@ class ExcludeWorktreeTest(unittest.TestCase):
         return wt
 
     def candidates(self, *extra: str) -> str:
-        env = {**os.environ, "HOME": str(self.base / "home"), "DUTY_PROJECT": str(self.root),
-               "DUTY_CONFIG_USER": str(self.base / "no-user-config.toml"), **GIT_ENV}
-        r = subprocess.run([sys.executable, "-I", str(SCRIPT), str(self.root), *extra],
-                           capture_output=True, text=True, env=env)
+        env = {
+            **os.environ,
+            "HOME": str(self.base / "home"),
+            "DUTY_PROJECT": str(self.root),
+            "DUTY_CONFIG_USER": str(self.base / "no-user-config.toml"),
+            **GIT_ENV,
+        }
+        r = subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), str(self.root), *extra],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
@@ -68,7 +92,9 @@ class ExcludeWorktreeTest(unittest.TestCase):
 
     def test_gone_branch_worktree_is_candidate_without_exclude(self) -> None:
         wt = self.add_gone_worktree("feat-x")
-        self.assertIn("удалить: ветвь удалена в origin", self.row(self.candidates(), wt))
+        self.assertIn(
+            "удалить: ветвь удалена в origin", self.row(self.candidates(), wt)
+        )
 
     def test_exclude_protects_worktree_of_branch_gone_in_origin(self) -> None:
         wt = self.add_gone_worktree("feat-x")
@@ -91,9 +117,18 @@ class ExcludeWorktreeTest(unittest.TestCase):
         self.assertIn("оставлено", self.row(out, b))
 
     def test_exclude_without_pattern_is_error(self) -> None:
-        env = {**os.environ, "DUTY_CONFIG_USER": str(self.base / "no-user-config.toml"), **GIT_ENV}
-        r = subprocess.run([sys.executable, "-I", str(SCRIPT), str(self.root), "--exclude"],
-                           capture_output=True, text=True, env=env, check=False)
+        env = {
+            **os.environ,
+            "DUTY_CONFIG_USER": str(self.base / "no-user-config.toml"),
+            **GIT_ENV,
+        }
+        r = subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), str(self.root), "--exclude"],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
         self.assertNotEqual(r.returncode, 0)
 
     def test_detached_worktree_is_kept(self) -> None:
@@ -102,6 +137,25 @@ class ExcludeWorktreeTest(unittest.TestCase):
         row = self.row(self.candidates(), wt)
         self.assertIn("оставлено", row)
         self.assertNotIn("worktree remove", row)
+
+    def add_merged_branch(self, branch: str) -> None:
+        git(self.sub, "branch", branch)  # вершина совпадает с main, значит ветвь слита
+
+    def test_foreign_merged_branch_is_kept_without_named_flag(self) -> None:
+        self.add_merged_branch("someone")
+        out = self.candidates()
+        row = [line for line in out.splitlines() if "someone" in line]
+        self.assertEqual(len(row), 1, out)
+        self.assertIn("оставлено: чужая ветвь", row[0])
+        self.assertNotIn("branch -D", row[0])
+
+    def test_own_merged_branch_is_candidate(self) -> None:
+        self.add_merged_branch("mine")
+        git(self.root, "config", "user.name", "t")
+        out = self.candidates()
+        row = [line for line in out.splitlines() if "mine" in line]
+        self.assertEqual(len(row), 1, out)
+        self.assertIn("branch -D", row[0])
 
     def write_extension(self, name: str, body: str) -> None:
         folder = self.root / ".duty" / "cleanup.d"
@@ -118,7 +172,9 @@ class ExcludeWorktreeTest(unittest.TestCase):
         out = self.candidates()
         rows = [line for line in out.splitlines() if "деревья ext" in line]
         self.assertEqual(len(rows), 1, out)
-        self.assertEqual(rows[0], "| стенд |  |  | деревья ext | 1M | удалить: тест | `echo x` |")
+        self.assertEqual(
+            rows[0], "| стенд |  |  | деревья ext | 1M | удалить: тест | `echo x` |"
+        )
 
     def test_failing_extension_gives_not_received_row(self) -> None:
         self.write_extension("20-bad.sh", "echo oops >&2\nexit 1\n")

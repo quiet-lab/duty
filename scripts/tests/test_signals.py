@@ -39,18 +39,31 @@ class SignalsTest(unittest.TestCase):
                 if f:
                     f.close()
 
-    def run_cmd(self, *argv: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    def run_cmd(
+        self, *argv: str, env: dict | None = None
+    ) -> subprocess.CompletedProcess:
         # Срок у wait обязателен; тесты, которым срок безразличен, получают общий.
         if argv[:1] == ("wait",) and "--timeout-s" not in argv:
             argv = (*argv, "--timeout-s", str(LIMIT_S))
-        return subprocess.run([sys.executable, "-I", str(SCRIPT), *argv], env=env or self.env,
-                              capture_output=True, text=True, timeout=LIMIT_S)
+        return subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), *argv],
+            env=env or self.env,
+            capture_output=True,
+            text=True,
+            timeout=LIMIT_S,
+            check=False,
+        )
 
     def start_wait(self, *argv: str) -> subprocess.Popen:
         if "--timeout-s" not in argv:
             argv = (*argv, "--timeout-s", str(LIMIT_S))
-        p = subprocess.Popen([sys.executable, "-I", str(SCRIPT), "wait", *argv], env=self.env,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        p = subprocess.Popen(
+            [sys.executable, "-I", str(SCRIPT), "wait", *argv],
+            env=self.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
         self.procs.append(p)
         assert p.stderr is not None
         # wait печатает строку в stderr, когда наблюдение и отметка ожидания уже есть.
@@ -60,7 +73,9 @@ class SignalsTest(unittest.TestCase):
         return p
 
     def test_signal_before_wait(self) -> None:
-        self.assertEqual(self.run_cmd("signal", "stand-free", "готово", "--from", "a").returncode, 0)
+        self.assertEqual(
+            self.run_cmd("signal", "stand-free", "готово", "--from", "a").returncode, 0
+        )
         r = self.run_cmd("wait", "stand-free")
         self.assertEqual(r.returncode, 0)
         self.assertIn("сигнал stand-free: готово", r.stdout)
@@ -73,7 +88,8 @@ class SignalsTest(unittest.TestCase):
         data = json.loads((self.dir / "x1.json").read_text(encoding="utf-8"))
         self.assertEqual(
             {k: data[k] for k in ("name", "text", "from", "task")},
-            {"name": "x1", "text": "текст", "from": "w1", "task": "/t"})
+            {"name": "x1", "text": "текст", "from": "w1", "task": "/t"},
+        )
         self.assertIsInstance(data["at_ms"], int)
 
     def test_wait_then_signal(self) -> None:
@@ -81,7 +97,9 @@ class SignalsTest(unittest.TestCase):
         mark = self.dir / f"pr-merged-qms-2584.waiting-w1.{p.pid}"
         self.assertTrue(mark.exists())
         self.assertEqual(json.loads(mark.read_text(encoding="utf-8"))["pid"], p.pid)
-        self.assertEqual(self.run_cmd("signal", "pr-merged-qms-2584", "слит").returncode, 0)
+        self.assertEqual(
+            self.run_cmd("signal", "pr-merged-qms-2584", "слит").returncode, 0
+        )
         out, _ = p.communicate(timeout=LIMIT_S)
         self.assertEqual(p.returncode, 0)
         self.assertIn("сигнал pr-merged-qms-2584: слит", out)
@@ -103,8 +121,10 @@ class SignalsTest(unittest.TestCase):
         self.assertIn("| да |", out)
         data = json.loads(self.run_cmd("list", "--json").stdout)
         self.assertEqual([s["name"] for s in data["signals"]], ["done-1"])
-        self.assertEqual([(w["name"], w["holder"], w["alive"]) for w in data["waits"]],
-                         [("other-1", "w2", True)])
+        self.assertEqual(
+            [(w["name"], w["holder"], w["alive"]) for w in data["waits"]],
+            [("other-1", "w2", True)],
+        )
         p.terminate()
         p.communicate(timeout=LIMIT_S)
 
@@ -113,11 +133,29 @@ class SignalsTest(unittest.TestCase):
         dead = subprocess.Popen([sys.executable, "-c", "pass"])
         dead.wait(timeout=LIMIT_S)
         (self.dir / "c1.waiting-old.1").write_text(
-            json.dumps({"name": "c1", "holder": "old", "task": "", "pid": dead.pid, "since_ms": 0}),
-            encoding="utf-8")
+            json.dumps(
+                {
+                    "name": "c1",
+                    "holder": "old",
+                    "task": "",
+                    "pid": dead.pid,
+                    "since_ms": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
         (self.dir / "c1.waiting-mine.2").write_text(
-            json.dumps({"name": "c1", "holder": "mine", "task": "", "pid": os.getpid(), "since_ms": 0}),
-            encoding="utf-8")
+            json.dumps(
+                {
+                    "name": "c1",
+                    "holder": "mine",
+                    "task": "",
+                    "pid": os.getpid(),
+                    "since_ms": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
         r = self.run_cmd("clear", "c1")
         self.assertEqual(r.returncode, 0)
         self.assertFalse((self.dir / "c1.json").exists())
@@ -146,7 +184,10 @@ class SignalsTest(unittest.TestCase):
         self.assertIn("сигнал z1: есть", r.stdout)
 
     def test_zero_timeout_without_signal(self) -> None:
-        self.assertEqual(self.run_cmd("wait", "z2", "--timeout-s", "0", "--holder", "w").returncode, 124)
+        self.assertEqual(
+            self.run_cmd("wait", "z2", "--timeout-s", "0", "--holder", "w").returncode,
+            124,
+        )
 
     def test_same_holder_marks_do_not_collide(self) -> None:
         first = self.start_wait("dup", "--holder", "w1", "--timeout-s", "1")
@@ -188,12 +229,17 @@ class SignalsTest(unittest.TestCase):
         r = self.run_cmd("signal", "kc", "новый", "--keep")
         self.assertEqual(r.returncode, 0)
         self.assertIn("повреждён", r.stderr)
-        self.assertEqual(json.loads((self.dir / "kc.json").read_text(encoding="utf-8"))["text"], "новый")
+        self.assertEqual(
+            json.loads((self.dir / "kc.json").read_text(encoding="utf-8"))["text"],
+            "новый",
+        )
         self.assertEqual(list(self.dir.glob(".*.tmp")), [])
 
     def test_keep_wakes_waiter(self) -> None:
         p = self.start_wait("kw", "--holder", "w1")
-        self.assertEqual(self.run_cmd("signal", "kw", "через keep", "--keep").returncode, 0)
+        self.assertEqual(
+            self.run_cmd("signal", "kw", "через keep", "--keep").returncode, 0
+        )
         out, _ = p.communicate(timeout=LIMIT_S)
         self.assertEqual(p.returncode, 0)
         self.assertIn("сигнал kw: через keep", out)
@@ -206,7 +252,10 @@ class SignalsTest(unittest.TestCase):
         data = json.loads((self.dir / "k1.json").read_text(encoding="utf-8"))
         self.assertEqual(data["text"], "первый")
         self.run_cmd("signal", "k1", "третий")
-        self.assertEqual(json.loads((self.dir / "k1.json").read_text(encoding="utf-8"))["text"], "третий")
+        self.assertEqual(
+            json.loads((self.dir / "k1.json").read_text(encoding="utf-8"))["text"],
+            "третий",
+        )
 
     def test_sigterm_removes_mark(self) -> None:
         p = self.start_wait("t1", "--holder", "w1")
@@ -216,7 +265,6 @@ class SignalsTest(unittest.TestCase):
         p.communicate(timeout=LIMIT_S)
         self.assertEqual(p.returncode, 128 + signal.SIGTERM)
         self.assertFalse(mark.exists())
-
 
     def test_partial_write_does_not_end_wait(self) -> None:
         p = self.start_wait("pw", "--holder", "w1")
@@ -232,9 +280,13 @@ class SignalsTest(unittest.TestCase):
 
     def test_list_survives_bad_field_types(self) -> None:
         (self.dir / "bs.json").write_text(
-            json.dumps({"name": "bs", "text": "т", "from": "a", "at_ms": "вчера"}), encoding="utf-8")
+            json.dumps({"name": "bs", "text": "т", "from": "a", "at_ms": "вчера"}),
+            encoding="utf-8",
+        )
         (self.dir / "bw.waiting-w.7").write_text(
-            json.dumps({"name": "bw", "holder": "w", "pid": None, "since_ms": "x"}), encoding="utf-8")
+            json.dumps({"name": "bw", "holder": "w", "pid": None, "since_ms": "x"}),
+            encoding="utf-8",
+        )
         for argv in (("list",), ("list", "--waits"), ("list", "--json")):
             with self.subTest(argv=argv):
                 r = self.run_cmd(*argv)
@@ -257,8 +309,14 @@ class SignalsTest(unittest.TestCase):
         self.assertFalse(Path(f"/proc/{children[0]}").exists())
 
     def test_timeout_is_required(self) -> None:
-        r = subprocess.run([sys.executable, "-I", str(SCRIPT), "wait", "no-ttl"], env=self.env,
-                           capture_output=True, text=True, timeout=LIMIT_S)
+        r = subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), "wait", "no-ttl"],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=LIMIT_S,
+            check=False,
+        )
         self.assertEqual(r.returncode, 2)
         self.assertIn("--timeout-s", r.stderr)
 
@@ -267,25 +325,43 @@ class SignalsTest(unittest.TestCase):
         task.mkdir()
         (task / "state.md").write_text("# state\nШаг: 1\n", encoding="utf-8")
         env = {**self.env, "DUTY_TASK": str(task)}
-        r = self.run_cmd("wait", "never2", "--timeout-s", "1", "--holder", "w1", env=env)
+        r = self.run_cmd(
+            "wait", "never2", "--timeout-s", "1", "--holder", "w1", env=env
+        )
         self.assertEqual(r.returncode, 124, r.stderr)
         text = (task / "state.md").read_text(encoding="utf-8")
         self.assertIn("Просрочено: ожидание сигнала never2 (w1)", text)
 
     def test_list_marks_overdue_waits(self) -> None:
         old = int(time.time() * 1000) - 130 * 60_000
-        mark = {"name": "late", "holder": "w1", "task": "t", "pid": os.getpid(),
-                "since_ms": old, "timeout_s": 3600}
-        (self.dir / f"late.waiting-w1.{os.getpid()}").write_text(json.dumps(mark), encoding="utf-8")
-        fresh = dict(mark, name="fresh", since_ms=int(time.time() * 1000), timeout_s=3600)
-        (self.dir / f"fresh.waiting-w2.{os.getpid()}").write_text(json.dumps(fresh), encoding="utf-8")
+        mark = {
+            "name": "late",
+            "holder": "w1",
+            "task": "t",
+            "pid": os.getpid(),
+            "since_ms": old,
+            "timeout_s": 3600,
+        }
+        (self.dir / f"late.waiting-w1.{os.getpid()}").write_text(
+            json.dumps(mark), encoding="utf-8"
+        )
+        fresh = dict(
+            mark, name="fresh", since_ms=int(time.time() * 1000), timeout_s=3600
+        )
+        (self.dir / f"fresh.waiting-w2.{os.getpid()}").write_text(
+            json.dumps(fresh), encoding="utf-8"
+        )
         out = self.run_cmd("list", "--waits").stdout
         late = next(line for line in out.splitlines() if line.startswith("| late "))
         self.assertIn("⚠ просрочено +70 мин", late)
-        fresh_line = next(line for line in out.splitlines() if line.startswith("| fresh "))
+        fresh_line = next(
+            line for line in out.splitlines() if line.startswith("| fresh ")
+        )
         self.assertNotIn("просрочено", fresh_line)
         waits = json.loads(self.run_cmd("list", "--waits", "--json").stdout)["waits"]
-        self.assertEqual({w["name"]: w["ttl_min"] for w in waits}, {"late": 60, "fresh": 60})
+        self.assertEqual(
+            {w["name"]: w["ttl_min"] for w in waits}, {"late": 60, "fresh": 60}
+        )
 
 
 if __name__ == "__main__":

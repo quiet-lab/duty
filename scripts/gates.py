@@ -25,10 +25,14 @@ import urllib.request
 from pathlib import Path
 
 # Каталог скрипта убран из sys.path ключом -I, поэтому модули подключаются по пути.
-_spec = importlib.util.spec_from_file_location("dutylib", Path(__file__).with_name("dutylib.py"))
+_spec = importlib.util.spec_from_file_location(
+    "dutylib", Path(__file__).with_name("dutylib.py")
+)
 dutylib = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(dutylib)
-duty_config = dutylib.import_path("duty_config", Path(__file__).with_name("duty_config.py"))
+duty_config = dutylib.import_path(
+    "duty_config", Path(__file__).with_name("duty_config.py")
+)
 
 _CFG = None
 
@@ -65,7 +69,10 @@ class BitbucketDenied(Exception):
 def bb(path: str) -> dict:
     cfg = config()
     token = cfg_file(cfg.get("bitbucket.token_file", "")).read_text().strip()
-    req = urllib.request.Request(cfg.get("bitbucket.url", "").rstrip("/") + path, headers={"Authorization": f"Bearer {token}"})
+    req = urllib.request.Request(
+        cfg.get("bitbucket.url", "").rstrip("/") + path,
+        headers={"Authorization": f"Bearer {token}"},
+    )
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.load(r)
@@ -88,7 +95,9 @@ def jenkins_env() -> dict[str, str]:
 
 
 def jenkins(url: str, env: dict[str, str]) -> dict | None:
-    auth = base64.b64encode(f"{env['JENKINS_USER']}:{env['JENKINS_TOKEN']}".encode()).decode()
+    auth = base64.b64encode(
+        f"{env['JENKINS_USER']}:{env['JENKINS_TOKEN']}".encode()
+    ).decode()
     req = urllib.request.Request(url, headers={"Authorization": f"Basic {auth}"})
     try:
         with urllib.request.urlopen(req, timeout=20, context=ssl_context()) as r:
@@ -103,7 +112,9 @@ def is_feed(status: dict) -> bool:
     Лента показывает ход всех этапов и не решает о слиянии; со статусами ворот
     её смешивать нельзя: она новее и перекрыла бы итог ворот.
     """
-    return "pr-feed/" in (status.get("key") or "") or (status.get("name") or "").startswith("Лента сборок PR-")
+    return "pr-feed/" in (status.get("key") or "") or (
+        status.get("name") or ""
+    ).startswith("Лента сборок PR-")
 
 
 def gate_summary(statuses: list[dict], env: dict[str, str]) -> tuple[str, str]:
@@ -151,7 +162,14 @@ def run_info(url: str, base: str, env: dict[str, str]) -> tuple[str, str]:
     tree = "fullDisplayName,actions[causes[shortDescription,userId]]"
     d = jenkins(url.rstrip("/") + f"/api/json?tree={tree}", env) or {}
     causes = [c for a in d.get("actions", []) for c in a.get("causes", [])]
-    who = "; ".join(dict.fromkeys(c.get("userId") or c.get("shortDescription", "?") for c in causes)) or "?"
+    who = (
+        "; ".join(
+            dict.fromkeys(
+                c.get("userId") or c.get("shortDescription", "?") for c in causes
+            )
+        )
+        or "?"
+    )
     return d.get("fullDisplayName", ""), who
 
 
@@ -171,8 +189,14 @@ def jenkins_now(env: dict[str, str], now_ms: int) -> int:
     print("|---|---|---|---|---|")
     for c in comp["computer"]:
         name = c["displayName"]
-        busy = [e["currentExecutable"] for e in c["executors"] if e.get("currentExecutable")]
-        flies = [e["currentExecutable"] for e in c["oneOffExecutors"] if e.get("currentExecutable")]
+        busy = [
+            e["currentExecutable"] for e in c["executors"] if e.get("currentExecutable")
+        ]
+        flies = [
+            e["currentExecutable"]
+            for e in c["oneOffExecutors"]
+            if e.get("currentExecutable")
+        ]
         if c["offline"]:
             why = c.get("offlineCauseReason") or "причина не названа"
             print(f"| {cell(name)} | не в сети: {cell(why)} | — | — | — |")
@@ -186,12 +210,18 @@ def jenkins_now(env: dict[str, str], now_ms: int) -> int:
         state = f"занят ({len(busy)}/{total})"
         for ex, tag in [(b, "") for b in busy] + [(f, " (оркестрация)") for f in flies]:
             url = ex.get("url", "")
-            full, who = run_info(url, base, env) if url.startswith("http") else ("", "?")
+            full, who = (
+                run_info(url, base, env) if url.startswith("http") else ("", "?")
+            )
             title = full or ex.get("fullDisplayName") or "?"
             ts = ex.get("timestamp")
             took = human(now_ms - ts) if ts else "?"
-            print(f"| {cell(name)} | {state if not tag else 'оркестрация'} | [{cell(title)}]({url}) | {took} | {cell(who)} |")
-    q = jenkins_get(base, "/queue/api/json?tree=items[inQueueSince,why,task[name]]", env)
+            print(
+                f"| {cell(name)} | {state if not tag else 'оркестрация'} | [{cell(title)}]({url}) | {took} | {cell(who)} |"
+            )
+    q = jenkins_get(
+        base, "/queue/api/json?tree=items[inQueueSince,why,task[name]]", env
+    )
     if q is None:
         print("| Очередь ожидания | недоступна | — | — | — |")
     elif not q["items"]:
@@ -201,7 +231,9 @@ def jenkins_now(env: dict[str, str], now_ms: int) -> int:
             f"{i['task']['name']} ({human(now_ms - i['inQueueSince'])}: {cell(i.get('why', ''))})"
             for i in q["items"]
         ]
-        print(f"| Очередь ожидания | {len(parts)} в очереди | {cell('; '.join(parts))} | — | — |")
+        print(
+            f"| Очередь ожидания | {len(parts)} в очереди | {cell('; '.join(parts))} | — | — |"
+        )
     return 0
 
 
@@ -220,12 +252,18 @@ def station_now(now_ms: int) -> None:
     print("| Вид | Имя | Каталог | Статус | Идёт |")
     print("|---|---|---|---|---|")
     home = str(Path.home())
-    short = lambda p: cell(str(p).replace(home, "~"))  # noqa: E731
+    short = lambda p: cell(str(p).replace(home, "~"))
     herdr: dict[str, dict] = {}
     herdr_note = ""
     if os.environ.get("HERDR_ENV") == "1":
         try:
-            r = subprocess.run(["herdr", "agent", "list"], capture_output=True, text=True, timeout=15)
+            r = subprocess.run(
+                ["herdr", "agent", "list"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
             for a in json.loads(r.stdout)["result"]["agents"]:
                 herdr[a.get("agent_session", {}).get("value", a["pane_id"])] = a
         except (OSError, subprocess.SubprocessError, ValueError, KeyError):
@@ -247,12 +285,16 @@ def station_now(now_ms: int) -> None:
         name = d.get("name") or (h or {}).get("terminal_title_stripped") or sid
         status = (h or {}).get("agent_status") or d.get("status", "?")
         took = human(now_ms - d["startedAt"]) if d.get("startedAt") else "?"
-        print(f"| {kind} | {cell(name)} | {short(d.get('cwd', '?'))} | {cell(status)} | {took} |")
+        print(
+            f"| {kind} | {cell(name)} | {short(d.get('cwd', '?'))} | {cell(status)} | {took} |"
+        )
     for sid, a in herdr.items():
         if sid in seen:
             continue
         name = a.get("name") or a.get("terminal_title_stripped") or a["pane_id"]
-        print(f"| агент herdr {a['workspace_id']} | {cell(name)} | {short(a.get('cwd', '?'))} | {cell(a.get('agent_status'))} | ? |")
+        print(
+            f"| агент herdr {a['workspace_id']} | {cell(name)} | {short(a.get('cwd', '?'))} | {cell(a.get('agent_status'))} | ? |"
+        )
     busy_dir = config().path("paths.busy")
     for f in sorted(busy_dir.glob("*.json")) if busy_dir and busy_dir.is_dir() else []:
         try:
@@ -262,11 +304,15 @@ def station_now(now_ms: int) -> None:
         alive = pid_alive(d.get("pid"))
         state = "держится" if alive else "устарела (процесс не жив)"
         took = human(now_ms - d["since_ms"]) if d.get("since_ms") else "?"
-        print(f"| занятость | {cell(d.get('resource', f.stem))}: {cell(d.get('holder'))} | {cell(d.get('note') or '')} | {state} | {took} |")
+        print(
+            f"| занятость | {cell(d.get('resource', f.stem))}: {cell(d.get('holder'))} | {cell(d.get('note') or '')} | {state} | {took} |"
+        )
     if herdr_note:
         print(f"\nНе проверено: {herdr_note}.")
     elif os.environ.get("HERDR_ENV") != "1":
-        print("\nНе проверено: herdr (HERDR_ENV не 1), показаны только сессии Claude Code.")
+        print(
+            "\nНе проверено: herdr (HERDR_ENV не 1), показаны только сессии Claude Code."
+        )
 
 
 def now_main() -> int:
@@ -298,9 +344,13 @@ def main() -> int:
         return 0
     env = jenkins_env() if config().has("jenkins") else {}
     try:
-        prs = bb("/rest/api/1.0/dashboard/pull-requests?state=OPEN&role=AUTHOR&limit=100")["values"]
+        prs = bb(
+            "/rest/api/1.0/dashboard/pull-requests?state=OPEN&role=AUTHOR&limit=100"
+        )["values"]
         now = time.time()
-        print("| Репозиторий | PR | Ветвь → цель | Сборки коммита | Ворота Jenkins (итог; этапы) | Слияние | Возраст, ч |")
+        print(
+            "| Репозиторий | PR | Ветвь → цель | Сборки коммита | Ворота Jenkins (итог; этапы) | Слияние | Возраст, ч |"
+        )
         print("|---|---|---|---|---|---|---|")
         for p in sorted(prs, key=lambda p: p["createdDate"]):
             repo = p["toRef"]["repository"]
@@ -308,13 +358,18 @@ def main() -> int:
             sha = p["fromRef"]["latestCommit"]
             statuses = bb(f"/rest/build-status/1.0/commits/{sha}")["values"]
             builds, gate = gate_summary(statuses, env)
-            m = bb(f"/rest/api/1.0/projects/{key}/repos/{slug}/pull-requests/{p['id']}/merge")
+            m = bb(
+                f"/rest/api/1.0/projects/{key}/repos/{slug}/pull-requests/{p['id']}/merge"
+            )
             if m.get("canMerge"):
                 merge = "можно"
             elif m.get("conflicted"):
                 merge = "конфликт"
             else:
-                merge = "; ".join(v["summaryMessage"] for v in m.get("vetoes", [])) or "нельзя"
+                merge = (
+                    "; ".join(v["summaryMessage"] for v in m.get("vetoes", []))
+                    or "нельзя"
+                )
             link = p["links"]["self"][0]["href"]
             age = round((now - p["createdDate"] / 1000) / 3600, 1)
             print(
@@ -323,7 +378,9 @@ def main() -> int:
             )
         print(f"\nВсего открытых: {len(prs)}")
     except BitbucketDenied as e:
-        print(f"ОСТАНОВКА: {e}. Повторять нельзя: четыре неверных входа блокируют учётную запись.")
+        print(
+            f"ОСТАНОВКА: {e}. Повторять нельзя: четыре неверных входа блокируют учётную запись."
+        )
         return 2
     return 0
 

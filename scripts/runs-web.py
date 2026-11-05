@@ -30,7 +30,9 @@ from urllib.parse import parse_qs, quote, urlparse
 
 SCRIPTS = Path(__file__).resolve().parent
 # Каталог скрипта убран из sys.path ключом -I, поэтому модуль подключается по пути.
-_spec = importlib.util.spec_from_file_location("duty_config", Path(__file__).with_name("duty_config.py"))
+_spec = importlib.util.spec_from_file_location(
+    "duty_config", Path(__file__).with_name("duty_config.py")
+)
 duty_config = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(duty_config)
 
@@ -43,6 +45,7 @@ def config_path(key: str) -> Path:
         raise SystemExit(f"ошибка конфигурации: {error}")
     assert path is not None
     return path
+
 
 DEFAULT_PORT = 8765
 # Имена каталогов задачи и прогона: tab-run.sh и dispatch.sh допускают только
@@ -79,10 +82,14 @@ def parse_cmd(text: str) -> str:
     lines = text.splitlines()
     try:
         start = lines.index("{")
-        end = next(i for i in range(len(lines) - 1, start, -1) if lines[i].startswith("} 2>&1 | tee"))
+        end = next(
+            i
+            for i in range(len(lines) - 1, start, -1)
+            if lines[i].startswith("} 2>&1 | tee")
+        )
     except (ValueError, StopIteration):
         return ""
-    return "\n".join(lines[start + 1:end])
+    return "\n".join(lines[start + 1 : end])
 
 
 def read_text(path: Path) -> str:
@@ -130,8 +137,11 @@ def describe_run(run_dir: Path) -> dict[str, object]:
 
 def list_runs(results: Path) -> list[dict[str, object]]:
     """Прогоны всех задач, новые (по started_ms, затем по out.log) выше."""
-    runs = [describe_run(d) for d in results.glob("*/runs/*")
-            if d.is_dir() and SAFE_RE.match(d.name) and SAFE_RE.match(d.parent.parent.name)]
+    runs = [
+        describe_run(d)
+        for d in results.glob("*/runs/*")
+        if d.is_dir() and SAFE_RE.match(d.name) and SAFE_RE.match(d.parent.parent.name)
+    ]
 
     def started(r: dict[str, object]) -> tuple[int, int]:
         meta = r["meta"]
@@ -185,11 +195,26 @@ def follow_log(run_dir: Path, send, sock: socket.socket | None = None) -> None:
     """
     log = run_dir / "out.log"
     watch = subprocess.Popen(
-        ["inotifywait", "-m", "-e", "modify", "-e", "create", "-e", "moved_to",
-         "-e", "close_write", "--format", "%f", str(run_dir)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        [
+            "inotifywait",
+            "-m",
+            "-e",
+            "modify",
+            "-e",
+            "create",
+            "-e",
+            "moved_to",
+            "-e",
+            "close_write",
+            "--format",
+            "%f",
+            str(run_dir),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         # Сигналы сервера (Ctrl-C) наблюдателю не нужны: он закрывается ниже.
-        start_new_session=True)
+        start_new_session=True,
+    )
     assert watch.stdout is not None
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     offset = 0
@@ -255,8 +280,15 @@ def follow_log(run_dir: Path, send, sock: socket.socket | None = None) -> None:
 
 def run_summary_cmd(argv: list[str]) -> str:
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, errors="replace",
-                              timeout=SUMMARY_LIMIT_S, stdin=subprocess.DEVNULL)
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=SUMMARY_LIMIT_S,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"не выполнено: {exc}"
     out = proc.stdout + proc.stderr
@@ -266,9 +298,15 @@ def run_summary_cmd(argv: list[str]) -> str:
 def summary_sections(results: Path) -> list[tuple[str, str]]:
     py = sys.executable
     commands = [
-        ("dispatch.sh list", ["bash", str(SCRIPTS / "dispatch.sh"), "list", "--results", str(results)]),
+        (
+            "dispatch.sh list",
+            ["bash", str(SCRIPTS / "dispatch.sh"), "list", "--results", str(results)],
+        ),
         ("busy.py list", [py, "-I", str(SCRIPTS / "busy.py"), "list"]),
-        ("signals.py list --waits", [py, "-I", str(SCRIPTS / "signals.py"), "list", "--waits"]),
+        (
+            "signals.py list --waits",
+            [py, "-I", str(SCRIPTS / "signals.py"), "list", "--waits"],
+        ),
     ]
     # Команды независимы, поэтому идут параллельно: зависшая не складывается с остальными.
     with ThreadPoolExecutor(max_workers=len(commands)) as pool:
@@ -281,18 +319,20 @@ def esc(value: object) -> str:
 
 
 def page(title: str, body: str, head_extra: str = "") -> bytes:
-    return (f"<!doctype html><html lang=\"ru\"><meta charset=\"utf-8\"><title>{esc(title)}</title>"
-            f"<style>{PAGE_STYLE}</style>{head_extra}<body>{body}</body></html>").encode("utf-8")
+    return (
+        f'<!doctype html><html lang="ru"><meta charset="utf-8"><title>{esc(title)}</title>'
+        f"<style>{PAGE_STYLE}</style>{head_extra}<body>{body}</body></html>"
+    ).encode()
 
 
 def state_label(run: dict[str, object]) -> str:
     if run["state"] == "done":
         code = run["code"]
         cls = "ok" if code == 0 else "fail"
-        return f"<span class=\"{cls}\">завершён, код {esc('?' if code is None else code)}</span>"
+        return f'<span class="{cls}">завершён, код {esc("?" if code is None else code)}</span>'
     if run["state"] == "running":
-        return "<span class=\"run\">идёт</span>"
-    return "<span class=\"run\">ожидает запуска</span>"
+        return '<span class="run">идёт</span>'
+    return '<span class="run">ожидает запуска</span>'
 
 
 def render_index(results: Path, sections: list[tuple[str, str]]) -> bytes:
@@ -303,11 +343,16 @@ def render_index(results: Path, sections: list[tuple[str, str]]) -> bytes:
     rows = []
     for run in list_runs(results):
         link = f"/run?task={quote(str(run['task']))}&amp;name={quote(str(run['name']))}"
-        rows.append(f"<tr><td>{esc(run['task'])}</td><td><a href=\"{link}\">{esc(run['name'])}</a></td>"
-                    f"<td>{esc(run['kind'])}</td><td>{state_label(run)}</td>"
-                    f"<td><code>{esc(str(run['command'])[:200])}</code></td></tr>")
-    parts.append("<table><tr><th>Задача</th><th>Прогон</th><th>Вид</th><th>Состояние</th><th>Команда</th></tr>"
-                 + "".join(rows) + "</table>")
+        rows.append(
+            f'<tr><td>{esc(run["task"])}</td><td><a href="{link}">{esc(run["name"])}</a></td>'
+            f"<td>{esc(run['kind'])}</td><td>{state_label(run)}</td>"
+            f"<td><code>{esc(str(run['command'])[:200])}</code></td></tr>"
+        )
+    parts.append(
+        "<table><tr><th>Задача</th><th>Прогон</th><th>Вид</th><th>Состояние</th><th>Команда</th></tr>"
+        + "".join(rows)
+        + "</table>"
+    )
     return page("Прогоны агентов", "".join(parts))
 
 
@@ -327,13 +372,17 @@ def render_run(run_dir: Path) -> bytes:
     run = describe_run(run_dir)
     meta = run["meta"]
     assert isinstance(meta, dict)
-    meta_rows = "".join(f"<tr><th>{esc(k)}</th><td>{esc(v)}</td></tr>" for k, v in meta.items())
+    meta_rows = "".join(
+        f"<tr><th>{esc(k)}</th><td>{esc(v)}</td></tr>" for k, v in meta.items()
+    )
     task, name = str(run["task"]), str(run["name"])
-    body = (f"<p><a href=\"/\">к перечню</a></p><h1>{esc(task)} / {esc(name)}</h1>"
-            f"<p>Вид: {esc(run['kind'] or '—')}. Состояние: <span id=\"state\">{state_label(run)}</span></p>"
-            f"<table>{meta_rows}</table><h3>Команда</h3><pre>{esc(run['command'])}</pre>"
-            f"<h3>out.log</h3><pre id=\"log\"></pre>"
-            f"<script>const TASK={json.dumps(task)}, NAME={json.dumps(name)};</script>{RUN_SCRIPT}")
+    body = (
+        f'<p><a href="/">к перечню</a></p><h1>{esc(task)} / {esc(name)}</h1>'
+        f'<p>Вид: {esc(run["kind"] or "—")}. Состояние: <span id="state">{state_label(run)}</span></p>'
+        f"<table>{meta_rows}</table><h3>Команда</h3><pre>{esc(run['command'])}</pre>"
+        f'<h3>out.log</h3><pre id="log"></pre>'
+        f"<script>const TASK={json.dumps(task)}, NAME={json.dumps(name)};</script>{RUN_SCRIPT}"
+    )
     return page(f"{task}/{name}", body)
 
 
@@ -341,10 +390,12 @@ class Handler(BaseHTTPRequestHandler):
     results: Path
     allowed_hosts: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 
-    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
-        sys.stderr.write("%s - %s\n" % (self.address_string(), format % args))
+    def log_message(self, format: str, *args: object) -> None:
+        sys.stderr.write(f"{self.address_string()} - {format % args}\n")
 
-    def reply(self, status: int, body: bytes, ctype: str = "text/html; charset=utf-8") -> None:
+    def reply(
+        self, status: int, body: bytes, ctype: str = "text/html; charset=utf-8"
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -356,7 +407,7 @@ class Handler(BaseHTTPRequestHandler):
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
         return host in self.allowed_hosts
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         if not self.host_allowed():
             self.reply(403, page("Отказ", "<p>Недопустимый Host.</p>"))
             return
@@ -366,7 +417,9 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, render_index(self.results, summary_sections(self.results)))
             return
         if url.path in ("/run", "/stream"):
-            run_dir = run_dir_for(self.results, query.get("task", [""])[0], query.get("name", [""])[0])
+            run_dir = run_dir_for(
+                self.results, query.get("task", [""])[0], query.get("name", [""])[0]
+            )
             if run_dir is None:
                 self.reply(404, page("Нет прогона", "<p>Прогон не найден.</p>"))
             elif url.path == "/run":
@@ -393,7 +446,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def make_server(results: Path, host: str, port: int) -> ThreadingHTTPServer:
     allowed = Handler.allowed_hosts | {host}
-    handler = type("BoundHandler", (Handler,), {"results": results, "allowed_hosts": allowed})
+    handler = type(
+        "BoundHandler", (Handler,), {"results": results, "allowed_hosts": allowed}
+    )
     server = ThreadingHTTPServer((host, port), handler)
     server.daemon_threads = True
     return server
@@ -405,9 +460,12 @@ def raise_interrupt(signum: int, frame: object) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--results", default=None,
-                   help="каталог результатов задач (в нём <задача>/runs/<прогон>/); "
-                        "по умолчанию paths.results конфигурации проекта")
+    p.add_argument(
+        "--results",
+        default=None,
+        help="каталог результатов задач (в нём <задача>/runs/<прогон>/); "
+        "по умолчанию paths.results конфигурации проекта",
+    )
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = p.parse_args(argv)
@@ -415,8 +473,12 @@ def main(argv: list[str] | None = None) -> int:
         print("нет inotifywait: pacman -S inotify-tools", file=sys.stderr)
         return 2
     server = make_server(
-        Path(os.path.expanduser(args.results)) if args.results else config_path("paths.results"),
-        args.host, args.port)
+        Path(os.path.expanduser(args.results))
+        if args.results
+        else config_path("paths.results"),
+        args.host,
+        args.port,
+    )
     # SIGTERM закрывает сервер так же, как Ctrl-C.
     os_signal.signal(os_signal.SIGTERM, raise_interrupt)
     print(f"duty-runs-web: http://{args.host}:{server.server_address[1]}/", flush=True)

@@ -42,7 +42,11 @@ def _load(name: str) -> ModuleType:
 dutylib = _load("dutylib")
 duty_config = _load("duty_config")
 sh, size, owner_kind, cwd_users, active_sessions = (
-    dutylib.sh, dutylib.size, dutylib.owner_kind, dutylib.cwd_users, dutylib.active_sessions,
+    dutylib.sh,
+    dutylib.size,
+    dutylib.owner_kind,
+    dutylib.cwd_users,
+    dutylib.active_sessions,
 )
 
 _args = sys.argv[1:]
@@ -78,10 +82,18 @@ NAMED_DEV = bool(CFG.get("git.named_dev_branches", False))
 PARENT_KEY = CFG.get("git.parent_key", "parent")
 DEFAULT_PARENT = CFG.get("git.default_parent", "master")
 DOCKER_KEEP = set(CFG.get("cleanup.docker_keep_projects", []))
-ME = subprocess.run(["git", "config", "user.name"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+ME = subprocess.run(
+    ["git", "config", "user.name"],
+    cwd=ROOT,
+    capture_output=True,
+    text=True,
+    check=False,
+).stdout.strip()
 # Основные деревья стенда переводит на новую ревизию сам стенд; удаляются
 # только вместе со стендом.
-STAND_MAIN = {(ROOT / t).expanduser().resolve() for t in CFG.get("cleanup.keep_trees", [])}
+STAND_MAIN = {
+    (ROOT / t).expanduser().resolve() for t in CFG.get("cleanup.keep_trees", [])
+}
 # Поля строки: вид, сабмодуль, родитель, что, размер, решение, команда.
 rows: list[tuple[str, str, str, str, str, str, str]] = []
 
@@ -95,7 +107,15 @@ def removal(path: Path, args: str, why: str) -> str:
     return f"{prefix}{args}"
 
 
-def add(kind: str, what: str, sz: str, verdict: str, cmd: str = "", sub: str = "", parent: str = "") -> None:
+def add(
+    kind: str,
+    what: str,
+    sz: str,
+    verdict: str,
+    cmd: str = "",
+    sub: str = "",
+    parent: str = "",
+) -> None:
     rows.append((kind, sub, parent, what, sz, verdict, cmd))
 
 
@@ -110,8 +130,22 @@ def submodules() -> list[tuple[Path, str]]:
         key, path = line.split()
         name = key.removeprefix("submodule.").removesuffix(".path")
         parent = (
-            sh("git", "config", "-f", ".gitmodules", f"submodule.{name}.{PARENT_KEY}", cwd=ROOT)
-            or sh("git", "config", "-f", ".gitmodules", f"submodule.{name}.branch", cwd=ROOT)
+            sh(
+                "git",
+                "config",
+                "-f",
+                ".gitmodules",
+                f"submodule.{name}.{PARENT_KEY}",
+                cwd=ROOT,
+            )
+            or sh(
+                "git",
+                "config",
+                "-f",
+                ".gitmodules",
+                f"submodule.{name}.branch",
+                cwd=ROOT,
+            )
             or DEFAULT_PARENT
         )
         res.append((ROOT / path, parent))
@@ -120,7 +154,9 @@ def submodules() -> list[tuple[Path, str]]:
 
 def worktrees(repo: Path) -> list[dict[str, str]]:
     items, cur = [], {}
-    for line in sh("git", "worktree", "list", "--porcelain", cwd=repo).splitlines() + [""]:
+    for line in sh("git", "worktree", "list", "--porcelain", cwd=repo).splitlines() + [
+        ""
+    ]:
         if not line:
             if cur:
                 items.append(cur)
@@ -132,7 +168,7 @@ def worktrees(repo: Path) -> list[dict[str, str]]:
 
 
 live = active_sessions()
-in_live_session = lambda p: any(s in str(p) for s in live)  # noqa: E731
+in_live_session = lambda p: any(s in str(p) for s in live)
 
 for repo, parent in submodules():
     if not (repo / ".git").exists():
@@ -141,8 +177,15 @@ for repo, parent in submodules():
     sh("git", "fetch", "--quiet", "--prune", "--no-tags", "origin", cwd=repo)
     stale = sh("git", "worktree", "prune", "--dry-run", "-v", cwd=repo)
     if stale:
-        add("worktree", f"{rel}: {stale.splitlines()[0][:80]}…", "—", "удалить",
-            f"git -C {shlex.quote(str(repo))} worktree prune", str(rel), parent)
+        add(
+            "worktree",
+            f"{rel}: {stale.splitlines()[0][:80]}…",
+            "—",
+            "удалить",
+            f"git -C {shlex.quote(str(repo))} worktree prune",
+            str(rel),
+            parent,
+        )
     # Ветвь -> рабочий каталог, где она выписана; из `git worktree list`
     # самого сабмодуля, первое дерево — основное.
     all_wts = worktrees(repo)
@@ -157,64 +200,173 @@ for repo, parent in submodules():
         if path.resolve() in STAND_MAIN or not path.exists():
             continue
         if not branch:
-            add("worktree", str(path), size(path), "оставлено: без ветви, чьё — неясно", "", str(rel), parent)
+            add(
+                "worktree",
+                str(path),
+                size(path),
+                "оставлено: без ветви, чьё — неясно",
+                "",
+                str(rel),
+                parent,
+            )
             continue
         # Исключение действует на worktree ветви независимо от того, есть ли
         # ветвь в origin: после её удаления там worktree иначе попал бы в кандидаты.
         if is_excluded(branch):
-            add("worktree", f"{path} [{branch}]", size(path), "оставлено: ветвь исключена параметром --exclude",
-                "", str(rel), parent)
+            add(
+                "worktree",
+                f"{path} [{branch}]",
+                size(path),
+                "оставлено: ветвь исключена параметром --exclude",
+                "",
+                str(rel),
+                parent,
+            )
             continue
         if sh("git", "status", "--porcelain", cwd=path):
-            add("worktree", f"{path} [{branch}]", size(path), "оставлено: грязное дерево", "", str(rel), parent)
+            add(
+                "worktree",
+                f"{path} [{branch}]",
+                size(path),
+                "оставлено: грязное дерево",
+                "",
+                str(rel),
+                parent,
+            )
             continue
         if in_live_session(path) or cwd_users(path):
-            add("worktree", f"{path} [{branch}]", size(path), "оставлено: живой сеанс или процесс", "", str(rel), parent)
+            add(
+                "worktree",
+                f"{path} [{branch}]",
+                size(path),
+                "оставлено: живой сеанс или процесс",
+                "",
+                str(rel),
+                parent,
+            )
             continue
         # «Был upstream и исчез» ([gone]) — ветвь удалена в origin. Ветвь без
         # upstream и без origin/<ветвь> никогда не отправлялась: это рабочая
         # ветвь с идущей задачей, не кандидат, даже если вершина уже в родителе.
-        track = sh("git", "for-each-ref", "--format=%(upstream:track)|%(upstream:short)",
-                   f"refs/heads/{branch}", cwd=repo)
+        track = sh(
+            "git",
+            "for-each-ref",
+            "--format=%(upstream:track)|%(upstream:short)",
+            f"refs/heads/{branch}",
+            cwd=repo,
+        )
         track, _, upstream = track.partition("|")
-        has_origin_ref = bool(sh("git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}", cwd=repo))
+        has_origin_ref = bool(
+            sh(
+                "git",
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                f"refs/remotes/origin/{branch}",
+                cwd=repo,
+            )
+        )
         gone = "gone" in track
-        merged = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", branch, f"origin/{parent}"], cwd=repo
-        ).returncode == 0
+        merged = (
+            subprocess.run(
+                ["git", "merge-base", "--is-ancestor", branch, f"origin/{parent}"],
+                cwd=repo,
+                check=False,
+            ).returncode
+            == 0
+        )
         if not gone and not upstream and not has_origin_ref:
-            ahead = sh("git", "rev-list", "--count", f"origin/{parent}..{branch}", cwd=repo)
-            add("worktree", f"{path} [{branch}]", size(path),
+            ahead = sh(
+                "git", "rev-list", "--count", f"origin/{parent}..{branch}", cwd=repo
+            )
+            add(
+                "worktree",
+                f"{path} [{branch}]",
+                size(path),
                 f"решение пользователя: ветвь не отправлялась в origin, {ahead} коммитов вне origin/{parent}",
-                "", str(rel), parent)
+                "",
+                str(rel),
+                parent,
+            )
             continue
         if gone or merged:
             why = "ветвь удалена в origin" if gone else f"слита в {parent}"
-            add("worktree", f"{path} [{branch}]", size(path), f"удалить: {why}",
-                f"git -C {shlex.quote(str(repo))} worktree remove {shlex.quote(str(path))}", str(rel), parent)
+            add(
+                "worktree",
+                f"{path} [{branch}]",
+                size(path),
+                f"удалить: {why}",
+                f"git -C {shlex.quote(str(repo))} worktree remove {shlex.quote(str(path))}",
+                str(rel),
+                parent,
+            )
     for b in sh("git", "branch", "--format=%(refname:short)", cwd=repo).splitlines():
         # Ветви из git.keep_prefixes — сохранённые копии, их удаляет только пользователь.
         if b in PROTECTED or b.startswith(KEEP_PREFIXES):
             continue
         # Слитость — это «origin/<родитель> содержит вершину ветви», а не
         # слитость в HEAD сабмодуля, которую проверяет `git branch -d`.
-        merged = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", b, f"origin/{parent}"], cwd=repo, capture_output=True
-        ).returncode == 0
+        merged = (
+            subprocess.run(
+                ["git", "merge-base", "--is-ancestor", b, f"origin/{parent}"],
+                cwd=repo,
+                capture_output=True,
+                check=False,
+            ).returncode
+            == 0
+        )
         if not merged:
             continue
         cmd = f"git -C {shlex.quote(str(repo))} branch -D {shlex.quote(b)}"
-        named = NAMED_DEV and not b.startswith(OUR_PREFIXES) and "/" not in b
-        if named and sh("git", "log", "-1", "--format=%an", b, cwd=repo) != ME:
-            add("ветвь", b, "—", "оставлено: именная ветвь разработчика (автор не пользователь)", "", str(rel), parent)
+        # Ветвь с последним коммитом не от пользователя git не удаляется никогда.
+        # git.named_dev_branches лишь уточняет причину: именная ветвь разработчика.
+        if (
+            not b.startswith(OUR_PREFIXES)
+            and sh("git", "log", "-1", "--format=%an", b, cwd=repo) != ME
+        ):
+            named = NAMED_DEV and "/" not in b
+            why = (
+                "именная ветвь разработчика (автор не пользователь)"
+                if named
+                else "чужая ветвь (автор не пользователь)"
+            )
+            add("ветвь", b, "—", f"оставлено: {why}", "", str(rel), parent)
             continue
         if is_excluded(b):
-            add("ветвь", b, "—", "оставлено: исключена параметром --exclude", "", str(rel), parent)
+            add(
+                "ветвь",
+                b,
+                "—",
+                "оставлено: исключена параметром --exclude",
+                "",
+                str(rel),
+                parent,
+            )
         elif b in occupied:
-            dirty = " (есть незакоммиченные изменения)" if sh("git", "status", "--porcelain", cwd=occupied[b]) else ""
-            add("ветвь", b, "—", f"оставлено: занята worktree {occupied[b]}{dirty}", "", str(rel), parent)
+            dirty = (
+                " (есть незакоммиченные изменения)"
+                if sh("git", "status", "--porcelain", cwd=occupied[b])
+                else ""
+            )
+            add(
+                "ветвь",
+                b,
+                "—",
+                f"оставлено: занята worktree {occupied[b]}{dirty}",
+                "",
+                str(rel),
+                parent,
+            )
         else:
-            add("ветвь", b, "—", f"удалить: origin/{parent} содержит вершину", cmd, str(rel), parent)
+            add(
+                "ветвь",
+                b,
+                "—",
+                f"удалить: origin/{parent} содержит вершину",
+                cmd,
+                str(rel),
+                parent,
+            )
 
 project = SCRATCH / ("-" + str(ROOT).strip("/").replace("/", "-"))
 transcripts = HOME / ".claude/projects" / project.name
@@ -230,68 +382,144 @@ for d in sorted(project.glob("*")) if project.is_dir() else []:
     # Внутри каталога бывают клоны и worktree (.git — файл или каталог): пока в них
     # есть незакоммиченное или не выгруженное в origin, каталог не удаляется.
     problems = []
-    for g in sh("find", str(d), "-maxdepth", "6", "-name", ".git", "-not", "-path", "*/node_modules/*").splitlines():
+    for g in sh(
+        "find",
+        str(d),
+        "-maxdepth",
+        "6",
+        "-name",
+        ".git",
+        "-not",
+        "-path",
+        "*/node_modules/*",
+    ).splitlines():
         repo_dir = Path(g).parent
         if sh("git", "status", "--porcelain", cwd=repo_dir):
             problems.append(f"{repo_dir.name}: грязное дерево")
-        if sh("git", "log", "--branches", "--not", "--remotes", "--oneline", "-n", "1", cwd=repo_dir):
+        if sh(
+            "git",
+            "log",
+            "--branches",
+            "--not",
+            "--remotes",
+            "--oneline",
+            "-n",
+            "1",
+            cwd=repo_dir,
+        ):
             problems.append(f"{repo_dir.name}: невыгруженные коммиты")
     if problems:
         add("scratchpad", str(d), size(d), "оставлено: " + "; ".join(problems))
         continue
-    add("scratchpad", str(d), size(d), "удалить: сеанс завершён", f"rm -rf -- {shlex.quote(str(d))}")
+    add(
+        "scratchpad",
+        str(d),
+        size(d),
+        "удалить: сеанс завершён",
+        f"rm -rf -- {shlex.quote(str(d))}",
+    )
 
 STAND = RESULTS.parent
 if RESULTS.is_dir():
     for f in sorted(RESULTS.rglob("*")):
         if f.name not in ("video.webm", "trace.zip") or not f.is_file():
             continue
-        failed = (f.parent / "error-context.md").exists() or any(f.parent.glob("test-failed-*.png"))
+        failed = (f.parent / "error-context.md").exists() or any(
+            f.parent.glob("test-failed-*.png")
+        )
         if not failed:
-            rm = removal(f, f"rm -f -- {shlex.quote(str(f))}", "Удалить видео прошедшего теста, созданное в контейнере")
-            add("results", str(f.relative_to(STAND)), size(f), "удалить: тест прошёл", rm)
+            rm = removal(
+                f,
+                f"rm -f -- {shlex.quote(str(f))}",
+                "Удалить видео прошедшего теста, созданное в контейнере",
+            )
+            add(
+                "results",
+                str(f.relative_to(STAND)),
+                size(f),
+                "удалить: тест прошёл",
+                rm,
+            )
     # Пустые каталоги чужих владельцев остаются от контейнеров прогонов
     # и сами не исчезают.
     for f in RESULTS.rglob("*"):
         try:
             if f.is_dir() and owner_kind(f) != "own" and not any(f.iterdir()):
                 kind = owner_kind(f)
-                verdict = ("удалить через rootlesskit: пустой каталог контейнера" if kind == "subuid"
-                           else "решение пользователя: нужен sudo, пустой каталог чужого владельца")
-                add("results", str(f.relative_to(STAND)), "0", verdict,
-                    removal(f, f"rmdir -- {shlex.quote(str(f))}",
-                            "Удалить пустой каталог результатов, созданный в контейнере"))
+                verdict = (
+                    "удалить через rootlesskit: пустой каталог контейнера"
+                    if kind == "subuid"
+                    else "решение пользователя: нужен sudo, пустой каталог чужого владельца"
+                )
+                add(
+                    "results",
+                    str(f.relative_to(STAND)),
+                    "0",
+                    verdict,
+                    removal(
+                        f,
+                        f"rmdir -- {shlex.quote(str(f))}",
+                        "Удалить пустой каталог результатов, созданный в контейнере",
+                    ),
+                )
         except OSError:
             continue
 
 usage = sh("df", "-h", "--output=used,size,pcent", "/tmp").splitlines()[-1].split()
 add("/tmp", f"занято {usage[0]} из {usage[1]} ({usage[2]})", usage[0], "сведения")
-for line in sh("bash", "-c", "du -xsh /tmp/* 2>/dev/null | sort -rh | head -5").splitlines():
+for line in sh(
+    "bash", "-c", "du -xsh /tmp/* 2>/dev/null | sort -rh | head -5"
+).splitlines():
     sz, path = line.split("\t", 1)
     if not path.startswith(str(SCRATCH)):
         add("/tmp", path, sz, "решение пользователя")
 
-for line in sh("docker", "ps", "-a", "--filter", "status=exited", "--format",
-               '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Status}}').splitlines():
+for line in sh(
+    "docker",
+    "ps",
+    "-a",
+    "--filter",
+    "status=exited",
+    "--format",
+    '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Status}}',
+).splitlines():
     name, proj, status = line.split("|")
     if proj in DOCKER_KEEP:
         continue  # проекты из cleanup.docker_keep_projects снимает их владелец
-    add("docker", f"контейнер {name} ({proj or 'без проекта'}, {status})", "—", "решение пользователя",
-        f"docker rm {shlex.quote(name)}")
+    add(
+        "docker",
+        f"контейнер {name} ({proj or 'без проекта'}, {status})",
+        "—",
+        "решение пользователя",
+        f"docker rm {shlex.quote(name)}",
+    )
 dangling = sh("docker", "images", "-f", "dangling=true", "-q").split()
 if dangling:
-    add("docker", f"висячие образы: {len(dangling)}", "—", "удалить", "docker image prune -f")
+    add(
+        "docker",
+        f"висячие образы: {len(dangling)}",
+        "—",
+        "удалить",
+        "docker image prune -f",
+    )
 # Кэш сборки старше двух суток удаляется по решению пользователя, свежий
 # остаётся: он ускоряет текущие сборки. Объём по возрасту Docker не
 # сообщает (docker buildx du с --filter итога не печатает), поэтому
 # «Размер» — весь освобождаемый объём кэша по docker system df, верхняя
 # граница того, что освободит команда.
-for line in sh("docker", "system", "df", "--format", "{{.Type}}|{{.Reclaimable}}").splitlines():
+for line in sh(
+    "docker", "system", "df", "--format", "{{.Type}}|{{.Reclaimable}}"
+).splitlines():
     typ, _, reclaim = line.partition("|")
     reclaim = reclaim.split(" (")[0]
     if typ == "Build Cache" and reclaim and not reclaim.startswith("0B"):
-        add("docker", f"кэш сборки старше 48 ч (весь освобождаемый кэш — {reclaim}, свежий остаётся)",
-            f"до {reclaim}", "удалить", "docker builder prune -f --filter until=48h")
+        add(
+            "docker",
+            f"кэш сборки старше 48 ч (весь освобождаемый кэш — {reclaim}, свежий остаётся)",
+            f"до {reclaim}",
+            "удалить",
+            "docker builder prune -f --filter until=48h",
+        )
 
 # Расширения проекта (.duty/cleanup.d): по строке JSON на строку таблицы.
 FIELDS = ("kind", "sub", "parent", "what", "size", "verdict", "cmd")
@@ -304,10 +532,20 @@ for ext_name, out, err in dutylib.run_extensions(ROOT, "cleanup", 120):
         try:
             obj = json.loads(line)
             if not isinstance(obj, dict):
-                raise ValueError("не объект JSON")
+                raise ValueError("не объект JSON")  # noqa: TRY004 — ошибка структуры ловится ниже вместе с ошибкой разбора JSON
             rows.append(tuple(str(obj.get(k, "")) for k in FIELDS))  # type: ignore[arg-type]
         except ValueError as error:
-            rows.append(("расширение", "", "", ext_name, "—", f"не получено: строка не JSON ({error})", ""))
+            rows.append(
+                (
+                    "расширение",
+                    "",
+                    "",
+                    ext_name,
+                    "—",
+                    f"не получено: строка не JSON ({error})",
+                    "",
+                )
+            )
 
 # Строки опознаются по полям (сабмодуль, ветвь, путь, имя), не по номеру.
 print("| Вид | Сабмодуль | Родитель | Что | Размер | Решение | Команда |")
@@ -315,4 +553,6 @@ print("|---|---|---|---|---|---|---|")
 for kind, sub, parent, what, sz, verdict, cmd in rows:
     # Длинный префикс scratchpad сокращается только в колонке «Что»; команды остаются точными.
     what = what.replace(str(project), "<scratch>").replace(str(HOME), "~")
-    print(f"| {kind} | {sub} | {parent} | {what} | {sz} | {verdict} | {('`' + cmd + '`') if cmd else ''} |")
+    print(
+        f"| {kind} | {sub} | {parent} | {what} | {sz} | {verdict} | {('`' + cmd + '`') if cmd else ''} |"
+    )

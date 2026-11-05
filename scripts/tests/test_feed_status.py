@@ -10,16 +10,34 @@ from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
-import gates  # noqa: E402
+import gates
 
 # Ключ -I убирает каталог скрипта из sys.path, поэтому branches.py подключается по пути.
 _spec = importlib.util.spec_from_file_location("branches", SCRIPTS / "branches.py")
 branches = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(branches)
 
-GATE = {"key": "dev2/qms/PR-1", "name": "dev2/qms/PR-1", "state": "SUCCESSFUL", "dateAdded": 100, "url": ""}
-FEED_RUNNING = {"key": "pr-feed/qms-1", "name": "Лента сборок PR-1", "state": "INPROGRESS", "dateAdded": 200, "url": ""}
-FEED_FAILED = {"key": "t-pr-feed/qms-1", "name": "Лента сборок PR-1", "state": "FAILED", "dateAdded": 300, "url": ""}
+GATE = {
+    "key": "dev2/qms/PR-1",
+    "name": "dev2/qms/PR-1",
+    "state": "SUCCESSFUL",
+    "dateAdded": 100,
+    "url": "",
+}
+FEED_RUNNING = {
+    "key": "pr-feed/qms-1",
+    "name": "Лента сборок PR-1",
+    "state": "INPROGRESS",
+    "dateAdded": 200,
+    "url": "",
+}
+FEED_FAILED = {
+    "key": "t-pr-feed/qms-1",
+    "name": "Лента сборок PR-1",
+    "state": "FAILED",
+    "dateAdded": 300,
+    "url": "",
+}
 
 
 class FeedStatusTest(unittest.TestCase):
@@ -69,7 +87,10 @@ class NoSectionTest(unittest.TestCase):
                 env.pop(key, None)
             done = subprocess.run(
                 [sys.executable, "-I", str(SCRIPTS / "gates.py"), "--root", tmp],
-                capture_output=True, text=True, env=env, check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
             )
         self.assertEqual(done.returncode, 0)
         self.assertEqual(len(done.stdout.strip().splitlines()), 1)

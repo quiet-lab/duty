@@ -194,9 +194,11 @@ push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane 
 (цель, сделанное, решения пользователя), а форк этих сведений
 не получает. Запуск — детерминированный сценарий `scripts/dispatch.sh`,
 одна команда с проверкой каждого шага: каталог задачи с `brief.md`
-и `rules.md`; символ workspace — из набора `[symbols]` конфигурации по корню git и роли
-(`dispatch.sh symbol [--role root|subordinate]`), не занятый открытыми
-задачами того же каталога результатов; `herdr workspace create --label "<символ> <имя> · <модель>"
+и `rules.md`; символ workspace — из набора `symbols.tasks` конфигурации (вне репозитория —
+`symbols.outside` пользовательского слоя, пустой набор — запасной
+`scripts/symbols.txt`; `dispatch.sh symbol`), не занятый открытыми
+задачами того же каталога результатов (`symbols.main` — постоянный символ
+главной сессии, его ставит хук подписи пользователя, плагин только хранит); `herdr workspace create --label "<символ> <имя> · <модель>"
 --env DUTY_ROLE=worker --env DUTY_TASK=<каталог> --env DUTY_NAME=<имя>
 --env DUTY_SYMBOL=<символ> --env DUTY_MODEL=<модель> --env DUTY_PROJECT=<корень проекта>
 --no-focus`; служебный блок в `brief.md` (workspace, символ, панель, имя агента,

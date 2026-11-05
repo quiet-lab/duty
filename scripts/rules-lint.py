@@ -170,18 +170,24 @@ def run_repeats(root_arg: Path | None) -> list[str]:
     root = cfg.root
     base = root or PLUGIN
     findings: list[str] = []
-    # Записи набора: (образец или путь, обязателен ли, от какого каталога).
-    entries: list[tuple[str, bool, Path]] = [(f, True, PLUGIN) for f in PLUGIN_FILES]
+    # Записи набора: (образец или путь, обязателен ли, от какого каталога,
+    # источник записи для сообщения о пропавшем файле).
+    entries: list[tuple[str, bool, Path, str]] = [
+        (f, True, PLUGIN, f"{f}:1: в плагине нет файла") for f in PLUGIN_FILES
+    ]
     if root is not None:
         for key, required in (("docs.rules", True), ("docs.rules_optional", False)):
             value = cfg.get(key, [])
-            entries += [(str(e), required, root) for e in value]
+            entries += [
+                (str(e), required, root, "duty.toml:1: в наборе нет файла для")
+                for e in value
+            ]
         if cfg.mode == "project":
             for path in sorted((root / ".duty").glob("*.md")):
-                entries.append((str(path), True, root))
+                entries.append((str(path), True, root, f"{path}:1: нет файла"))
     index: dict[str, list[Sentence]] = {}
     seen: set[Path] = set()
-    for entry, required, origin in entries:
+    for entry, required, origin, source in entries:
         paths = expand(entry, origin)
         if not paths and not required:
             print(
@@ -191,7 +197,7 @@ def run_repeats(root_arg: Path | None) -> list[str]:
             )
             continue
         if not paths:
-            findings.append(f"duty.toml:1: в наборе нет файла для «{entry}»")
+            findings.append(f"{source} «{entry}»")
             continue
         for path in paths:
             resolved = path.resolve()

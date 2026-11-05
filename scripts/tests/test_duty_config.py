@@ -249,6 +249,38 @@ class RootTest(Base):
         cfg = duty_config.load(cwd=sup / "mods" / "lib")
         self.assertEqual((cfg.root, cfg.mode), (sup, "general"))
 
+    def test_project_worktree_root_is_main_tree(self) -> None:
+        root = self.repo()
+        git(root, "commit", "-q", "--allow-empty", "-m", "x")
+        wt = self.tmp / "wt-proj"
+        git(root, "worktree", "add", "-q", "-b", "t", str(wt))
+        (wt / "sub").mkdir()
+        self.assertEqual(duty_config.find_root(cwd=wt), root)
+        self.assertEqual(duty_config.find_root(cwd=wt / "sub"), root)
+        self.assertEqual(duty_config.find_root(root=wt), root)
+        cfg = duty_config.load(cwd=wt)
+        self.assertEqual((cfg.root, cfg.mode), (root, "project"))
+
+    def test_submodule_worktree_root_is_superproject(self) -> None:
+        lib = self.repo("lib", toml=None)
+        git(lib, "commit", "-q", "--allow-empty", "-m", "x")
+        sup = self.repo("sup")
+        git(sup, "submodule", "add", "-q", str(lib), "mods/lib")
+        wt = self.tmp / "elsewhere" / "lib-wt"
+        git(sup / "mods" / "lib", "worktree", "add", "-q", "-b", "t", str(wt))
+        self.assertEqual(duty_config.find_root(cwd=wt), sup)
+        self.assertEqual(duty_config.find_root(root=wt), sup)
+        cfg = duty_config.load(cwd=wt)
+        self.assertEqual((cfg.root, cfg.mode), (sup, "project"))
+
+    def test_env_beats_worktree_mapping(self) -> None:
+        root = self.repo()
+        git(root, "commit", "-q", "--allow-empty", "-m", "x")
+        wt = self.tmp / "wt-env"
+        git(root, "worktree", "add", "-q", "-b", "t2", str(wt))
+        os.environ["DUTY_PROJECT"] = str(wt)
+        self.assertEqual(duty_config.find_root(cwd=wt), wt)
+
     def test_no_git_no_root(self) -> None:
         plain = self.tmp / "plain"
         plain.mkdir()

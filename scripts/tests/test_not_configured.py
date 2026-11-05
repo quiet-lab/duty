@@ -67,6 +67,20 @@ class NotConfiguredTest(unittest.TestCase):
                 r.stdout,
             )
 
+    def test_gates_bitbucket_without_url(self) -> None:
+        for body in (
+            '[bitbucket]\ntoken_file = "t"\n',
+            '[bitbucket]\nurl = ""\ntoken_file = "t"\n',
+            '[bitbucket]\nurl = 5\ntoken_file = "t"\n',
+        ):
+            (self.root / "t").write_text("x", encoding="utf-8")
+            r = self.run_script("gates.py", "schema = 1\n" + body)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
+            self.assertIn(
+                "[bitbucket]: url не задан — pull request'ы не проверено", r.stdout
+            )
+
     def test_gates_bitbucket_token_file_missing(self) -> None:
         r = self.run_script(
             "gates.py",

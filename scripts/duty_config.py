@@ -10,7 +10,8 @@
 
 Корень проекта — первый найденный: `--root`, `DUTY_PROJECT`,
 `CLAUDE_PROJECT_DIR`, подъём от текущего каталога (`--cwd`) до каталога
-с `.duty/duty.toml` не выше надпроекта git; без `.duty/` корень — надпроект
+с `.duty/duty.toml` не выше надпроекта git (из linked worktree — главное
+рабочее дерево, `main_tree`); без `.duty/` корень — надпроект
 или верх git (общий режим), без git корня нет.
 
 Команды: root, get, json, env, check, init. Коды выхода: 0 — успех,
@@ -183,19 +184,49 @@ def git_bound(cwd: Path) -> Path | None:
     return Path(top).resolve() if top else None
 
 
+def main_tree(path: Path) -> Path | None:
+    """Главное рабочее дерево для linked worktree `path`; None — не worktree.
+
+    Worktree проекта: общий каталог git `<дерево>/.git` — родитель и есть
+    главное дерево. Worktree сабмодуля: общий каталог
+    `<проект>/.git/modules/<путь>` — подъём до каталога с `.duty/duty.toml`,
+    не выше `$HOME`.
+    """
+    common = _git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    top = _git(path, "rev-parse", "--show-toplevel")
+    if not common or not top:
+        return None
+    cpath = Path(common).resolve()
+    if cpath.name == ".git":
+        main = cpath.parent
+        return main if main != Path(top).resolve() else None
+    if ".git" in cpath.parts and "modules" in cpath.parts:
+        home = Path.home().resolve()
+        for d in cpath.parents:
+            if d == home or d == d.parent:
+                break
+            if (d / ".duty" / "duty.toml").is_file():
+                return d
+    return None
+
+
 def find_root(
     root: str | os.PathLike[str] | None = None,
     cwd: str | os.PathLike[str] | None = None,
 ) -> Path | None:
     """Корень проекта по порядку из докстринга модуля; None — корня нет."""
-    for given in (
-        root,
-        os.environ.get("DUTY_PROJECT"),
-        os.environ.get("CLAUDE_PROJECT_DIR"),
-    ):
-        if given:
-            return Path(given).expanduser().resolve()
+    if root:
+        given = Path(root).expanduser().resolve()
+        if given.is_dir():
+            return main_tree(given) or given
+        return given
+    for env in ("DUTY_PROJECT", "CLAUDE_PROJECT_DIR"):
+        if os.environ.get(env):
+            return Path(os.environ[env]).expanduser().resolve()
     start = Path(cwd or os.getcwd()).resolve()
+    main = main_tree(start)
+    if main is not None:
+        return main
     bound = git_bound(start)
     if bound is None:
         return None

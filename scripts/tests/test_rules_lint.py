@@ -1,11 +1,13 @@
 """Проверки `scripts/rules-lint.py`: набор из конфигурации проекта, повторы, подкоманда brief."""
 
+import importlib.util
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PLUGIN = Path(__file__).resolve().parents[2]
 LINT = PLUGIN / "scripts" / "rules-lint.py"
@@ -109,6 +111,27 @@ class RulesLintTest(unittest.TestCase):
         self.assertIn("нет-такого.md", r.stdout)
         self.assertIn("каталог/*.md", r.stdout)
         self.assertIn("2 находок", r.stdout)
+
+    def test_missing_file_attribution_by_source(self) -> None:
+        self.write("a.md", "Текст.\n")
+        self.config(["нет-такого.md"])
+        r = self.run_lint("repeats", "--root", str(self.root))
+        self.assertIn("duty.toml:1: в наборе нет файла для «нет-такого.md»", r.stdout)
+        # Файлы плагина на месте: сообщений «в плагине нет файла» нет.
+        self.assertNotIn("в плагине нет файла", r.stdout)
+
+    def test_missing_plugin_file_attribution(self) -> None:
+        spec = importlib.util.spec_from_file_location("rules_lint", LINT)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["rules_lint"] = module
+        self.addCleanup(sys.modules.pop, "rules_lint", None)
+        spec.loader.exec_module(module)
+        with mock.patch.object(module, "PLUGIN_FILES", ("reference/нет-файла.md",)):
+            findings = module.run_repeats(None)
+        self.assertEqual(
+            findings,
+            ["reference/нет-файла.md:1: в плагине нет файла «reference/нет-файла.md»"],
+        )
 
     def test_normalization(self) -> None:
         self.write(

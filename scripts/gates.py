@@ -85,9 +85,12 @@ def access_file(section: str, key: str, what: str) -> Path:
 
 def bb(path: str) -> dict:
     cfg = config()
+    url = cfg.get("bitbucket.url", "")
+    if not isinstance(url, str) or not url.strip():
+        raise NotConfigured("[bitbucket]: url не задан — pull request'ы не проверено")
     token = access_file("bitbucket", "token_file", "pull request'ы").read_text().strip()
     req = urllib.request.Request(
-        cfg.get("bitbucket.url", "").rstrip("/") + path,
+        url.rstrip("/") + path,
         headers={"Authorization": f"Bearer {token}"},
     )
     try:

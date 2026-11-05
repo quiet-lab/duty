@@ -37,6 +37,7 @@ case "$1 $2" in
         id=w$((9 + $(jq '.result.workspaces | length' "$FAKE_DIR/ws.json")))
         jq --arg l "$label" --arg i "$id" '.result.workspaces += [{workspace_id: $i, label: $l}]' "$FAKE_DIR/ws.json" > "$FAKE_DIR/ws.tmp"
         mv "$FAKE_DIR/ws.tmp" "$FAKE_DIR/ws.json"
+        [ -z "${FAKE_HERDR_CREATE_WARN:-}" ] || echo "warning: something" >&2
         echo '{"result":{"workspace":{"workspace_id":"'"$id"'"},"root_pane":{"pane_id":"p9"}}}' ;;
     "agent get")
         if [ "$3" = p9 ]; then
@@ -368,6 +369,13 @@ class SymbolsTest(unittest.TestCase):
         self.assertEqual(len(calls), 2, calls)
         self.assertNotIn("--parent", calls[1])
         self.assertIn("workspace_parent_nested", r.stderr)
+
+    def test_start_create_warning_before_json(self) -> None:
+        self.project_config(["🦊"])
+        r = self.start_task(FAKE_HERDR_CREATE_WARN="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = (self.dir / "herdr.log").read_text(encoding="utf-8")
+        self.assertRegex(log, r"\bw\d+\t")
 
     def test_start_worker_role_has_no_parent(self) -> None:
         self.project_config(["🦊"])

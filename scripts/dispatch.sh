@@ -78,7 +78,11 @@
 #      Если после timeout на экране есть текст команды (--agent duty:worker),
 #      а приглашения нет, команда застряла в строке ввода оболочки с ble.sh
 #      (Enter в режиме vi не принимает неполный буфер): строка очищается
-#      (esc g g d G i), команда набирается заново и принимается ctrl+j,
+#      (esc g g d G i), команда набирается заново и принимается ctrl+j;
+#      ход рассчитан на bash с ble.sh в режиме vi (ctrl+c там переводит в
+#      normal-режим и строку не очищает); в оболочке с другой раскладкой
+#      клавиши попадут в строку как текст, и шаг завершится прежним отказом
+#      с экраном,
 #      затем ждётся рамка интерфейса Claude Code (wait-output, 30 с);
 #   5. агент (по панели: имени у него может ещё не быть) перешёл в working
 #      или blocked (herdr agent wait, 10 с); если
@@ -593,7 +597,7 @@ create_workspace() {
 
 cmd_start() {
     local name=$1 model_arg=$2 model task workspaces agents passed template rules
-    local rc rename_out created ws pane started_at_ms state status prompt screen input tab symbol label
+    local rc rename_out created created_json ws pane started_at_ms state status prompt screen input tab symbol label
     local -a claude_args
 
     # Имя служит и меткой workspace, и именем агента herdr, и именем сессии
@@ -695,7 +699,7 @@ cmd_start() {
         if [ "$create_rc" -eq 0 ]; then
             :
         else
-            code=$(jq -r '.error.code // empty' <<< "$created" 2> /dev/null || true)
+            code=$(grep -m1 '^{' <<< "$created" | jq -r '.error.code // empty' 2> /dev/null || true)
             if [ "$create_rc" -eq 2 ] && [[ "$created" == *"unexpected argument '--parent'"* ]] \
                 || [ "$code" = workspace_parent_nested ] || [ "$code" = workspace_not_found ]; then
                 parent_skip="herdr отклонил --parent $HERDR_WORKSPACE_ID (${code:-${created%%$'\n'*}}), создан без родителя"
@@ -709,8 +713,10 @@ cmd_start() {
         create_rc=0
         created=$(create_workspace) || die "шаг 2: herdr workspace create: $created"
     fi
-    ws=$(jq -er '.result.workspace.workspace_id' <<< "$created") || die "шаг 2: herdr workspace create: $created"
-    pane=$(jq -er '.result.root_pane.pane_id' <<< "$created") || die "шаг 2: нет корневой панели: $created"
+    # Ответ create приходит вместе со stderr: JSON — первая строка, начинающаяся с «{».
+    created_json=$(grep -m1 '^{' <<< "$created" || true)
+    ws=$(jq -er '.result.workspace.workspace_id' <<< "$created_json") || die "шаг 2: herdr workspace create: $created"
+    pane=$(jq -er '.result.root_pane.pane_id' <<< "$created_json") || die "шаг 2: нет корневой панели: $created"
     herdr workspace list | jq -e --arg w "$ws" '.result.workspaces[] | select(.workspace_id == $w)' > /dev/null \
         || die "шаг 2: workspace $ws не виден в herdr workspace list"
     report_color "$ws" "$color"

@@ -146,7 +146,7 @@
 | `stats.test_repos` | список | `[]` | `week-stats.py` |
 | `stats.rules_paths` | список | `[".claude/"]` | `week-stats.py` |
 | `stats.pipeline_paths` | список | `["scripts/", ".github/"]` | `week-stats.py` |
-| `symbols.main` | строка | `""` | никто (проверяет только `duty_config.py check`): постоянный символ главной сессии, из наборов задач исключается |
+| `symbols.main` | строка | `""` | хук подписи пользователя `herdr-session-label.sh` (dotfiles); плагин только проверяет (`duty_config.py check`): постоянный символ главной сессии, из наборов задач исключается |
 | `symbols.tasks` | список | `[]` (тогда `scripts/symbols.txt`) | `dispatch.sh symbol` (`load_symbols`); `DUTY_SYMBOLS_FILE` перекрывает только этот ключ |
 | `symbols.outside` | список | `[]` (тогда `scripts/symbols.txt`, как у `symbols.tasks`) | `dispatch.sh symbol` (`load_symbols`); только пользовательский слой: workspace вне репозиториев |
 | `symbols.color` | строка `#rrggbb` | `""` | `dispatch.sh` (`report_color`): цвет заголовка workspace задач; пусто — токен не шлётся |

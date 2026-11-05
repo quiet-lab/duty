@@ -198,7 +198,10 @@ push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane 
 `symbols.outside` пользовательского слоя, пустой набор — запасной
 `scripts/symbols.txt`; `dispatch.sh symbol`), не занятый открытыми
 задачами того же каталога результатов (`symbols.main` — постоянный символ
-главной сессии, его ставит хук подписи пользователя, плагин только хранит); `herdr workspace create --label "<символ> <имя> · <модель>"
+главной сессии, его ставит хук подписи пользователя, плагин только хранит); цвет заголовка — `symbols.color` (вне репозитория — `symbols.outside_color`):
+`herdr workspace report-metadata <workspace> --source duty --token color=<#rrggbb>`
+сразу после создания; ключ не задан — токен не шлётся, herdr не форк `duty-v*`
+(`herdr --version`) — пропуск с предупреждением; `herdr workspace create --label "<символ> <имя> · <модель>"
 --env DUTY_ROLE=worker --env DUTY_TASK=<каталог> --env DUTY_NAME=<имя>
 --env DUTY_SYMBOL=<символ> --env DUTY_MODEL=<модель> --env DUTY_PROJECT=<корень проекта>
 --no-focus`; служебный блок в `brief.md` (workspace, символ, панель, имя агента,

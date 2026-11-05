@@ -20,6 +20,7 @@ FAKE_HERDR = r"""#!/usr/bin/env bash
 printf '%s\t' "$@" >> "$FAKE_DIR/herdr.log"
 printf '\n' >> "$FAKE_DIR/herdr.log"
 case "$1 $2" in
+    "--version "*) echo "herdr 0.9.5 ${FAKE_HERDR_BUILD-(duty-v0.9.5.1 4a69c66)}" ;;
     "workspace create")
         while [ $# -gt 0 ]; do [ "$1" = --label ] && label=$2; shift; done
         jq --arg l "$label" '.result.workspaces += [{workspace_id: "w9", label: $l}]' "$FAKE_DIR/ws.json" > "$FAKE_DIR/ws.tmp"
@@ -217,6 +218,83 @@ class SymbolsTest(unittest.TestCase):
         self.assertIn("## Правила проекта\n\nправило проекта", rules)
         log = (self.dir / "herdr.log").read_text(encoding="utf-8")
         self.assertIn(f"DUTY_PROJECT={self.root.resolve()}", log)
+
+    def start_task(self, **env: str) -> subprocess.CompletedProcess:
+        return self.run_cmd(
+            "tsk",
+            "sonnet",
+            "--goal",
+            "Сделать",
+            "--done",
+            "`true` зелёный",
+            "--stop",
+            "падение — отчёт",
+            "--read",
+            "`CLAUDE.md`",
+            **env,
+        )
+
+    def herdr_log(self) -> str:
+        return (self.dir / "herdr.log").read_text(encoding="utf-8")
+
+    def test_start_reports_color_token(self) -> None:
+        self.project_config(["🦊"])
+        with (self.root / ".duty" / "duty.toml").open("a", encoding="utf-8") as f:
+            f.write('color = "#a6e3a1"\n')
+        r = self.start_task()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(
+            "workspace\treport-metadata\tw9\t--source\tduty\t--token\tcolor=#a6e3a1\t",
+            self.herdr_log(),
+        )
+
+    def test_start_without_color_sends_no_token(self) -> None:
+        self.project_config(["🦊"])
+        r = self.start_task()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("workspace\treport-metadata", self.herdr_log())
+        self.assertNotIn("color=", self.herdr_log())
+
+    def test_start_color_skipped_on_upstream_herdr(self) -> None:
+        self.project_config(["🦊"])
+        with (self.root / ".duty" / "duty.toml").open("a", encoding="utf-8") as f:
+            f.write('color = "#a6e3a1"\n')
+        r = self.start_task(FAKE_HERDR_BUILD="")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("не форк duty-v*", r.stderr)
+        self.assertNotIn("workspace\treport-metadata", self.herdr_log())
+
+    def test_outside_repo_color_from_user_layer(self) -> None:
+        outside = self.dir / "plain"
+        outside.mkdir()
+        self.user_cfg.parent.mkdir()
+        self.user_cfg.write_text(
+            '[symbols]\noutside = ["🦊"]\noutside_color = "#f5c2e7"\n', encoding="utf-8"
+        )
+        r = subprocess.run(
+            [
+                "bash",
+                str(DISPATCH),
+                "tsk",
+                "sonnet",
+                "--goal",
+                "Сделать",
+                "--done",
+                "`true` зелёный",
+                "--stop",
+                "падение — отчёт",
+                "--read",
+                "`CLAUDE.md`",
+            ],
+            check=False,
+            env={**self.env, "DUTY_RESULTS_DIR": str(self.results)},
+            cwd=outside,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("--token\tcolor=#f5c2e7", self.herdr_log())
 
     def test_start_general_mode_line(self) -> None:
         r = self.run_cmd(

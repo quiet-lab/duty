@@ -202,8 +202,7 @@ push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane 
 пользовательского слоя, пустая палитра — запасной `scripts/colors.txt`), не занятый открытыми
 задачами того же каталога результатов, хранится в служебном блоке `brief.md`:
 `herdr workspace report-metadata <workspace> --source duty --token color=<#rrggbb>`
-сразу после создания; herdr без `--token` в
-`herdr workspace report-metadata --help` — пропуск с предупреждением; `herdr workspace create [--parent <workspace главной сессии>] --label "<символ> <имя> · <модель>"
+сразу после создания; токен шлётся всегда, код 2 ответа (herdr без `--token`) — пропуск с предупреждением, иная ошибка — предупреждение с её текстом; `herdr workspace create [--parent <workspace главной сессии>] --label "<символ> <имя> · <модель>"
 --env DUTY_ROLE=worker --env DUTY_TASK=<каталог> --env DUTY_NAME=<имя>
 --env DUTY_SYMBOL=<символ> --env DUTY_MODEL=<модель> --env DUTY_PROJECT=<корень проекта>
 --no-focus`; workspace задачи — дочерний workspace главной сессии, один

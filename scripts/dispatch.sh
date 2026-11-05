@@ -210,18 +210,24 @@ load_colors() {
 }
 
 # Токен color на workspace: herdr.fg = "$color" понимает только herdr, у
-# которого report-metadata знает --token (форк duty-*); возможность проверяется
-# по справке команды, а не по строке версии: сборка ветви форка печатает
-# версию без duty-v*. Без поддержки и при ошибке отправки — пропуск с пометкой.
+# которого report-metadata знает --token (форк duty-*). Поддержка определяется
+# по ответу сервера, а не по версии или справке: токен шлётся всегда. Код 2
+# (команда или флаг неизвестны) — пропуск с пометкой; иной код — ошибка
+# отправки, в предупреждение идёт текст ошибки. Запуск от этого не прерывается.
 report_color() {
-    local ws=$1 color=$2
+    local ws=$1 color=$2 out rc=0 msg
     [ -n "$color" ] || return 0
-    if ! herdr workspace report-metadata --help 2>&1 | grep -q -- '--token'; then
-        warn "цвет workspace $ws пропущен: токен color не поддерживается этим herdr (нет --token в report-metadata --help)"
-        return 0
-    fi
-    herdr workspace report-metadata "$ws" --source duty --token "color=$color" > /dev/null \
-        || warn "цвет $color у workspace $ws не выставлен"
+    out=$(herdr workspace report-metadata "$ws" --source duty --token "color=$color" 2>&1) || rc=$?
+    case $rc in
+        0) return 0 ;;
+        2) warn "цвет workspace $ws пропущен: токен color не поддерживается этим herdr (команда или флаг неизвестны)" ;;
+        *)
+            msg=$(grep -m1 '^{' <<< "$out" | jq -r '.error.message // empty' 2> /dev/null) || msg=
+            [ -n "$msg" ] || msg=$(head -n 1 <<< "$out")
+            warn "цвет $color у workspace $ws не выставлен: $msg"
+            ;;
+    esac
+    return 0
 }
 
 # Срок ожидания приглашения оболочки панели, мс. Замер 2026-11-05 на этой

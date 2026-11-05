@@ -36,7 +36,14 @@ case "$1 $2" in
             exit 1
         fi ;;
     "workspace report-metadata")
-        [ "$3" = --help ] && [ -z "${FAKE_HERDR_NO_COLOR:-}" ] && echo "  --token <NAME=VALUE>"
+        if [ -n "${FAKE_HERDR_NO_COLOR:-}" ]; then
+            echo "error: unexpected argument '--token' found" >&2
+            exit 2
+        fi
+        if [ -n "${FAKE_HERDR_COLOR_ERROR:-}" ]; then
+            echo '{"error":{"code":"workspace_not_found","message":"workspace w9 не найден"}}'
+            exit 1
+        fi
         exit 0 ;;
     "pane wait-output")
         [ -z "${FAKE_HERDR_WAIT_FAIL:-}" ] || exit 1
@@ -287,6 +294,7 @@ class SymbolsTest(unittest.TestCase):
             self.herdr_log(),
         )
         self.assertEqual(self.task_color_line("tsk"), "#a6e3a1")
+        self.assertNotIn("report-metadata\t--help", self.herdr_log())
 
     def test_start_without_colors_uses_fallback_palette(self) -> None:
         self.project_config(["🦊"])
@@ -302,7 +310,15 @@ class SymbolsTest(unittest.TestCase):
         r = self.start_task(FAKE_HERDR_NO_COLOR="1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("токен color не поддерживается", r.stderr)
-        self.assertNotIn("--source\tduty\t--token", self.herdr_log())
+        self.assertNotIn("report-metadata\t--help", self.herdr_log())
+
+    def test_start_color_server_error_warns_with_message(self) -> None:
+        self.project_config(["🦊"])
+        self.project_colors(["#a6e3a1"])
+        r = self.start_task(FAKE_HERDR_COLOR_ERROR="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("не выставлен: workspace w9 не найден", r.stderr)
+        self.assertNotIn("report-metadata\t--help", self.herdr_log())
 
     def test_start_waits_for_shell_prompt_before_agent_start(self) -> None:
         self.project_config(["🦊"])

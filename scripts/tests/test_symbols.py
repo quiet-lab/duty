@@ -35,6 +35,28 @@ case "$1 $2" in
         else
             exit 1
         fi ;;
+    "workspace report-metadata")
+        [ "$3" = --help ] && [ -z "${FAKE_HERDR_NO_COLOR:-}" ] && echo "  --token <NAME=VALUE>"
+        exit 0 ;;
+    "pane wait-output")
+        [ -z "${FAKE_HERDR_WAIT_FAIL:-}" ] || exit 1
+        exit 0 ;;
+    "pane read")
+        n=$(cat "$FAKE_DIR/reads" 2> /dev/null || echo 0)
+        echo $((n + 1)) > "$FAKE_DIR/reads"
+        if [ -n "${FAKE_HERDR_STUCK:-}" ]; then
+            if grep -q 'send-keys.*ctrl+j' "$FAKE_DIR/herdr.log"; then
+                printf 'x\n─\n$ claude --agent duty:worker\nПрочитай brief.md и выполняй.\n─\n> \n─\n'
+            else
+                printf '$ claude --agent duty:worker --model sonnet\n'
+            fi
+        fi ;;
+    "agent start")
+        if [ -n "${FAKE_HERDR_STUCK:-}" ]; then
+            echo '{"error":{"code":"timeout"}}'
+            exit 1
+        fi ;;
+    "agent read") exit 0 ;;
     "workspace list") cat "$FAKE_DIR/ws.json" ;;
     "workspace close")
         jq --arg w "$3" '.result.workspaces |= map(select(.workspace_id != $w))' "$FAKE_DIR/ws.json" > "$FAKE_DIR/ws.tmp"
@@ -277,10 +299,39 @@ class SymbolsTest(unittest.TestCase):
     def test_start_color_skipped_on_upstream_herdr(self) -> None:
         self.project_config(["🦊"])
         self.project_colors(["#a6e3a1"])
-        r = self.start_task(FAKE_HERDR_BUILD="")
+        r = self.start_task(FAKE_HERDR_NO_COLOR="1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("не форк duty-v*", r.stderr)
-        self.assertNotIn("workspace\treport-metadata", self.herdr_log())
+        self.assertIn("токен color не поддерживается", r.stderr)
+        self.assertNotIn("--source\tduty\t--token", self.herdr_log())
+
+    def test_start_waits_for_shell_prompt_before_agent_start(self) -> None:
+        self.project_config(["🦊"])
+        r = self.start_task()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.herdr_log()
+        self.assertIn("pane\twait-output\tp9\t", log)
+        self.assertIn("--regex\t", log)
+        self.assertLess(log.index("pane\twait-output"), log.index("agent\tstart"))
+
+    def test_start_continues_when_wait_output_fails(self) -> None:
+        self.project_config(["🦊"])
+        r = self.start_task(FAKE_HERDR_WAIT_FAIL="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("приглашение оболочки", r.stderr)
+
+    def test_start_retypes_command_stuck_in_shell(self) -> None:
+        self.project_config(["🦊"])
+        r = self.start_task(FAKE_HERDR_STUCK="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.herdr_log()
+        self.assertIn("застряла", r.stderr)
+        keys = "pane\tsend-keys\tp9\tesc\tg\tg\td\tG\ti\t"
+        text = [x for x in log.splitlines() if x.startswith("pane\tsend-text\tp9\t")]
+        self.assertEqual(len(text), 1, log)
+        self.assertIn("--agent duty:worker", text[0])
+        self.assertIn("pane\tsend-keys\tp9\tctrl+j\t", log)
+        self.assertLess(log.index(keys), log.index("send-text"))
+        self.assertLess(log.index("send-text"), log.index("ctrl+j"))
 
     def test_outside_repo_colors_from_user_layer(self) -> None:
         outside = self.dir / "plain"

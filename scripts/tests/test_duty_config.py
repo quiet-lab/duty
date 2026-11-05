@@ -140,6 +140,28 @@ class LayersTest(Base):
         self.assertEqual(cfg.get("git.protected"), ["main", "master", "trunk"])
         self.assertEqual(cfg.get("git.default_parent"), "trunk")
 
+    def test_origin_head_not_queried_when_layers_set_git_keys(self) -> None:
+        root = self.repo(
+            toml='schema = 1\n[git]\nprotected = ["x"]\ndefault_parent = "x"\n'
+        )
+        real = duty_config._git
+        calls: list[tuple[str, ...]] = []
+
+        def spy(cwd: Path, *args: str) -> str:
+            calls.append(args)
+            return real(cwd, *args)
+
+        with mock.patch.object(duty_config, "_git", spy):
+            cfg = duty_config.load(root=root)
+            self.assertEqual(cfg.get("git.protected"), ["x"])
+            self.assertFalse([c for c in calls if "symbolic-ref" in c], calls)
+            # Один из ключей не задан — origin/HEAD по-прежнему нужен.
+            (root / ".duty" / "duty.toml").write_text(
+                'schema = 1\n[git]\nprotected = ["x"]\n', encoding="utf-8"
+            )
+            duty_config.load(root=root)
+            self.assertTrue([c for c in calls if "symbolic-ref" in c], calls)
+
     def test_services_absent_without_tables(self) -> None:
         root = self.repo(toml='schema = 1\n[jenkins]\nenv_file = "j.env"\n')
         cfg = duty_config.load(cwd=root)

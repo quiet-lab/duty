@@ -45,38 +45,23 @@ from pathlib import Path
 
 # Каталог скрипта убран из sys.path ключом -I, поэтому модуль подключается по пути.
 _spec = importlib.util.spec_from_file_location(
-    "duty_config", Path(__file__).with_name("duty_config.py")
+    "dutylib", Path(__file__).with_name("dutylib.py")
 )
-duty_config = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(duty_config)
-
-_CFG = None
-
-
-def config(root: str | None = None):
-    """Конфигурация проекта: загружается один раз."""
-    global _CFG
-    if _CFG is None or root is not None:
-        _CFG = duty_config.load(root=root)
-    return _CFG
+dutylib = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(dutylib)
+duty_config = dutylib.duty_config
+config = dutylib.config
 
 
 def env_path() -> Path:
-    raw = config().get("jenkins.env_file", "")
-    if not isinstance(raw, str) or not raw.strip():
-        raise WaitError("[jenkins]: env_file не задан — Jenkins не проверено")
-    p = Path(raw).expanduser()
-    path = p if p.is_absolute() else (config().root or Path.cwd()) / p
-    if not path.is_file():
-        raise WaitError(f"[jenkins]: env_file: нет файла {raw} — Jenkins не проверено")
-    return path
+    try:
+        return dutylib.access_file("jenkins", "env_file", "Jenkins")
+    except dutylib.NotConfigured as error:
+        raise WaitError(str(error)) from error
 
 
 def ssl_context() -> ssl.SSLContext:
-    """Проверка сертификата выключается только ключом `jenkins.insecure_tls`."""
-    if config().get("jenkins.insecure_tls", False):
-        return ssl._create_unverified_context()
-    return ssl.create_default_context()
+    return dutylib.ssl_context(config())
 
 
 OP_ARG, OP_LOCALE, OP_ENCODING, OP_START, OP_EXIT = 0, 1, 2, 3, 4

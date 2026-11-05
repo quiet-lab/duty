@@ -135,6 +135,7 @@
 | `[[docs.post_change]]` | `paths` — список, `note` — строка | `[]` | навык `docs-sweep` |
 | `[[busy.resources]]` | `name`, `why`, `until` — строки | `[]` | навыки `inspect` и `dispatch`, `reference/worker-rules.md` (текст); сценарии ключ не читают |
 | `cleanup.keep_trees` | список | `[]` | `cleanup-candidates.py` |
+| `cleanup.skip_trees` | список | `[]` | `cleanup-candidates.py`: маски путей (от корня проекта, `~` раскрывается); worktree внутри совпавших каталогов не перечисляются и не измеряются (деревья ревизий, которые убирает расширение `cleanup.d`) |
 | `cleanup.docker_keep_projects` | список | `[]` | `cleanup-candidates.py` |
 | `stats.test_repos` | список | `[]` | `week-stats.py` |
 | `stats.rules_paths` | список | `[".claude/"]` | `week-stats.py` |
@@ -288,6 +289,7 @@ until = "экземпляр создаётся и удаляется самим 
 [cleanup]
 keep_trees = ["../ocp-dev-stand/src/qms", "../ocp-dev-stand/src/ui",
               "../ocp-dev-stand/src/tests", "../ocp-dev-stand/src/jssip-phone"]
+skip_trees = ["../ocp-dev-stand/src/*-wt"]
 docker_keep_projects = ["ocp-stand"]
 
 [stats]

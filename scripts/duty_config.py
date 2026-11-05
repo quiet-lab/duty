@@ -100,7 +100,7 @@ SCHEMA_KEYS: dict[str, dict[str, Any]] = {
         "post_change": ("tables", {"paths": LIST, "note": STR}),
     },
     "busy": {"resources": ("tables", {"name": STR, "why": STR, "until": STR})},
-    "cleanup": {"keep_trees": LIST, "docker_keep_projects": LIST},
+    "cleanup": {"keep_trees": LIST, "skip_trees": LIST, "docker_keep_projects": LIST},
     "stats": {"test_repos": LIST, "rules_paths": LIST, "pipeline_paths": LIST},
     "symbols": {"main": STR, "tasks": LIST, "outside": LIST},
 }
@@ -141,7 +141,7 @@ DEFAULTS: dict[str, Any] = {
         "post_change": [],
     },
     "busy": {"resources": []},
-    "cleanup": {"keep_trees": [], "docker_keep_projects": []},
+    "cleanup": {"keep_trees": [], "skip_trees": [], "docker_keep_projects": []},
     "stats": {
         "test_repos": [],
         "rules_paths": [".claude/"],
@@ -268,6 +268,9 @@ def lookup(data: dict[str, Any], key: str) -> tuple[bool, Any]:
             return False, None
         node = node[part]
     return True, node
+
+
+GIT_HEAD_KEYS = ("git.protected", "git.default_parent")
 
 
 def origin_head(root: Path | None) -> str:
@@ -407,19 +410,27 @@ def load(
         else "general"
     )
 
-    head = origin_head(found)
+    findings: list[str] = []
+    cleaned: list[dict[str, Any]] = []
+    for path, layer in layers:
+        # Значение неверного типа в слияние не идёт: действует умолчание,
+        # находка остаётся в Config.findings и в выводе check.
+        clean, bad = sanitize_layer(path, layer)
+        findings += bad
+        cleaned.append(clean)
+    # Ветвь origin/HEAD нужна только как умолчание: git не вызывается,
+    # если слои сами задают git.protected и git.default_parent.
+    if all(any(lookup(c, key)[0] for c in cleaned) for key in GIT_HEAD_KEYS):
+        head = ""
+    else:
+        head = origin_head(found)
     protected = ["main", "master"] + (
         [head] if head and head not in ("main", "master") else []
     )
     data = merge(
         DEFAULTS, {"git": {"protected": protected, "default_parent": head or "master"}}
     )
-    findings: list[str] = []
-    for path, layer in layers:
-        # Значение неверного типа в слияние не идёт: действует умолчание,
-        # находка остаётся в Config.findings и в выводе check.
-        clean, bad = sanitize_layer(path, layer)
-        findings += bad
+    for clean in cleaned:
         data = merge(data, clean)
     for section, extra in OPTIONAL_DEFAULTS.items():
         if isinstance(data.get(section), dict):
@@ -714,6 +725,7 @@ name = {name}  # имя для подписей, статистики и кат�
 
 # [cleanup]
 # keep_trees = []               # деревья, которые уборка не трогает
+# skip_trees = []               # маски каталогов: worktree внутри не перечисляются
 # docker_keep_projects = []     # проекты compose, чьи остановленные контейнеры не предлагаются
 
 # [stats]                       # классы путей для «Неделя в цифрах»

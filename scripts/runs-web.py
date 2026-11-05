@@ -31,20 +31,14 @@ from urllib.parse import parse_qs, quote, urlparse
 SCRIPTS = Path(__file__).resolve().parent
 # Каталог скрипта убран из sys.path ключом -I, поэтому модуль подключается по пути.
 _spec = importlib.util.spec_from_file_location(
-    "duty_config", Path(__file__).with_name("duty_config.py")
+    "dutylib", Path(__file__).with_name("dutylib.py")
 )
-duty_config = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(duty_config)
+dutylib = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(dutylib)
+duty_config = dutylib.duty_config
 
 
-def config_path(key: str) -> Path:
-    """Путь `[paths]` из конфигурации проекта (с перекрытием переменными окружения)."""
-    try:
-        path = duty_config.load().path(key)
-    except duty_config.ConfigError as error:
-        raise SystemExit(f"ошибка конфигурации: {error}")
-    assert path is not None
-    return path
+config_path = dutylib.config_path
 
 
 DEFAULT_PORT = 8765

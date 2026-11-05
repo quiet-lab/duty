@@ -16,6 +16,7 @@ import json
 import os
 import pwd
 import signal
+import ssl
 import subprocess
 from pathlib import Path
 from types import ModuleType
@@ -32,6 +33,86 @@ def import_path(name: str, path: Path) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+duty_config = import_path("duty_config", PLUGIN_DIR / "scripts" / "duty_config.py")
+
+
+class NotConfigured(Exception):
+    """Нужный файл доступа не задан или отсутствует: сервис не проверяется."""
+
+
+_CONFIGS: dict[tuple, object] = {}
+_DEFAULT_ROOT: list[str | None] = [None]
+
+
+def _config_key(root: str | None) -> tuple:
+    env = tuple(
+        sorted(
+            (k, v)
+            for k, v in os.environ.items()
+            if k.startswith("DUTY_") or k == "CLAUDE_PROJECT_DIR"
+        )
+    )
+    return (root, os.getcwd(), env)
+
+
+def config(root: str | None = None):
+    """Конфигурация проекта: на процесс один разбор на (корень, каталог,
+    переменные `DUTY_*`, `CLAUDE_PROJECT_DIR`); смена любой из них даёт
+    новую загрузку. Без аргумента берётся корень последнего явного вызова. Ошибка TOML — `duty_config.ConfigError`, в кеш не идёт."""
+    # Корень, названный явно (--root), действует для последующих config().
+    if root is not None:
+        _DEFAULT_ROOT[0] = root
+    else:
+        root = _DEFAULT_ROOT[0]
+    key = _config_key(root)
+    cfg = _CONFIGS.get(key)
+    if cfg is None:
+        cfg = duty_config.load(root=root)
+        _CONFIGS[key] = cfg
+    return cfg
+
+
+def config_cache_clear() -> None:
+    _CONFIGS.clear()
+    _DEFAULT_ROOT[0] = None
+
+
+config.cache_clear = config_cache_clear  # type: ignore[attr-defined]
+
+
+def config_path(key: str, root: str | None = None):
+    """Путь из конфигурации (`[paths]` с перекрытием переменными окружения);
+    ошибка конфигурации — SystemExit."""
+    try:
+        cfg = config(root)
+    except duty_config.ConfigError as error:
+        raise SystemExit(f"ошибка конфигурации: {error}")
+    value = cfg.get(key)
+    assert isinstance(value, str) and value
+    return cfg.path_of(value)
+
+
+def access_file(section: str, key: str, what: str) -> Path:
+    """Файл доступа из конфигурации; не задан или нет файла — NotConfigured."""
+    cfg = config()
+    raw = cfg.get(f"{section}.{key}", "")
+    if not isinstance(raw, str) or not raw.strip():
+        raise NotConfigured(f"[{section}]: {key} не задан — {what} не проверено")
+    path = cfg.path_of(raw)
+    if not path.is_file():
+        raise NotConfigured(
+            f"[{section}]: {key}: нет файла {raw} — {what} не проверено"
+        )
+    return path
+
+
+def ssl_context(cfg=None) -> ssl.SSLContext:
+    """Проверка сертификата выключается только ключом `jenkins.insecure_tls`."""
+    if (cfg or config()).get("jenkins.insecure_tls", False):
+        return ssl._create_unverified_context()
+    return ssl.create_default_context()
 
 
 def sh(*args: str, cwd: Path | None = None) -> str:

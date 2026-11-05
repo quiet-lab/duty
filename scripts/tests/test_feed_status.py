@@ -53,18 +53,18 @@ class _Cfg:
 
 class FeedStatusTest(unittest.TestCase):
     def setUp(self):
-        self._saved = gates._CFG
-        gates._CFG = _Cfg(MARKERS)
+        self._saved = gates.config
+        gates.config = lambda root=None: _Cfg(MARKERS)
         # У branches свой экземпляр gates (подключён по пути).
-        self._saved_b = branches.gates._CFG
-        branches.gates._CFG = _Cfg(MARKERS)
+        self._saved_b = branches.gates.config
+        branches.gates.config = lambda root=None: _Cfg(MARKERS)
 
     def tearDown(self):
-        gates._CFG = self._saved
-        branches.gates._CFG = self._saved_b
+        gates.config = self._saved
+        branches.gates.config = self._saved_b
 
     def test_empty_markers_no_feed(self):
-        gates._CFG = _Cfg([])
+        gates.config = lambda root=None: _Cfg([])
         self.assertFalse(gates.is_feed(FEED_RUNNING))
         self.assertEqual(
             gates.gate_summary([GATE, FEED_RUNNING], {})[0],

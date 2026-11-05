@@ -138,6 +138,20 @@ class ExcludeWorktreeTest(unittest.TestCase):
         self.assertIn("оставлено", row)
         self.assertNotIn("worktree remove", row)
 
+    def test_skip_trees_hides_stand_revision_trees(self) -> None:
+        wt = self.base / "stand" / "qms-wt" / "abc123"
+        wt.parent.mkdir(parents=True)
+        git(self.sub, "worktree", "add", "--detach", str(wt))
+        self.assertIn(str(wt), self.candidates())  # без skip_trees дерево в перечне
+        (self.root / ".duty" / "duty.toml").write_text(
+            f'schema = 1\n[paths]\nresults = "{self.base / "results"}"\n'
+            f'[cleanup]\nskip_trees = ["{self.base}/stand/*-wt"]\n',
+            encoding="utf-8",
+        )
+        out = self.candidates()
+        self.assertNotIn(str(wt), out)
+        self.assertNotIn("без ветви", out)
+
     def add_merged_branch(self, branch: str) -> None:
         git(self.sub, "branch", branch)  # вершина совпадает с main, значит ветвь слита
 

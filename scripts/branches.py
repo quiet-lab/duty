@@ -25,12 +25,13 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-# Каталог скрипта убран из sys.path ключом -I, поэтому gates.py подключается по пути.
+# Каталог скрипта убран из sys.path ключом -I, поэтому модули подключаются по пути.
 _spec = importlib.util.spec_from_file_location(
-    "gates", Path(__file__).with_name("gates.py")
+    "dutylib", Path(__file__).with_name("dutylib.py")
 )
-gates = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(gates)
+dutylib = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(dutylib)
+gates = dutylib.import_path("gates", Path(__file__).with_name("gates.py"))
 
 # Заполняются из конфигурации в setup(): ветви, которых в таблице нет
 # (git.protected и git.working), префиксы сохранённых копий и задач.

@@ -16,7 +16,6 @@ import base64
 import importlib.util
 import json
 import os
-import ssl
 import subprocess
 import sys
 import time
@@ -30,32 +29,14 @@ _spec = importlib.util.spec_from_file_location(
 )
 dutylib = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(dutylib)
-duty_config = dutylib.import_path(
-    "duty_config", Path(__file__).with_name("duty_config.py")
-)
-
-_CFG = None
-
-
-def config(root: str | None = None):
-    """Конфигурация проекта: загружается один раз, дальше берётся из памяти."""
-    global _CFG
-    if _CFG is None or root is not None:
-        _CFG = duty_config.load(root=root)
-    return _CFG
-
-
-def cfg_file(raw: str) -> Path:
-    """Путь из конфигурации: `~` раскрывается, относительный — от корня проекта."""
-    p = Path(raw).expanduser()
-    return p if p.is_absolute() else (config().root or Path.cwd()) / p
+duty_config = dutylib.duty_config
+config = dutylib.config
+NotConfigured = dutylib.NotConfigured
+access_file = dutylib.access_file
 
 
 def ssl_context():
-    """Проверка сертификата Jenkins выключается только ключом `jenkins.insecure_tls`."""
-    if config().get("jenkins.insecure_tls", False):
-        return ssl._create_unverified_context()
-    return ssl.create_default_context()
+    return dutylib.ssl_context(config())
 
 
 def missing_section(section: str, what: str) -> str:
@@ -64,23 +45,6 @@ def missing_section(section: str, what: str) -> str:
 
 class BitbucketDenied(Exception):
     pass
-
-
-class NotConfigured(Exception):
-    """Нужный файл доступа не задан или отсутствует: сервис не проверяется."""
-
-
-def access_file(section: str, key: str, what: str) -> Path:
-    """Файл доступа из конфигурации; не задан или нет файла — NotConfigured."""
-    raw = config().get(f"{section}.{key}", "")
-    if not isinstance(raw, str) or not raw.strip():
-        raise NotConfigured(f"[{section}]: {key} не задан — {what} не проверено")
-    path = cfg_file(raw)
-    if not path.is_file():
-        raise NotConfigured(
-            f"[{section}]: {key}: нет файла {raw} — {what} не проверено"
-        )
-    return path
 
 
 def bb(path: str) -> dict:

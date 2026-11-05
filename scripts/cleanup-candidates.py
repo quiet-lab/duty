@@ -89,6 +89,16 @@ ME = subprocess.run(
     text=True,
     check=False,
 ).stdout.strip()
+# Маски каталогов, чьи worktree не перечисляются и не измеряются (cleanup.skip_trees).
+SKIP_MASKS = [str(CFG.path_of(t, ROOT)) for t in CFG.get("cleanup.skip_trees", [])]
+
+
+def skipped(path: Path) -> bool:
+    return any(
+        fnmatch.fnmatch(str(p), m) for m in SKIP_MASKS for p in (path, *path.parents)
+    )
+
+
 # Основные деревья стенда переводит на новую ревизию сам стенд; удаляются
 # только вместе со стендом.
 STAND_MAIN = {CFG.path_of(t, ROOT).resolve() for t in CFG.get("cleanup.keep_trees", [])}
@@ -195,7 +205,7 @@ for repo, parent in submodules():
     for wt in all_wts[1:]:
         path = Path(wt["worktree"])
         branch = wt.get("branch", "").removeprefix("refs/heads/")
-        if path.resolve() in STAND_MAIN or not path.exists():
+        if path.resolve() in STAND_MAIN or skipped(path) or not path.exists():
             continue
         if not branch:
             add(

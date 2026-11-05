@@ -81,6 +81,7 @@ SCHEMA_KEYS: dict[str, dict[str, Any]] = {
         "insecure_tls": BOOL,
         "fake_job": STR,
         "nodes": LIST,
+        "feed_markers": LIST,
     },
     "jira": {"url": STR, "token_file": STR, "ticket": STR},
     "docs": {
@@ -143,7 +144,13 @@ DEFAULTS: dict[str, Any] = {
 }
 OPTIONAL_DEFAULTS: dict[str, dict[str, Any]] = {
     "bitbucket": {"sets_repo": ""},
-    "jenkins": {"cli_url": "", "insecure_tls": False, "fake_job": "", "nodes": []},
+    "jenkins": {
+        "cli_url": "",
+        "insecure_tls": False,
+        "fake_job": "",
+        "nodes": [],
+        "feed_markers": [],
+    },
     "jira": {},
 }
 
@@ -576,6 +583,7 @@ name = {name}  # имя для подписей, статистики и кат�
 # insecure_tls = false          # не проверять сертификат
 # fake_job = ""                 # задания, исключаемые из статистики
 # nodes = []                    # узлы для /duty:inspect
+# feed_markers = []             # подстроки имён заданий-лент (ключ или имя статуса сборки)
 
 # [jira]                        # без таблицы тикеты не ведутся
 # url = "https://jira.example"

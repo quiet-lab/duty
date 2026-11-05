@@ -107,14 +107,15 @@ def jenkins(url: str, env: dict[str, str]) -> dict | None:
 
 
 def is_feed(status: dict) -> bool:
-    """Статус «Лента сборок PR-…» (ключ `<префикс>pr-feed/<задание>-<номер>`).
+    """Статус задания-ленты: ключ или имя содержит подстроку `jenkins.feed_markers`.
 
     Лента показывает ход всех этапов и не решает о слиянии; со статусами ворот
-    её смешивать нельзя: она новее и перекрыла бы итог ворот.
+    её смешивать нельзя: она новее и перекрыла бы итог ворот. Пустой список
+    маркеров — лент нет.
     """
-    return "pr-feed/" in (status.get("key") or "") or (
-        status.get("name") or ""
-    ).startswith("Лента сборок PR-")
+    markers = config().get("jenkins.feed_markers", [])
+    text = f"{status.get('key') or ''}\n{status.get('name') or ''}"
+    return any(m and m in text for m in markers)
 
 
 def gate_summary(statuses: list[dict], env: dict[str, str]) -> tuple[str, str]:

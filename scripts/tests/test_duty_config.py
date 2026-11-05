@@ -147,6 +147,7 @@ class LayersTest(Base):
         self.assertFalse(cfg.has("jira"))
         self.assertTrue(cfg.has("jenkins"))
         self.assertEqual(cfg.get("jenkins.nodes"), [])
+        self.assertEqual(cfg.get("jenkins.feed_markers"), [])
         self.assertIs(cfg.get("jenkins.insecure_tls"), False)
 
     def test_project_paths_relative_to_root_and_env_overrides(self) -> None:
@@ -385,12 +386,16 @@ class CheckTest(Base):
         code, out = self.findings(
             'schema = 1\n[git]\nprotected = "dev"\nforbid_stash = 1\n'
             '[paths]\nresults = 5\n[[busy.resources]]\nname = "s"\n'
+            '[jenkins]\nfeed_markers = "feed-x/"\n'
         )
         text = "\n".join(out)
         self.assertEqual(code, 1)
         self.assertIn("git.protected: ожидается список строк, получено str", text)
         self.assertIn("git.forbid_stash: ожидается true или false, получено int", text)
         self.assertIn("paths.results: ожидается строка, получено int", text)
+        self.assertIn(
+            "jenkins.feed_markers: ожидается список строк, получено str", text
+        )
         self.assertIn("нет ключа why", text)
         self.assertIn("нет ключа until", text)
 

@@ -107,6 +107,7 @@
 | `jenkins.insecure_tls` | логическое | `false` | `jwait.py`, `gates.py` |
 | `jenkins.fake_job` | строка | `""` | `week-stats.py` |
 | `jenkins.nodes` | список | `[]` | навыки `inspect` и `dispatch` (текст; сценарии ключ не читают) |
+| `jenkins.feed_markers` | список строк | `[]` (лент нет) | `gates.py`, `branches.py` (статус сборки — лента, если его ключ или имя содержит любую из подстрок; ленты не влияют на ворота) |
 | `jira.url` | строка | нет таблицы — тикеты не ведутся | `facts.sh`, навык `after-merge` |
 | `jira.token_file` | строка | — | те же |
 | `jira.ticket` | строка | — | `branches.py`, навыки `gates` и `after-merge` |
@@ -233,6 +234,7 @@ cli_url = "http://10.200.100.8:8080/"
 insecure_tls = true
 fake_job = "z__fake"
 nodes = ["HeavyCI_1", "QMS_DEV", "QMS_PROD", "QMS_FEATURE"]
+feed_markers = ["pr-feed/", "Лента сборок PR-"]
 
 [jira]
 url = "https://jira.service-desk.site"

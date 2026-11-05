@@ -1,4 +1,4 @@
-"""Статус «Лента сборок PR-…» не влияет на ворота: `python3 -I scripts/tests/test_feed_status.py`."""
+"""Статус задания-ленты не влияет на ворота: `python3 -I scripts/tests/test_feed_status.py`."""
 
 import importlib.util
 import os
@@ -25,25 +25,55 @@ GATE = {
     "url": "",
 }
 FEED_RUNNING = {
-    "key": "pr-feed/qms-1",
-    "name": "Лента сборок PR-1",
+    "key": "feed-x/qms-1",
+    "name": "Feed build PR-1",
     "state": "INPROGRESS",
     "dateAdded": 200,
     "url": "",
 }
 FEED_FAILED = {
-    "key": "t-pr-feed/qms-1",
-    "name": "Лента сборок PR-1",
+    "key": "t-feed-x/qms-1",
+    "name": "Feed build PR-1",
     "state": "FAILED",
     "dateAdded": 300,
     "url": "",
 }
 
 
+MARKERS = ["feed-x/", "Feed build PR-"]
+
+
+class _Cfg:
+    def __init__(self, markers):
+        self.markers = markers
+
+    def get(self, key, default=None):
+        return self.markers if key == "jenkins.feed_markers" else default
+
+
 class FeedStatusTest(unittest.TestCase):
+    def setUp(self):
+        self._saved = gates._CFG
+        gates._CFG = _Cfg(MARKERS)
+        # У branches свой экземпляр gates (подключён по пути).
+        self._saved_b = branches.gates._CFG
+        branches.gates._CFG = _Cfg(MARKERS)
+
+    def tearDown(self):
+        gates._CFG = self._saved
+        branches.gates._CFG = self._saved_b
+
+    def test_empty_markers_no_feed(self):
+        gates._CFG = _Cfg([])
+        self.assertFalse(gates.is_feed(FEED_RUNNING))
+        self.assertEqual(
+            gates.gate_summary([GATE, FEED_RUNNING], {})[0],
+            "dev2/qms/PR-1: SUCCESSFUL, feed-x/qms-1: INPROGRESS",
+        )
+
     def test_is_feed_by_key_and_name(self):
         self.assertTrue(gates.is_feed(FEED_RUNNING))
-        self.assertTrue(gates.is_feed({"key": "x", "name": "Лента сборок PR-7"}))
+        self.assertTrue(gates.is_feed({"key": "x", "name": "Feed build PR-7"}))
         self.assertFalse(gates.is_feed(GATE))
 
     def test_is_feed_tolerates_null_fields(self):

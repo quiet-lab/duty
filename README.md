@@ -206,9 +206,9 @@ push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane 
 --env DUTY_ROLE=worker --env DUTY_TASK=<каталог> --env DUTY_NAME=<имя>
 --env DUTY_SYMBOL=<символ> --env DUTY_MODEL=<модель> --env DUTY_PROJECT=<корень проекта>
 --no-focus`; workspace задачи — дочерний workspace главной сессии, один
-уровень: `--parent "$HERDR_WORKSPACE_ID"` передаётся, если переменная задана,
-`DUTY_ROLE` не `worker` и `herdr workspace create --help` содержит `--parent`,
-иначе вызов идёт без флага; служебный блок в `brief.md` (workspace, символ, панель, имя агента,
+уровень: `--parent "$HERDR_WORKSPACE_ID"` передаётся всегда, если переменная задана
+и `DUTY_ROLE` не `worker`; отказ herdr (неизвестный флаг, `workspace_parent_nested`,
+`workspace_not_found`) — повтор без флага, каждый пропуск родителя — предупреждение с причиной; служебный блок в `brief.md` (workspace, символ, панель, имя агента,
 имя главной сессии, каталог плагина, проект, файл конфигурации);
 `herdr agent start <имя> --kind claude -- --agent duty:worker --model
 <модель> --name <имя> "<приглашение>"` (первое приглашение — позиционным

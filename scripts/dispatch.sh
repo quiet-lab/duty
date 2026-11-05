@@ -55,8 +55,10 @@
 #      непустые;
 #   2. workspace с меткой «<имя> · <модель>» (слово из аргумента), DUTY_ROLE=worker, DUTY_TASK=<каталог> —
 #      дочерний workspace главной сессии (--parent $HERDR_WORKSPACE_ID, один
-#      уровень), если задан HERDR_WORKSPACE_ID, DUTY_ROLE не worker и herdr
-#      знает флаг; иначе без --parent —
+#      уровень), если задан HERDR_WORKSPACE_ID и DUTY_ROLE не worker; флаг
+#      пробуется всегда, отказ herdr (флаг неизвестен, вложенность, родитель
+#      исчез) — повтор без него; каждый пропуск родителя — с предупреждением
+#      и причиной —
 #      есть в herdr workspace list;
 #   3. служебный блок в brief.md — строка с id workspace есть в файле;
 #   4. claude --agent duty:worker в корневой панели, приглашение прочитать
@@ -580,6 +582,15 @@ check_config() {
     [ "$rc" = 0 ] || die "конфигурация проекта не проходит проверку (reference/config.md):"$'\n'"$out"
 }
 
+# Создание workspace задачи: аргументы функции (--parent <id>) — перед общими;
+# печатает ответ herdr (stdout и stderr вместе), код возврата — herdr.
+create_workspace() {
+    herdr workspace create "$@" --cwd "${root:-$PWD}" --label "$label" \
+        --env DUTY_ROLE=worker --env "DUTY_TASK=$task" --env "DUTY_NAME=$name" \
+        --env "DUTY_SYMBOL=$symbol" --env "DUTY_MODEL=$model_arg" \
+        ${root:+--env "DUTY_PROJECT=$root"} --no-focus 2>&1
+}
+
 cmd_start() {
     local name=$1 model_arg=$2 model task workspaces agents passed template rules
     local rc rename_out created ws pane started_at_ms state status prompt screen input tab symbol label
@@ -671,17 +682,33 @@ cmd_start() {
         || die "шаг 1: файлы задачи в $task не созданы"
 
     # Шаг 2. Workspace. Дочерний workspace главной сессии (один уровень):
-    # --parent — только из панели herdr, не из workspace задачи (DUTY_ROLE=worker)
-    # и только если установленный herdr знает флаг; иначе вызов без него.
-    parent_args=()
-    if [ -n "${HERDR_WORKSPACE_ID:-}" ] && [ "${DUTY_ROLE:-}" != worker ] \
-        && herdr workspace create --help 2>&1 | grep -q -- '--parent'; then
-        parent_args=(--parent "$HERDR_WORKSPACE_ID")
+    # --parent пробуется всегда, когда задан HERDR_WORKSPACE_ID и роль не worker;
+    # отказ herdr (флаг неизвестен, вложенность, родитель исчез) — повтор
+    # без флага с предупреждением; справка herdr не читается.
+    created="" create_rc=0 parent_skip=""
+    if [ -z "${HERDR_WORKSPACE_ID:-}" ]; then
+        parent_skip="HERDR_WORKSPACE_ID не задан"
+    elif [ "${DUTY_ROLE:-}" = worker ]; then
+        parent_skip="запуск из workspace задачи (DUTY_ROLE=worker), вложенность один уровень"
+    else
+        created=$(create_workspace --parent "$HERDR_WORKSPACE_ID") || create_rc=$?
+        if [ "$create_rc" -eq 0 ]; then
+            :
+        else
+            code=$(jq -r '.error.code // empty' <<< "$created" 2> /dev/null || true)
+            if [ "$create_rc" -eq 2 ] && [[ "$created" == *"unexpected argument '--parent'"* ]] \
+                || [ "$code" = workspace_parent_nested ] || [ "$code" = workspace_not_found ]; then
+                parent_skip="herdr отклонил --parent $HERDR_WORKSPACE_ID (${code:-${created%%$'\n'*}}), создан без родителя"
+            else
+                die "шаг 2: herdr workspace create: $created"
+            fi
+        fi
     fi
-    created=$(herdr workspace create "${parent_args[@]}" --cwd "${root:-$PWD}" --label "$label" \
-        --env DUTY_ROLE=worker --env "DUTY_TASK=$task" --env "DUTY_NAME=$name" \
-        --env "DUTY_SYMBOL=$symbol" --env "DUTY_MODEL=$model_arg" \
-        ${root:+--env "DUTY_PROJECT=$root"} --no-focus)
+    if [ -n "$parent_skip" ]; then
+        warn "workspace без родителя: $parent_skip"
+        create_rc=0
+        created=$(create_workspace) || die "шаг 2: herdr workspace create: $created"
+    fi
     ws=$(jq -er '.result.workspace.workspace_id' <<< "$created") || die "шаг 2: herdr workspace create: $created"
     pane=$(jq -er '.result.root_pane.pane_id' <<< "$created") || die "шаг 2: нет корневой панели: $created"
     herdr workspace list | jq -e --arg w "$ws" '.result.workspaces[] | select(.workspace_id == $w)' > /dev/null \

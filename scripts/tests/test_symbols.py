@@ -23,7 +23,16 @@ printf '\n' >> "$FAKE_DIR/herdr.log"
 case "$1 $2" in
     "--version "*) echo "herdr 0.9.5 ${FAKE_HERDR_BUILD-(duty-v0.9.5.1 4a69c66)}" ;;
     "workspace create")
-        [ "$3" = --help ] && exit 0
+        case " $* " in *" --parent "*)
+            if [ -n "${FAKE_HERDR_NO_PARENT:-}" ]; then
+                echo "error: unexpected argument '--parent' found" >&2
+                exit 2
+            fi
+            if [ -n "${FAKE_HERDR_PARENT_NESTED:-}" ]; then
+                echo '{"error":{"code":"workspace_parent_nested","message":"вложенность один уровень"}}'
+                exit 1
+            fi ;;
+        esac
         while [ $# -gt 0 ]; do [ "$1" = --label ] && label=$2; shift; done
         id=w$((9 + $(jq '.result.workspaces | length' "$FAKE_DIR/ws.json")))
         jq --arg l "$label" --arg i "$id" '.result.workspaces += [{workspace_id: $i, label: $l}]' "$FAKE_DIR/ws.json" > "$FAKE_DIR/ws.tmp"
@@ -99,7 +108,11 @@ class SymbolsTest(unittest.TestCase):
         # Пользовательский слой изолирован: файла нет, если тест его не создаёт.
         self.user_cfg = self.dir / "user" / "config.toml"
         self.env = {
-            **{k: v for k, v in os.environ.items() if not k.startswith("DUTY_")},
+            **{
+                k: v
+                for k, v in os.environ.items()
+                if not k.startswith("DUTY_") and k != "HERDR_WORKSPACE_ID"
+            },
             "DUTY_CONFIG_USER": str(self.user_cfg),
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "HERDR_ENV": "1",
@@ -319,6 +332,60 @@ class SymbolsTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("не выставлен: workspace w9 не найден", r.stderr)
         self.assertNotIn("report-metadata\t--help", self.herdr_log())
+
+    def create_calls(self) -> list[str]:
+        return [
+            x
+            for x in self.herdr_log().splitlines()
+            if x.startswith("workspace\tcreate\t")
+        ]
+
+    def test_start_passes_parent(self) -> None:
+        self.project_config(["🦊"])
+        r = self.start_task(HERDR_WORKSPACE_ID="w1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.create_calls()
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn("--parent\tw1\t", calls[0])
+        self.assertNotIn("workspace без родителя", r.stderr)
+
+    def test_start_parent_retry_on_old_herdr(self) -> None:
+        self.project_config(["🦊"])
+        r = self.start_task(HERDR_WORKSPACE_ID="w1", FAKE_HERDR_NO_PARENT="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.create_calls()
+        self.assertEqual(len(calls), 2, calls)
+        self.assertIn("--parent\tw1\t", calls[0])
+        self.assertNotIn("--parent", calls[1])
+        self.assertIn("workspace без родителя", r.stderr)
+        self.assertIn("unexpected argument", r.stderr)
+
+    def test_start_parent_retry_on_nested(self) -> None:
+        self.project_config(["🦊"])
+        r = self.start_task(HERDR_WORKSPACE_ID="w1", FAKE_HERDR_PARENT_NESTED="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.create_calls()
+        self.assertEqual(len(calls), 2, calls)
+        self.assertNotIn("--parent", calls[1])
+        self.assertIn("workspace_parent_nested", r.stderr)
+
+    def test_start_worker_role_has_no_parent(self) -> None:
+        self.project_config(["🦊"])
+        r = self.start_task(HERDR_WORKSPACE_ID="w1", DUTY_ROLE="worker")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.create_calls()
+        self.assertEqual(len(calls), 1, calls)
+        self.assertNotIn("--parent", calls[0])
+        self.assertIn("вложенность один уровень", r.stderr)
+
+    def test_start_without_workspace_id_warns(self) -> None:
+        self.project_config(["🦊"])
+        r = self.start_task()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.create_calls()
+        self.assertEqual(len(calls), 1, calls)
+        self.assertNotIn("--parent", calls[0])
+        self.assertIn("HERDR_WORKSPACE_ID не задан", r.stderr)
 
     def test_start_waits_for_shell_prompt_before_agent_start(self) -> None:
         self.project_config(["🦊"])

@@ -65,8 +65,20 @@ class DecisionNumberTest(unittest.TestCase):
         (self.root / "scripts").mkdir()
         self.fake = self.root / "scripts" / "renumber-decisions.py"
         self.fake.write_text(FAKE, encoding="utf-8")
+        (self.root / ".duty").mkdir()
+        (self.root / ".duty" / "duty.toml").write_text(
+            "schema = 1\n[docs]\n"
+            'decision_insert = "python3 -I scripts/renumber-decisions.py insert"\n'
+            'decision_index = "python3 -I scripts/renumber-decisions.py --write-index"\n',
+            encoding="utf-8",
+        )
         subprocess.run([*GIT, "init", "-q", "-b", "master"], cwd=self.root, check=True)
-        self.env = {**os.environ, "DUTY_RENUMBER": str(self.fake)}
+        self.env = {
+            **os.environ,
+            "DUTY_CONFIG_USER": str(Path(self.tmp.name) / "no-user.toml"),
+        }
+        self.env.pop("DUTY_PROJECT", None)
+        self.env.pop("CLAUDE_PROJECT_DIR", None)
 
     def run_script(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -90,6 +102,15 @@ class DecisionNumberTest(unittest.TestCase):
         self.assertEqual(
             self.run_script(str(self.decisions / "03-data")).stdout.strip(), "0004"
         )
+
+    def test_insert_without_config_is_refused(self) -> None:
+        (self.root / ".duty" / "duty.toml").write_text("schema = 1\n", encoding="utf-8")
+        draft = Path(self.tmp.name) / "no-config.md"
+        draft.write_text("# 0000. Н\n", encoding="utf-8")
+        r = self.run_script(str(self.decisions / "02-code"), "--insert", str(draft))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("задайте docs.decision_insert в .duty/duty.toml", r.stderr)
+        self.assertTrue(draft.exists())
 
     def test_rejects_non_catalog(self) -> None:
         r = self.run_script(str(self.decisions))
@@ -192,10 +213,6 @@ class DecisionNumberTest(unittest.TestCase):
         self.root = disk / "repo"
         shutil.copytree(Path(self.tmp.name) / "repo", self.root)
         self.decisions = self.root / "docs" / "decisions"
-        self.env = {
-            **os.environ,
-            "DUTY_RENUMBER": str(self.root / "scripts" / "renumber-decisions.py"),
-        }
         subprocess.run([*GIT, "add", "-A"], cwd=self.root, check=True)
         subprocess.run([*GIT, "commit", "-qm", "init"], cwd=self.root, check=True)
         draft = shm / "cross-fs.md"

@@ -3,16 +3,22 @@
 
 Подкоманды:
 
-- `repeats` (по умолчанию) — повторы предложений между файлами правил из
-  `scripts/rules-lint.toml`: одно правило должно жить в одном файле-владельце,
-  остальные места ссылаются на него;
+- `repeats` (по умолчанию) — повторы предложений между файлами правил:
+  одно правило должно жить в одном файле-владельце, остальные места
+  ссылаются на него. Набор: постоянные файлы плагина (`PLUGIN_FILES`;
+  у `hooks/task-guard.py` берётся только докстринг модуля), затем из
+  конфигурации проекта (`reference/config.md`) `docs.rules` (глобы от корня
+  проекта, `~` допустим), `<корень>/.duty/*.md` и `docs.rules_optional`
+  (отсутствие файла — примечание в stderr, не находка). Без корня проекта
+  или в общем режиме проверяются только файлы плагина;
 - `brief <файл>` — обязательные разделы записки задачи (`-` — стандартный
   ввод); та же проверка, что в `dispatch.sh` и в хуке `task-guard.py`
   (`scripts/brief_check.py`).
 
 Находки печатаются строками `файл:строка: сообщение` и итогом «N находок»;
 код возврата 1 при находках, 0 без них, 2 при ошибке настройки.
-Запуск: `python3 -I scripts/rules-lint.py [repeats [--config ФАЙЛ] [--root КАТАЛОГ]]`.
+Запуск: `python3 -I scripts/rules-lint.py [repeats [--root КАТАЛОГ]]`; без `--root`
+корень ищет `duty_config.py`.
 Внешних зависимостей нет (Python 3.11+).
 """
 
@@ -23,16 +29,29 @@ import ast
 import glob
 import re
 import sys
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import brief_check
+import duty_config
 
 PLUGIN = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG = Path(__file__).resolve().parent / "rules-lint.toml"
+# Порог повтора: нормализованное предложение не короче обоих значений.
+MIN_WORDS = 8
+MIN_CHARS = 50
+# Постоянные файлы плагина от его каталога; у task-guard.py — только докстринг.
+PLUGIN_FILES = (
+    "README.md",
+    "agents/worker.md",
+    "reference/worker-rules.md",
+    "reference/brief-template.md",
+    "reference/report.md",
+    "reference/config.md",
+    "skills/dispatch/SKILL.md",
+    "hooks/task-guard.py",
+)
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
 HEADING_RE = re.compile(r"^\s*#{1,6}\s")
 LIST_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
@@ -124,17 +143,14 @@ def sentences_of(path: Path, shown: str) -> list[Sentence]:
     return found
 
 
-def load_config(path: Path) -> dict[str, object]:
-    try:
-        with path.open("rb") as stream:
-            return tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError) as error:
-        raise ConfigError(f"{path}: {error}") from error
-
-
 def shown_name(path: Path, root: Path) -> str:
+    """Путь от корня проекта; файлы плагина вне корня — «плагин/…»."""
     try:
         return str(path.relative_to(root))
+    except ValueError:
+        pass
+    try:
+        return f"плагин/{path.relative_to(PLUGIN)}"
     except ValueError:
         return str(path)
 
@@ -146,41 +162,28 @@ def expand(entry: str, root: Path) -> list[Path]:
     return sorted(Path(p) for p in glob.glob(pattern) if Path(p).is_file())
 
 
-def run_repeats(config_path: Path, root: Path) -> list[str]:
-    config = load_config(config_path)
-    entries = config.get("files")
-    if not isinstance(entries, list) or not entries:
-        raise ConfigError(f"{config_path}: нужен непустой список files")
-    min_words = int(config.get("min_words", 8))  # type: ignore[call-overload]
-    min_chars = int(config.get("min_chars", 50))  # type: ignore[call-overload]
-    allowed_raw = config.get("allowed", [])
-    allowed: list[str] = []
-    if isinstance(allowed_raw, list):
-        for item in allowed_raw:
-            if (
-                not isinstance(item, dict)
-                or not item.get("text")
-                or not item.get("reason")
-            ):
-                raise ConfigError(f"{config_path}: у [[allowed]] нужны text и reason")
-            phrase = normalize(str(item["text"]))
-            if not phrase:
-                raise ConfigError(
-                    f"{config_path}: [[allowed]] text пуст после нормализации"
-                )
-            allowed.append(phrase)
-    optional_raw = config.get("optional", [])
-    optional = (
-        {str(item) for item in optional_raw}
-        if isinstance(optional_raw, list)
-        else set()
-    )
-
+def run_repeats(root_arg: Path | None) -> list[str]:
+    try:
+        cfg = duty_config.load(root_arg)
+    except duty_config.ConfigError as error:
+        raise ConfigError(str(error)) from error
+    root = cfg.root
+    base = root or PLUGIN
     findings: list[str] = []
+    # Записи набора: (образец или путь, обязателен ли, от какого каталога).
+    entries: list[tuple[str, bool, Path]] = [(f, True, PLUGIN) for f in PLUGIN_FILES]
+    if root is not None:
+        for key, required in (("docs.rules", True), ("docs.rules_optional", False)):
+            value = cfg.get(key, [])
+            entries += [(str(e), required, root) for e in value]
+        if cfg.mode == "project":
+            for path in sorted((root / ".duty").glob("*.md")):
+                entries.append((str(path), True, root))
     index: dict[str, list[Sentence]] = {}
-    for entry in entries:
-        paths = expand(str(entry), root)
-        if not paths and str(entry) in optional:
+    seen: set[Path] = set()
+    for entry, required, origin in entries:
+        paths = expand(entry, origin)
+        if not paths and not required:
             print(
                 f"rules-lint.py: примечание: необязательный файл «{entry}» "
                 "не найден, не проверен",
@@ -188,14 +191,16 @@ def run_repeats(config_path: Path, root: Path) -> list[str]:
             )
             continue
         if not paths:
-            findings.append(f"{config_path.name}:1: в наборе нет файла для «{entry}»")
+            findings.append(f"duty.toml:1: в наборе нет файла для «{entry}»")
             continue
         for path in paths:
-            for sentence in sentences_of(path, shown_name(path, root)):
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            for sentence in sentences_of(path, shown_name(path, base)):
                 key = normalize(sentence.text)
-                if len(key.split()) < min_words or len(key) < min_chars:
-                    continue
-                if key in allowed:
+                if len(key.split()) < MIN_WORDS or len(key) < MIN_CHARS:
                     continue
                 index.setdefault(key, []).append(sentence)
     for group in index.values():
@@ -228,8 +233,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command")
     repeats = sub.add_parser("repeats", help="повторы предложений между файлами правил")
-    repeats.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    repeats.add_argument("--root", type=Path, default=None)
+    repeats.add_argument(
+        "--root", type=Path, default=None, help="корень проекта (иначе ищет duty_config.py)"
+    )
     brief = sub.add_parser("brief", help="обязательные разделы записки")
     brief.add_argument("file", help="файл записки или - (стандартный ввод)")
     return parser
@@ -243,8 +249,7 @@ def main(argv: list[str]) -> int:
         if args.command == "brief":
             findings = run_brief(args.file)
         else:
-            root = (args.root or PLUGIN.parents[1]).resolve()
-            findings = run_repeats(args.config, root)
+            findings = run_repeats(args.root)
     except ConfigError as error:
         print(f"rules-lint.py: {error}", file=sys.stderr)
         return 2

@@ -635,7 +635,44 @@ def check_config(cfg: Config) -> list[str]:
                 )
     out += _check_symbols(cfg)
     out += _check_colors(cfg)
+    out += _check_local_ignored(cfg)
     return out
+
+
+LOCAL_REL = ".duty/local.toml"
+
+
+def _git_rc(root: Path, *args: str) -> int | None:
+    """Код выхода `git -C root …`; None — git недоступен."""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, check=False
+        ).returncode
+    except OSError:
+        return None
+
+
+def _in_git_tree(root: Path) -> bool:
+    return _git_rc(root, "rev-parse", "--is-inside-work-tree") == 0
+
+
+def _local_ignored(root: Path) -> bool:
+    return _git_rc(root, "check-ignore", "-q", LOCAL_REL) == 0
+
+
+def _check_local_ignored(cfg: Config) -> list[str]:
+    """Находка: `.duty/local.toml` проекта в git-дереве не игнорируется."""
+    root = cfg.root
+    if cfg.mode != "project" or root is None or not _in_git_tree(root):
+        return []
+    if _local_ignored(root):
+        return []
+    return [
+        (
+            f"{root / '.gitignore'}: {LOCAL_REL} не игнорируется git "
+            "(добавит duty_config.py init)"
+        )
+    ]
 
 
 def check_notes(cfg: Config) -> list[str]:
@@ -803,6 +840,54 @@ name = {name}  # имя для подписей, статистики и кат�
 """
 
 
+LOCAL_TEMPLATE = """\
+# Перекрытия одной машины для этого проекта; файл не в git (.gitignore).
+# Ключи те же, что в duty.toml (reference/config.md плагина); schema необязателен.
+# Здесь задаётся только отличие этой машины от duty.toml.
+
+# [paths]
+# results = "~/duty-results"
+"""
+
+
+def ensure_gitignore(root: Path) -> Path | None:
+    """Добавляет `.duty/local.toml` в `.gitignore` корня, если файл не игнорируется.
+
+    Возвращает путь `.gitignore`, если он создан или изменён, иначе None.
+    """
+    gitignore = root / ".gitignore"
+    existing = gitignore.read_text(encoding="utf-8") if gitignore.is_file() else ""
+    if _in_git_tree(root):
+        if _local_ignored(root):
+            return None
+    elif any(
+        line.strip() in (LOCAL_REL, "/" + LOCAL_REL) for line in existing.splitlines()
+    ):
+        return None
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    gitignore.write_text(existing + LOCAL_REL + "\n", encoding="utf-8")
+    return gitignore
+
+
+def init_project(root: Path, name: str) -> list[Path]:
+    """Доводит проект до полного состояния; возвращает созданные и изменённые файлы."""
+    changed: list[Path] = []
+    duty_dir = root / ".duty"
+    for target, text in (
+        (duty_dir / "duty.toml", init_text(name)),
+        (duty_dir / "local.toml", LOCAL_TEMPLATE),
+    ):
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+            changed.append(target)
+    ignore = ensure_gitignore(root)
+    if ignore is not None:
+        changed.append(ignore)
+    return changed
+
+
 def init_text(name: str) -> str:
     return INIT_TEMPLATE.format(name=json.dumps(name, ensure_ascii=False))
 
@@ -861,7 +946,11 @@ def _parser() -> argparse.ArgumentParser:
     e = sub.add_parser("env", parents=[common], help="строки export для bash")
     e.add_argument("--prefix", default="DUTY_CFG_")
     sub.add_parser("check", parents=[common], help="проверка схемы")
-    i = sub.add_parser("init", parents=[common], help="создать .duty/duty.toml")
+    i = sub.add_parser(
+        "init",
+        parents=[common],
+        help="создать .duty/duty.toml, .duty/local.toml и строку .gitignore",
+    )
     i.add_argument("--name")
     return p
 
@@ -880,13 +969,16 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return EXIT_MISSING
-        target = found / ".duty" / "duty.toml"
-        if target.exists():
-            print(f"duty_config.py: {target} уже есть", file=sys.stderr)
+        changed = init_project(found, args.name or found.name)
+        if not changed:
+            print(
+                f"duty_config.py: {found / '.duty'} уже в полном состоянии: "
+                "duty.toml, local.toml и строка .gitignore уже есть",
+                file=sys.stderr,
+            )
             return EXIT_FINDINGS
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(init_text(args.name or found.name), encoding="utf-8")
-        print(target)
+        for path in changed:
+            print(path)
         return 0
     try:
         cfg = load(root, cwd)

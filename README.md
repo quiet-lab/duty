@@ -448,7 +448,10 @@ marketplace quiet-lab>`, затем `claude plugin install duty@quiet-lab`;
 
 1. `python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/duty_config.py" init` создаёт
    `.duty/duty.toml` с `schema = 1`, именем проекта и закомментированными
-   ключами с пояснениями; файл уже есть — отказ.
+   ключами с пояснениями, `.duty/local.toml` для перекрытий машины и строку
+   `.duty/local.toml` в `.gitignore`; созданное ранее пропускается, делать
+   нечего — отказ. `duty_config.py check` сообщает, если `.duty/local.toml`
+   не игнорируется git.
 2. Ключи заполняются по `reference/config.md`; `duty_config.py check`
    проверяет схему.
 3. Проектные дополнения кладутся в `.duty/` (`worker-rules.md`,
@@ -481,7 +484,7 @@ duty_config.py root                  # корень проекта
 duty_config.py get paths.results     # значение ключа (путь — абсолютный)
 duty_config.py json                  # вся слитая конфигурация
 duty_config.py check                 # проверка схемы
-duty_config.py init                  # создать .duty/duty.toml
+duty_config.py init                  # .duty/duty.toml, .duty/local.toml, .gitignore
 ```
 
 Сценарии плагина берут значения только оттуда; путей и имён проекта в них

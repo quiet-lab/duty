@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -75,6 +76,7 @@ class Base(unittest.TestCase):
         root = self.tmp / name
         root.mkdir(parents=True)
         git(root, "init", "-q")
+        (root / ".gitignore").write_text(".duty/local.toml\n", encoding="utf-8")
         if toml is not None:
             (root / ".duty").mkdir()
             (root / ".duty" / "duty.toml").write_text(toml, encoding="utf-8")
@@ -451,6 +453,73 @@ class CliTest(Base):
         again = self.cli("init", cwd=root)
         self.assertEqual(again.returncode, 1)
 
+    def test_init_creates_local_and_ignore(self) -> None:
+        root = self.repo(toml=None)
+        (root / ".gitignore").unlink()
+        r = self.cli("init", cwd=root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(
+            r.stdout.splitlines(),
+            [
+                str(root / ".duty/duty.toml"),
+                str(root / ".duty/local.toml"),
+                str(root / ".gitignore"),
+            ],
+        )
+        local = root / ".duty/local.toml"
+        self.assertEqual(tomllib.loads(local.read_text(encoding="utf-8")), {})
+        self.assertEqual(
+            (root / ".gitignore").read_text(encoding="utf-8"), ".duty/local.toml\n"
+        )
+        self.assertEqual(self.cli("check", cwd=root).returncode, 0)
+        self.assertEqual(self.cli("get", "project.name", cwd=root).returncode, 0)
+        self.assertEqual(self.cli("init", cwd=root).returncode, 1)
+
+    def test_init_only_missing_parts(self) -> None:
+        root = self.repo()
+        (root / ".gitignore").unlink()
+        before = (root / ".duty/duty.toml").read_text(encoding="utf-8")
+        r = self.cli("init", cwd=root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(
+            r.stdout.splitlines(),
+            [str(root / ".duty/local.toml"), str(root / ".gitignore")],
+        )
+        self.assertEqual((root / ".duty/duty.toml").read_text(encoding="utf-8"), before)
+
+    def test_init_gitignore_without_newline(self) -> None:
+        root = self.repo()
+        (root / ".gitignore").write_text("build/", encoding="utf-8")
+        r = self.cli("init", cwd=root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(
+            (root / ".gitignore").read_text(encoding="utf-8"),
+            "build/\n.duty/local.toml\n",
+        )
+
+    def test_init_gitignore_pattern_covers(self) -> None:
+        root = self.repo()
+        (root / ".gitignore").write_text(
+            ".duty/*.toml\n!.duty/duty.toml\n", encoding="utf-8"
+        )
+        r = self.cli("init", cwd=root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), [str(root / ".duty/local.toml")])
+        self.assertEqual(
+            (root / ".gitignore").read_text(encoding="utf-8"),
+            ".duty/*.toml\n!.duty/duty.toml\n",
+        )
+
+    def test_init_non_git_root_text_check(self) -> None:
+        root = self.tmp / "plain"
+        root.mkdir()
+        (root / ".gitignore").write_text("/.duty/local.toml\n", encoding="utf-8")
+        r = self.cli("init", "--root", str(root), cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(
+            (root / ".gitignore").read_text(encoding="utf-8"), "/.duty/local.toml\n"
+        )
+
 
 class CheckTest(Base):
     def findings(
@@ -472,6 +541,23 @@ class CheckTest(Base):
             user='[symbols]\noutside = ["🍺", "☕"]\noutside_color = "#F5C2E7"\n',
         )
         self.assertEqual((code, out), (0, []))
+
+    def test_local_not_ignored(self) -> None:
+        root = self.repo()
+        (root / ".gitignore").unlink()
+        r = self.cli("check", cwd=root)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(
+            r.stdout.splitlines(),
+            [
+                (
+                    f"{root / '.gitignore'}: .duty/local.toml не игнорируется git "
+                    "(добавит duty_config.py init)"
+                )
+            ],
+        )
+        (root / ".gitignore").write_text(".duty/local.toml\n", encoding="utf-8")
+        self.assertEqual(self.cli("check", cwd=root).returncode, 0)
 
     def test_color_format(self) -> None:
         code, out = self.findings(

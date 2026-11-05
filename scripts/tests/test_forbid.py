@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,6 +16,44 @@ forbid = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(forbid)
 
 AXATA = "~/.config/axata/mne-vm-user.env"
+
+BASE_TOML = """schema = 1
+
+[git]
+protected = ["dev", "dev2", "master"]
+
+[secrets]
+dirs = ["~/.config/axata"]
+"""
+
+
+def make_root(toml: str) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+    """Временный корень проекта с `.duty/duty.toml`."""
+    tmp = tempfile.TemporaryDirectory()
+    root = Path(tmp.name)
+    (root / ".duty").mkdir()
+    (root / ".duty" / "duty.toml").write_text(toml, encoding="utf-8")
+    return tmp, root
+
+
+def settings_for(toml: str | None) -> "forbid.Settings":
+    """Settings из конфигурации временного корня; None — корня и файла нет."""
+    tmp, root = make_root(toml if toml is not None else "schema = 1\n")
+    saved = {k: os.environ.get(k) for k in ("DUTY_PROJECT", "DUTY_CONFIG_USER")}
+    os.environ["DUTY_PROJECT"] = str(root)
+    os.environ["DUTY_CONFIG_USER"] = str(root / "no-user.toml")
+    try:
+        return forbid.load_settings(str(root))
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        tmp.cleanup()
+
+
+CFG = settings_for(BASE_TOML)
 
 # ключ запрета -> (отвергаемые команды, разрешённые команды)
 CASES: dict[str, tuple[list[str], list[str]]] = {
@@ -250,12 +289,17 @@ NEUTRAL = [
 
 
 class ForbidTest(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp, root = make_root(BASE_TOML)
+        self.addCleanup(tmp.cleanup)
+        self.root_dir = str(root)
+
     def test_denied(self) -> None:
         for key, (denied, _) in CASES.items():
             self.assertGreaterEqual(len(denied), 2, key)
             for command in denied:
                 with self.subTest(key=key, command=command):
-                    found = forbid.check(command)
+                    found = forbid.check(command, CFG)
                     self.assertIsNotNone(found, command)
                     assert found is not None
                     self.assertTrue(found.startswith(key.split("-")[0]), (key, found))
@@ -264,19 +308,19 @@ class ForbidTest(unittest.TestCase):
         for key, (denied, _) in CASES.items():
             for command in denied:
                 with self.subTest(key=key, command=command):
-                    self.assertEqual(forbid.check(command), key)
+                    self.assertEqual(forbid.check(command, CFG), key)
 
     def test_allowed(self) -> None:
         for key, (_, allowed) in CASES.items():
             self.assertGreaterEqual(len(allowed), 2, key)
             for command in allowed:
                 with self.subTest(key=key, command=command):
-                    self.assertIsNone(forbid.check(command))
+                    self.assertIsNone(forbid.check(command, CFG))
 
     def test_neutral(self) -> None:
         for command in NEUTRAL:
             with self.subTest(command=command):
-                self.assertIsNone(forbid.check(command))
+                self.assertIsNone(forbid.check(command, CFG))
 
     def test_nested(self) -> None:
         for command in (
@@ -292,7 +336,7 @@ class ForbidTest(unittest.TestCase):
             "bash -o pipefail -c 'pkill x'",
         ):
             with self.subTest(command=command):
-                self.assertIsNotNone(forbid.check(command))
+                self.assertIsNotNone(forbid.check(command, CFG))
 
     def test_every_key_has_message(self) -> None:
         for key in CASES:
@@ -302,6 +346,8 @@ class ForbidTest(unittest.TestCase):
         self, payload: object, role: str | None
     ) -> subprocess.CompletedProcess[str]:
         env = {k: v for k, v in os.environ.items() if k != "DUTY_ROLE"}
+        env["DUTY_PROJECT"] = self.root_dir
+        env["DUTY_CONFIG_USER"] = str(Path(self.root_dir) / "no-user.toml")
         if role:
             env["DUTY_ROLE"] = role
         return subprocess.run(
@@ -325,6 +371,14 @@ class ForbidTest(unittest.TestCase):
         self.assertEqual(out["permissionDecision"], "deny")
         self.assertNotIn(secret, done.stdout)
         self.assertIn("rules.md", out["permissionDecisionReason"])
+        self.assertNotIn("монорепозитори", out["permissionDecisionReason"])
+
+    def test_hook_protected_text_from_config(self) -> None:
+        done = self.run_hook(self.bash("git push origin dev2"), "worker")
+        reason = json.loads(done.stdout)["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ]
+        self.assertIn("dev, dev2, master", reason)
 
     def test_hook_silent_outside_worker(self) -> None:
         for role in (None, "main"):
@@ -345,6 +399,80 @@ class ForbidTest(unittest.TestCase):
         ):
             done = self.run_hook(payload, "worker")
             self.assertEqual((done.returncode, done.stdout), (0, ""))
+
+
+class ConfigTest(unittest.TestCase):
+    def test_defaults_without_config(self) -> None:
+        cfg = settings_for(None)
+        self.assertEqual(forbid.check("git push origin main", cfg), "git-protected")
+        self.assertIsNone(forbid.check("git push origin dev2", cfg))
+        self.assertIsNone(forbid.check("cat ~/.config/axata/x.env", cfg))
+        # остальные secret-* действуют без каталогов
+        self.assertEqual(forbid.check("printenv", cfg), "secret-env")
+
+    def test_add_all_and_stash_switches(self) -> None:
+        cfg = settings_for(
+            "schema = 1\n[git]\nforbid_add_all = false\nforbid_stash = false\n"
+        )
+        self.assertIsNone(forbid.check("git add -A", cfg))
+        self.assertIsNone(forbid.check("git stash", cfg))
+        self.assertEqual(forbid.check("git add -A", CFG), "git-add")
+
+    def test_network_and_herdr_switches(self) -> None:
+        cfg = settings_for(
+            "schema = 1\n[forbid]\nnetwork = false\nherdr_direct = false\n"
+        )
+        self.assertIsNone(forbid.check("nmcli connection up x", cfg))
+        self.assertIsNone(forbid.check("herdr pane run p x", cfg))
+        self.assertEqual(forbid.check("nmcli connection up x", CFG), "network")
+
+    def test_project_rule(self) -> None:
+        cfg = settings_for(
+            'schema = 1\n[[forbid.rules]]\nwords = ["instances-down", "all"]\n'
+            'reason = "снимать только своими номерами"\n'
+        )
+        found = forbid.check("just dev-stand::instances-down all", cfg)
+        self.assertEqual(found, "rule-0")
+        assert found
+        text = forbid.deny_text(found, cfg)
+        self.assertIn("снимать только своими номерами", text)
+        self.assertIn("[[forbid.rules]]", text)
+        self.assertIsNone(forbid.check("just dev-stand::instances-down 3", cfg))
+        self.assertEqual(forbid.check("bash -c 'instances-down all'", cfg), "rule-0")
+
+    def test_second_secret_dir(self) -> None:
+        cfg = settings_for(
+            'schema = 1\n[secrets]\ndirs = ["~/.config/axata", "/etc/secrets"]\n'
+        )
+        self.assertEqual(forbid.check("cat /etc/secrets/db.env", cfg), "secret-file")
+        self.assertEqual(forbid.check("cat ~/.config/axata/x", cfg), "secret-file")
+        self.assertIsNone(forbid.check("cat /var/etc/secretsx/db.env", cfg))
+        self.assertIsNone(forbid.check("grep -c x /etc/secrets/db.env", cfg))
+
+    def test_home_dir_forms(self) -> None:
+        cfg = settings_for('schema = 1\n[secrets]\ndirs = ["~/vault"]\n')
+        for path in (
+            "~/vault/a",
+            "$HOME/vault/a",
+            "${HOME}/vault/a",
+            os.path.expanduser("~/vault/a"),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(forbid.check(f"cat {path}", cfg), "secret-file")
+
+    def test_broken_config_falls_back(self) -> None:
+        tmp, root = make_root("schema = [broken")
+        self.addCleanup(tmp.cleanup)
+        saved = os.environ.get("DUTY_PROJECT")
+        os.environ["DUTY_PROJECT"] = str(root)
+        try:
+            cfg = forbid.load_settings(str(root))
+        finally:
+            if saved is None:
+                os.environ.pop("DUTY_PROJECT", None)
+            else:
+                os.environ["DUTY_PROJECT"] = saved
+        self.assertEqual(cfg.protected, {"main", "master"})
 
 
 if __name__ == "__main__":

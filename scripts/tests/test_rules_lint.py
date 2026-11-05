@@ -1,5 +1,6 @@
-"""Проверки `scripts/rules-lint.py`: повторы между файлами правил и подкоманда brief."""
+"""Проверки `scripts/rules-lint.py`: набор из конфигурации проекта, повторы, подкоманда brief."""
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -24,18 +25,22 @@ class RulesLintTest(unittest.TestCase):
         self.root = Path(self.tmp.name).resolve()
 
     def write(self, name: str, text: str) -> None:
-        (self.root / name).write_text(text, encoding="utf-8")
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
 
-    def config(self, files: list[str], extra: str = "") -> Path:
+    def config(self, files: list[str], optional: list[str] | None = None) -> None:
+        """Конфигурация проекта: docs.rules и docs.rules_optional."""
         listing = ", ".join(f'"{f}"' for f in files)
-        path = self.root / "lint.toml"
-        path.write_text(
-            f"files = [{listing}]\nmin_words = 8\nmin_chars = 50\n{extra}\n",
-            encoding="utf-8",
+        extra = ", ".join(f'"{f}"' for f in optional or [])
+        self.write(
+            ".duty/duty.toml",
+            f"schema = 1\n[docs]\nrules = [{listing}]\nrules_optional = [{extra}]\n",
         )
-        return path
 
-    def run_lint(self, *args: str, stdin: str = "") -> subprocess.CompletedProcess[str]:
+    def run_lint(
+        self, *args: str, stdin: str = "", env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, "-I", str(LINT), *args],
             input=stdin,
@@ -43,18 +48,19 @@ class RulesLintTest(unittest.TestCase):
             text=True,
             timeout=LIMIT_S,
             check=False,
+            env=env
+            or {
+                "HOME": str(self.root / "home"),
+                "DUTY_CONFIG_USER": str(self.root / "no-user.toml"),
+                "PATH": os.environ.get("PATH", ""),
+            },
         )
 
     def repeats(
-        self, files: list[str], extra: str = ""
+        self, files: list[str], optional: list[str] | None = None
     ) -> subprocess.CompletedProcess[str]:
-        return self.run_lint(
-            "repeats",
-            "--config",
-            str(self.config(files, extra)),
-            "--root",
-            str(self.root),
-        )
+        self.config(files, optional)
+        return self.run_lint("repeats", "--root", str(self.root))
 
     def test_duplicate_found(self) -> None:
         self.write("a.md", f"# A\n\n{SENTENCE}\n")
@@ -76,8 +82,8 @@ class RulesLintTest(unittest.TestCase):
     def test_default_subcommand_is_repeats(self) -> None:
         self.write("a.md", f"{SENTENCE}\n")
         self.write("b.md", f"{SENTENCE}\n")
-        config = self.config(["a.md", "b.md"])
-        r = self.run_lint("--config", str(config), "--root", str(self.root))
+        self.config(["a.md", "b.md"])
+        r = self.run_lint("--root", str(self.root))
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
 
     def test_code_block_ignored(self) -> None:
@@ -95,12 +101,6 @@ class RulesLintTest(unittest.TestCase):
         self.write("a.md", text)
         self.write("b.md", text)
         self.assertEqual(self.repeats(["a.md", "b.md"]).returncode, 0)
-
-    def test_allowed_removes_finding(self) -> None:
-        self.write("a.md", f"{SENTENCE}\n")
-        self.write("b.md", f"{SENTENCE}\n")
-        extra = f'[[allowed]]\ntext = "{SENTENCE}"\nreason = "обоснование"\n'
-        self.assertEqual(self.repeats(["a.md", "b.md"], extra).returncode, 0)
 
     def test_missing_file_is_finding(self) -> None:
         self.write("a.md", "Текст.\n")
@@ -137,56 +137,41 @@ class RulesLintTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertEqual(r.stdout.count("повтор"), 1)
 
-    def test_allowed_empty_text_is_config_error(self) -> None:
-        self.write("a.md", f"{SENTENCE}\n")
-        self.write("b.md", f"{SENTENCE}\n")
-        extra = '[[allowed]]\ntext = "…"\nreason = "x"\n'
-        r = self.repeats(["a.md", "b.md"], extra)
-        self.assertEqual(r.returncode, 2, r.stdout)
-        self.assertIn("пуст", r.stderr)
-
-    def test_allowed_is_equality_not_substring(self) -> None:
-        self.write("a.md", f"{SENTENCE}\n")
-        self.write("b.md", f"{SENTENCE}\n")
-        whole = f'[[allowed]]\ntext = "{SENTENCE}"\nreason = "x"\n'
-        self.assertEqual(self.repeats(["a.md", "b.md"], whole).returncode, 0)
-        part = f'[[allowed]]\ntext = "{SENTENCE[:60]}"\nreason = "x"\n'
-        self.assertEqual(self.repeats(["a.md", "b.md"], part).returncode, 1)
-
     def test_optional_missing_is_note_only(self) -> None:
         self.write("a.md", "Текст.\n")
-        home = self.root / "home"
-        home.mkdir()
-        config = self.config(
-            ["a.md", "~/.claude/CLAUDE.md"], 'optional = ["~/.claude/CLAUDE.md"]'
-        )
+        r = self.repeats(["a.md"], ["~/.claude/CLAUDE.md"])
+        self.assertEqual((r.returncode, r.stdout), (0, "0 находок\n"), r.stderr)
+        self.assertIn("не проверен", r.stderr)
+        # Обязательный отсутствующий файл по-прежнему находка.
+        r = self.repeats(["a.md", "нет.md"], ["~/.claude/CLAUDE.md"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("нет.md", r.stdout)
+
+    def test_duty_dir_markdown_repeat_with_rules(self) -> None:
+        self.write("a.md", f"{SENTENCE}\n")
+        self.write(".duty/b.md", f"{SENTENCE}\n")
+        r = self.repeats(["a.md"])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("повтор в .duty/b.md:1", r.stdout)
+
+    def test_without_root_only_plugin_files(self) -> None:
+        bare = Path(self.tmp.name) / "bare"
+        bare.mkdir()
         r = subprocess.run(
-            [
-                sys.executable,
-                "-I",
-                str(LINT),
-                "repeats",
-                "--config",
-                str(config),
-                "--root",
-                str(self.root),
-            ],
-            env={"HOME": str(home)},
+            [sys.executable, "-I", str(LINT), "repeats"],
+            cwd=bare,
+            env={
+                "HOME": str(bare),
+                "DUTY_CONFIG_USER": str(bare / "no.toml"),
+                "PATH": os.environ.get("PATH", ""),
+            },
             capture_output=True,
             text=True,
             timeout=LIMIT_S,
             check=False,
         )
-        self.assertEqual((r.returncode, r.stdout), (0, "0 находок\n"), r.stderr)
-        self.assertIn("не проверен", r.stderr)
-        # Не необязательные отсутствующие файлы по-прежнему находка.
-        config = self.config(
-            ["a.md", "~/.claude/CLAUDE.md", "нет.md"],
-            'optional = ["~/.claude/CLAUDE.md"]',
-        )
-        r = self.run_lint("repeats", "--config", str(config), "--root", str(self.root))
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("нет.md", r.stdout)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout, "0 находок\n")
 
     def test_brief_subcommand(self) -> None:
         good = (

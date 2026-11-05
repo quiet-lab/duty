@@ -26,6 +26,7 @@ import argparse
 import copy
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -45,8 +46,9 @@ ENV_PATHS = {
     "busy": "DUTY_BUSY_DIR",
     "signals": "DUTY_SIGNALS_DIR",
 }
+COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}")
 # Ключи, которые допустимы только в пользовательском слое.
-USER_ONLY = {"paths.state", "symbols.outside"}
+USER_ONLY = {"paths.state", "symbols.outside", "symbols.outside_color"}
 
 # Типы значений схемы: str, int, bool, list (список строк) и записи вида
 # ("tables", {поле: тип}) — массив таблиц, у которого обязательны все поля.
@@ -104,7 +106,13 @@ SCHEMA_KEYS: dict[str, dict[str, Any]] = {
     "busy": {"resources": ("tables", {"name": STR, "why": STR, "until": STR})},
     "cleanup": {"keep_trees": LIST, "skip_trees": LIST, "docker_keep_projects": LIST},
     "stats": {"test_repos": LIST, "rules_paths": LIST, "pipeline_paths": LIST},
-    "symbols": {"main": STR, "tasks": LIST, "outside": LIST},
+    "symbols": {
+        "main": STR,
+        "tasks": LIST,
+        "outside": LIST,
+        "color": STR,
+        "outside_color": STR,
+    },
 }
 
 # Ключи, обязательные при наличии таблицы: без них сервис не работает.
@@ -149,7 +157,13 @@ DEFAULTS: dict[str, Any] = {
         "rules_paths": [".claude/"],
         "pipeline_paths": ["scripts/", ".github/"],
     },
-    "symbols": {"main": "", "tasks": [], "outside": []},
+    "symbols": {
+        "main": "",
+        "tasks": [],
+        "outside": [],
+        "color": "",
+        "outside_color": "",
+    },
 }
 OPTIONAL_DEFAULTS: dict[str, dict[str, Any]] = {
     "bitbucket": {"sets_repo": ""},
@@ -620,6 +634,7 @@ def check_config(cfg: Config) -> list[str]:
                     f"{src}: {section}.{key}: обязателен при наличии [{section}]"
                 )
     out += _check_symbols(cfg)
+    out += _check_colors(cfg)
     return out
 
 
@@ -676,6 +691,20 @@ def _check_symbols(cfg: Config) -> list[str]:
                 out.append(f"{src}: {dotted}: повтор символа «{sym}» ({where})")
                 continue
             seen[sym] = dotted
+    return out
+
+
+def _check_colors(cfg: Config) -> list[str]:
+    """Цвета workspace: пусто (не задан) или `#rrggbb`."""
+    out: list[str] = []
+    for key in ("color", "outside_color"):
+        dotted = f"symbols.{key}"
+        src = _origin(cfg.layers, dotted)
+        value = cfg.get(dotted)
+        if src is None or not isinstance(value, str) or value == "":
+            continue
+        if not COLOR_RE.fullmatch(value):
+            out.append(f"{src}: {dotted}: цвет «{value}» не в формате #rrggbb")
     return out
 
 
@@ -770,6 +799,7 @@ name = {name}  # имя для подписей, статистики и кат�
 # [symbols]                     # по одной кодовой точке, без повторов между наборами
 # main = ""                     # постоянный символ главной сессии репозитория
 # tasks = []                    # символы workspace задач (пусто — scripts/symbols.txt плагина)
+# color = ""                    # цвет заголовка workspace задач, #rrggbb (пусто — не задаётся)
 """
 
 

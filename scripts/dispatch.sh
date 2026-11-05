@@ -23,7 +23,7 @@
 # Символ workspace — случайный эмодзи из набора symbols.tasks конфигурации
 # (вне репозитория — symbols.outside пользовательского слоя; пустой набор —
 # запасной scripts/symbols.txt), не занятый открытыми задачами
-# (dispatch.sh list); symbols.main — постоянный символ главной сессии,
+# (dispatch.sh list), цвет заголовка — symbols.color; symbols.main — постоянный символ главной сессии,
 # задачам не выдаётся; по нему главная сессия и пользователь узнают задачу
 # в подписях herdr и в шапке вопроса (ask.py). Метка workspace и вкладки —
 # «<символ> <имя> · <модель>»; имя агента herdr и сессии Claude — <имя>.
@@ -173,6 +173,28 @@ load_symbols() {
             [ -z "$sym" ] || symbol_set+=("$sym")
         done < "$symbols_fallback"
     fi
+}
+
+# Цвет заголовка workspace задачи: symbols.color конфигурации проекта (вне
+# репозитория — symbols.outside_color пользовательского слоя). Пусто — цвет
+# не задан и токен не шлётся.
+workspace_color() {
+    local key=symbols.color
+    [ -n "$root" ] || key=symbols.outside_color
+    cfg get "$key" --default '' || die "цвет $key не получен"
+}
+
+# Токен color на workspace: herdr.fg = "$color" понимает только форк herdr
+# duty-v*; upstream без команды и ошибка отправки — пропуск с пометкой.
+report_color() {
+    local ws=$1 color=$2
+    [ -n "$color" ] || return 0
+    if ! herdr --version 2> /dev/null | grep -q 'duty-v'; then
+        warn "цвет workspace $ws пропущен: herdr не форк duty-v* (токен color не поддерживается)"
+        return 0
+    fi
+    herdr workspace report-metadata "$ws" --source duty --token "color=$color" > /dev/null \
+        || warn "цвет $color у workspace $ws не выставлен"
 }
 
 require_tools() {
@@ -592,6 +614,7 @@ cmd_start() {
     pane=$(jq -er '.result.root_pane.pane_id' <<< "$created") || die "шаг 2: нет корневой панели: $created"
     herdr workspace list | jq -e --arg w "$ws" '.result.workspaces[] | select(.workspace_id == $w)' > /dev/null \
         || die "шаг 2: workspace $ws не виден в herdr workspace list"
+    report_color "$ws" "$(workspace_color)"
 
     # Шаг 3. Служебный блок: агент читает его вместе с запиской.
     started_at_ms=$(date +%s%3N)

@@ -468,10 +468,28 @@ class CheckTest(Base):
         code, out = self.findings(
             f'schema = 1\n[bitbucket]\nurl = "u"\ntoken_file = "{token}"\n'
             '[[forbid.rules]]\nwords = ["a", "b"]\nreason = "r"\n'
-            '[symbols]\nmain = "🍀"\ntasks = ["🌱", "🌲"]\n',
-            user='[symbols]\noutside = ["🍺", "☕"]\n',
+            '[symbols]\nmain = "🍀"\ntasks = ["🌱", "🌲"]\ncolor = "#a6e3a1"\n',
+            user='[symbols]\noutside = ["🍺", "☕"]\noutside_color = "#F5C2E7"\n',
         )
         self.assertEqual((code, out), (0, []))
+
+    def test_color_format(self) -> None:
+        code, out = self.findings(
+            'schema = 1\n[symbols]\ncolor = "green"\n',
+            user='[symbols]\noutside_color = "#12345"\n',
+        )
+        text = "\n".join(out)
+        self.assertEqual(code, 1)
+        self.assertIn("symbols.color: цвет «green» не в формате #rrggbb", text)
+        self.assertIn("symbols.outside_color: цвет «#12345» не в формате #rrggbb", text)
+
+    def test_outside_color_user_layer_only(self) -> None:
+        code, out = self.findings('schema = 1\n[symbols]\noutside_color = "#a6e3a1"\n')
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "symbols.outside_color допустим только в пользовательском слое",
+            "\n".join(out),
+        )
 
     def test_schema_version(self) -> None:
         self.assertIn("поддерживается 1", " ".join(self.findings("schema = 2\n")[1]))

@@ -101,7 +101,7 @@ class WeekStatsTest(unittest.TestCase):
         )
 
     def test_classify_path(self) -> None:
-        self.assertEqual(ws.classify_path(".", "apps.python/qms/x.py"), "код")
+        self.assertEqual(ws.classify_path(".", "apps.python/app/x.py"), "код")
         self.assertEqual(ws.classify_path(".", "apps.python/tests/test_x.py"), "тесты")
         self.assertEqual(ws.classify_path("tests-repo", "helpers/a.ts"), "тесты")
         self.assertEqual(ws.classify_path(".", "docs/README.md"), "документация")

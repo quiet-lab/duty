@@ -15,7 +15,7 @@ assert SPEC and SPEC.loader
 forbid = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(forbid)
 
-AXATA = "~/.config/example/mne-vm-user.env"
+SECRET_ENV = "~/.config/example/vm-user.env"
 
 BASE_TOML = """schema = 1
 
@@ -170,30 +170,30 @@ CASES: dict[str, tuple[list[str], list[str]]] = {
     ),
     "secret-file": (
         [
-            f"cat {AXATA}",
+            f"cat {SECRET_ENV}",
             "grep password ~/.config/example/x.env",
             "sed -n 1p $HOME/.config/example/jira-pat",
             'head -c 5 "$HOME/.config/example/jira-pat"',
             "base64 < ~/.config/example/x",
-            f"cp {AXATA} /tmp/x",
+            f"cp {SECRET_ENV} /tmp/x",
             "echo $(cat ~/.config/example/x)",
             "cat ~/.config/example/x.env",
             "grep PASS ~/.config/example/x.env",
-            "python3 -Ic \"print(open('/home/mne/.config/example/x.env').read())\"",
+            "python3 -Ic \"print(open('/home/user/.config/example/x.env').read())\"",
             "sed -n p ~/.config/example/x.env",
             "awk '{print}' ~/.config/example/x.env",
             "cut -d= -f2 ~/.config/example/x.env",
             "tr a-z A-Z < ~/.config/example/x.env",
             "od -c ~/.config/example/x.env",
             "tee /tmp/x < ~/.config/example/x.env",
-            "python3 -c \"print(open('/home/mne/.config/example/x.env').read())\"",
-            "python3 -I - <<'EOF'\nimport sys\nsys.stdout.write(open('/home/mne/.config/example/x.env').read())\nEOF",
+            "python3 -c \"print(open('/home/user/.config/example/x.env').read())\"",
+            "python3 -I - <<'EOF'\nimport sys\nsys.stdout.write(open('/home/user/.config/example/x.env').read())\nEOF",
         ],
         [
             "python3 -I scripts/read-env.py ~/.config/example/x.env",
             "python3 -I -c \"import os; open(os.path.expanduser('~/.config/example/x.env')).read()\"",
             "python3 -I -c 'import os; p = os.environ[\"F\"]; print(open(p).read()[:0])'",
-            "python3 -I -c \"p='/home/mne/.config/example/x.env'; open(p,'w').write('A=2')\"",
+            "python3 -I -c \"p='/home/user/.config/example/x.env'; open(p,'w').write('A=2')\"",
             "sed -i 's/^A=.*/A=1/' ~/.config/example/x.env",
             "sed -i.bak -e 's/A/B/' ~/.config/example/x.env",
             "grep -c PASS ~/.config/example/x.env",
@@ -204,13 +204,13 @@ CASES: dict[str, tuple[list[str], list[str]]] = {
             "set -a; . ~/.config/example/x.env; set +a",
             "grep -rn password docs/",
             "ls ~/.config/example/",
-            f". {AXATA}",
-            f"source {AXATA}",
-            f"set -a; . {AXATA}; set +a; echo ok",
-            f"test -f {AXATA}",
-            f"stat {AXATA}",
-            f"chmod 600 {AXATA}",
-            f"cp {AXATA} ~/.config/example/copy.env",
+            f". {SECRET_ENV}",
+            f"source {SECRET_ENV}",
+            f"set -a; . {SECRET_ENV}; set +a; echo ok",
+            f"test -f {SECRET_ENV}",
+            f"stat {SECRET_ENV}",
+            f"chmod 600 {SECRET_ENV}",
+            f"cp {SECRET_ENV} ~/.config/example/copy.env",
             "cat docs/README.md",
             "head -c 32 /dev/urandom | base64 > ~/.config/example/x.env",
             "cat > ~/.config/example/x.env <<EOF\nA=1\nEOF",
@@ -238,7 +238,7 @@ CASES: dict[str, tuple[list[str], list[str]]] = {
     ),
     "secret-echo": (
         [
-            "echo $MNE_VM_PASSWORD",
+            "echo $VM_PASSWORD",
             'echo "token: ${JIRA_TOKEN}"',
             'printf "%s\\n" "$api_key"',
             "echo $GH_PAT",
@@ -246,10 +246,10 @@ CASES: dict[str, tuple[list[str], list[str]]] = {
             'echo "$KEY" | cat',
         ],
         [
-            'printf \'%s\' "$MNE_VM_PASSWORD" | sudo -S -p "" true',
+            'printf \'%s\' "$VM_PASSWORD" | sudo -S -p "" true',
             "echo $PATH",
-            "echo $HOME $MNE_VM_USER",
-            "echo '$MNE_VM_PASSWORD'",
+            "echo $HOME $VM_USER",
+            "echo '$VM_PASSWORD'",
             "echo password",
             "printf '%s' \"$TOKEN\" > run/token.txt",
             "printf '%s' \"$TOKEN\" | tr -d '\\n' | curl -H @- x",
@@ -273,7 +273,7 @@ CASES: dict[str, tuple[list[str], list[str]]] = {
             "sshpass -e ssh -p 2222 host",
             "sshpass -e ssh -p2222 host",
             'sshpass -p "$PW" ssh host',
-            'set -a; . ~/.config/example/mne-vm-user.env; set +a; ssh "$MNE_VM_USER@$h"',
+            'set -a; . ~/.config/example/vm-user.env; set +a; ssh "$VM_USER@$h"',
         ],
     ),
 }

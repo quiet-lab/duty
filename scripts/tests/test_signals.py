@@ -93,16 +93,16 @@ class SignalsTest(unittest.TestCase):
         self.assertIsInstance(data["at_ms"], int)
 
     def test_wait_then_signal(self) -> None:
-        p = self.start_wait("pr-merged-qms-2584", "--holder", "w1")
-        mark = self.dir / f"pr-merged-qms-2584.waiting-w1.{p.pid}"
+        p = self.start_wait("pr-merged-app-2584", "--holder", "w1")
+        mark = self.dir / f"pr-merged-app-2584.waiting-w1.{p.pid}"
         self.assertTrue(mark.exists())
         self.assertEqual(json.loads(mark.read_text(encoding="utf-8"))["pid"], p.pid)
         self.assertEqual(
-            self.run_cmd("signal", "pr-merged-qms-2584", "слит").returncode, 0
+            self.run_cmd("signal", "pr-merged-app-2584", "слит").returncode, 0
         )
         out, _ = p.communicate(timeout=LIMIT_S)
         self.assertEqual(p.returncode, 0)
-        self.assertIn("сигнал pr-merged-qms-2584: слит", out)
+        self.assertIn("сигнал pr-merged-app-2584: слит", out)
         self.assertFalse(mark.exists())
 
     def test_timeout(self) -> None:
@@ -171,10 +171,10 @@ class SignalsTest(unittest.TestCase):
         self.assertEqual(self.run_cmd("wait", "ok", "--holder", "Bad").returncode, 2)
 
     def test_valid_names_with_underscore_and_double_dash(self) -> None:
-        for good in ("a--b", "a_b", "task-done-qms_py314", "a-", "0a"):
+        for good in ("a--b", "a_b", "task-done-app_py314", "a-", "0a"):
             with self.subTest(name=good):
                 self.assertEqual(self.run_cmd("signal", good, "т").returncode, 0)
-        r = self.run_cmd("wait", "a_b", "--holder", "qms_py314")
+        r = self.run_cmd("wait", "a_b", "--holder", "app_py314")
         self.assertEqual(r.returncode, 0)
 
     def test_existing_signal_with_zero_timeout(self) -> None:

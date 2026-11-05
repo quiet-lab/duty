@@ -18,21 +18,21 @@ branches = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(branches)
 
 GATE = {
-    "key": "stage/qms/PR-1",
-    "name": "stage/qms/PR-1",
+    "key": "stage/app/PR-1",
+    "name": "stage/app/PR-1",
     "state": "SUCCESSFUL",
     "dateAdded": 100,
     "url": "",
 }
 FEED_RUNNING = {
-    "key": "feed-x/qms-1",
+    "key": "feed-x/app-1",
     "name": "Feed build PR-1",
     "state": "INPROGRESS",
     "dateAdded": 200,
     "url": "",
 }
 FEED_FAILED = {
-    "key": "t-feed-x/qms-1",
+    "key": "t-feed-x/app-1",
     "name": "Feed build PR-1",
     "state": "FAILED",
     "dateAdded": 300,
@@ -68,7 +68,7 @@ class FeedStatusTest(unittest.TestCase):
         self.assertFalse(gates.is_feed(FEED_RUNNING))
         self.assertEqual(
             gates.gate_summary([GATE, FEED_RUNNING], {})[0],
-            "stage/qms/PR-1: SUCCESSFUL, feed-x/qms-1: INPROGRESS",
+            "stage/app/PR-1: SUCCESSFUL, feed-x/app-1: INPROGRESS",
         )
 
     def test_is_feed_by_key_and_name(self):
@@ -81,7 +81,7 @@ class FeedStatusTest(unittest.TestCase):
 
     def test_gate_summary_ignores_newer_feed(self):
         builds, gate = gates.gate_summary([GATE, FEED_RUNNING], {})
-        self.assertEqual(builds, "stage/qms/PR-1: SUCCESSFUL")
+        self.assertEqual(builds, "stage/app/PR-1: SUCCESSFUL")
         self.assertEqual(gate, "—")
 
     def test_gate_summary_only_feed_is_no_builds(self):

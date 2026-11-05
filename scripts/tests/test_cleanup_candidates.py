@@ -139,7 +139,7 @@ class ExcludeWorktreeTest(unittest.TestCase):
         self.assertNotIn("worktree remove", row)
 
     def test_skip_trees_hides_stand_revision_trees(self) -> None:
-        wt = self.base / "stand" / "qms-wt" / "abc123"
+        wt = self.base / "stand" / "app-wt" / "abc123"
         wt.parent.mkdir(parents=True)
         git(self.sub, "worktree", "add", "--detach", str(wt))
         self.assertIn(str(wt), self.candidates())  # без skip_trees дерево в перечне

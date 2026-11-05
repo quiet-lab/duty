@@ -2,7 +2,7 @@
 
 ## Цель
 
-Проверить `jwait.sh`: ожидание идущей сборки Jenkins по событию во вкладке и итог в файлы.
+Проверить `jwait.sh`: ожидание идущей сборки Jenkins по событию во вкладке и итог в файлы. Проба требует раздела [jenkins] в .duty/duty.toml; задание `dev2/e2e` в примере — заменить заданием проекта.
 
 ## Критерий готовности
 
@@ -26,7 +26,7 @@
 
 ## Принятые решения
 
-- git и код монорепозитория не трогать; Jira, Bitbucket, Confluence, Jenkins не менять; push только в песочный `origin` (`{{SANDBOX}}/origin.git`), если разрешён ниже.
+- репозиторий проекта не трогать; Jira, Bitbucket, Confluence, Jenkins не менять; push только в песочный `origin` (`{{SANDBOX}}/origin.git`), если разрешён ниже.
 - Песочница `{{SANDBOX}}/` вне проекта: правки только в клонах внутри `$DUTY_TASK/work/`.
 - Тесты песочницы: `{{SANDBOX}}/venv/bin/python -m pytest -q` (в системном `python3` pytest нет). Один тест падает намеренно: `tests/test_pricing.py::test_threshold_is_inclusive`.
 - Вопросов не задавать (`ask.py` не вызывать).

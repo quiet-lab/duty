@@ -38,6 +38,10 @@ class ExcludeWorktreeTest(unittest.TestCase):
         git(sub, "push", "origin", "main")
         git(sub, "branch", "--set-upstream-to=origin/main", "main")
         git(self.root, "init", "-b", "main")
+        (self.root / ".duty").mkdir()
+        (self.root / ".duty" / "duty.toml").write_text(
+            f'schema = 1\n[paths]\nresults = "{self.base / "results"}"\n', encoding="utf-8"
+        )
         (self.root / ".gitmodules").write_text('[submodule "sub"]\n\tpath = sub\n\tparent = main\n', encoding="utf-8")
         self.sub = sub
 
@@ -50,7 +54,8 @@ class ExcludeWorktreeTest(unittest.TestCase):
         return wt
 
     def candidates(self, *extra: str) -> str:
-        env = {**os.environ, "HOME": str(self.base / "home"), "CLAUDE_PROJECT_DIR": str(self.root), **GIT_ENV}
+        env = {**os.environ, "HOME": str(self.base / "home"), "DUTY_PROJECT": str(self.root),
+               "DUTY_CONFIG_USER": str(self.base / "no-user-config.toml"), **GIT_ENV}
         r = subprocess.run([sys.executable, "-I", str(SCRIPT), str(self.root), *extra],
                            capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -86,7 +91,7 @@ class ExcludeWorktreeTest(unittest.TestCase):
         self.assertIn("оставлено", self.row(out, b))
 
     def test_exclude_without_pattern_is_error(self) -> None:
-        env = {**os.environ, **GIT_ENV}
+        env = {**os.environ, "DUTY_CONFIG_USER": str(self.base / "no-user-config.toml"), **GIT_ENV}
         r = subprocess.run([sys.executable, "-I", str(SCRIPT), str(self.root), "--exclude"],
                            capture_output=True, text=True, env=env, check=False)
         self.assertNotEqual(r.returncode, 0)
@@ -97,6 +102,37 @@ class ExcludeWorktreeTest(unittest.TestCase):
         row = self.row(self.candidates(), wt)
         self.assertIn("оставлено", row)
         self.assertNotIn("worktree remove", row)
+
+    def write_extension(self, name: str, body: str) -> None:
+        folder = self.root / ".duty" / "cleanup.d"
+        folder.mkdir(exist_ok=True)
+        script = folder / name
+        script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+        script.chmod(0o755)
+
+    def test_extension_json_line_becomes_row(self) -> None:
+        self.write_extension(
+            "10-ext.sh",
+            """printf '%s\\n' '{"kind":"стенд","sub":"","parent":"","what":"деревья ext","size":"1M","verdict":"удалить: тест","cmd":"echo x"}'\n""",
+        )
+        out = self.candidates()
+        rows = [line for line in out.splitlines() if "деревья ext" in line]
+        self.assertEqual(len(rows), 1, out)
+        self.assertEqual(rows[0], "| стенд |  |  | деревья ext | 1M | удалить: тест | `echo x` |")
+
+    def test_failing_extension_gives_not_received_row(self) -> None:
+        self.write_extension("20-bad.sh", "echo oops >&2\nexit 1\n")
+        out = self.candidates()
+        rows = [line for line in out.splitlines() if "20-bad.sh" in line]
+        self.assertEqual(len(rows), 1, out)
+        self.assertIn("| расширение |", rows[0])
+        self.assertIn("не получено: код выхода 1", rows[0])
+
+    def test_non_json_extension_line_gives_not_received_row(self) -> None:
+        self.write_extension("30-text.sh", "echo not-json\n")
+        rows = [line for line in self.candidates().splitlines() if "30-text.sh" in line]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("не получено: строка не JSON", rows[0])
 
 
 if __name__ == "__main__":

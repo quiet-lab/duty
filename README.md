@@ -202,8 +202,8 @@ push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane 
 пользовательского слоя, пустая палитра — запасной `scripts/colors.txt`), не занятый открытыми
 задачами того же каталога результатов, хранится в служебном блоке `brief.md`:
 `herdr workspace report-metadata <workspace> --source duty --token color=<#rrggbb>`
-сразу после создания; herdr не форк `duty-v*`
-(`herdr --version`) — пропуск с предупреждением; `herdr workspace create [--parent <workspace главной сессии>] --label "<символ> <имя> · <модель>"
+сразу после создания; herdr без `--token` в
+`herdr workspace report-metadata --help` — пропуск с предупреждением; `herdr workspace create [--parent <workspace главной сессии>] --label "<символ> <имя> · <модель>"
 --env DUTY_ROLE=worker --env DUTY_TASK=<каталог> --env DUTY_NAME=<имя>
 --env DUTY_SYMBOL=<символ> --env DUTY_MODEL=<модель> --env DUTY_PROJECT=<корень проекта>
 --no-focus`; workspace задачи — дочерний workspace главной сессии, один
@@ -215,7 +215,11 @@ push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane 
 <модель> --name <имя> "<приглашение>"` (первое приглашение — позиционным
 аргументом: `herdr agent prompt` на только что запущенном агенте теряет Enter
 длинного текста) и проверка `herdr agent wait`, что агент перешёл в `working`
-или `blocked`; потерянный Enter досылается один раз. Проектные хуки
+или `blocked`; потерянный Enter досылается один раз. Перед `agent start` сценарий
+ждёт приглашения оболочки панели (`herdr pane wait-output`, срок вышел — предупреждение).
+Если после timeout на экране есть команда (`--agent duty:worker`), а приглашения
+нет, команда застряла в строке ввода оболочки с ble.sh: строка очищается
+(`esc g g d G i`), команда набирается заново и принимается `ctrl+j`. Проектные хуки
 `SessionStart` при `DUTY_ROLE=worker` не выдают снимок передачи работы
 и указания проектных навыков синхронизации.
 

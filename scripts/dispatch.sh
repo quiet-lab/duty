@@ -70,7 +70,14 @@
 #      (после timeout за именем агента нет); пока запуск не завершён, rename
 #      отвечает agent_launch_pending — это не отказ: herdr применяет имя
 #      из agent start сам, сценарий предупреждает и идёт дальше; другая
-#      ошибка rename — отказ; приглашения нет — отказ;
+#      ошибка rename — отказ; приглашения нет — отказ. Перед start сценарий
+#      ждёт приглашения оболочки панели (herdr pane wait-output, в фоне
+#      во время записи служебного блока; срок вышел — предупреждение).
+#      Если после timeout на экране есть текст команды (--agent duty:worker),
+#      а приглашения нет, команда застряла в строке ввода оболочки с ble.sh
+#      (Enter в режиме vi не принимает неполный буфер): строка очищается
+#      (esc g g d G i), команда набирается заново и принимается ctrl+j,
+#      затем ждётся рамка интерфейса Claude Code (wait-output, 30 с);
 #   5. агент (по панели: имени у него может ещё не быть) перешёл в working
 #      или blocked (herdr agent wait, 10 с); если
 #      состояния нет, решает экран: приглашение в транскрипте (выше двух
@@ -202,20 +209,28 @@ load_colors() {
     fi
 }
 
-# Токен color на workspace: herdr.fg = "$color" понимает только форк herdr
-# duty-v*; upstream без команды и ошибка отправки — пропуск с пометкой.
+# Токен color на workspace: herdr.fg = "$color" понимает только herdr, у
+# которого report-metadata знает --token (форк duty-*); возможность проверяется
+# по справке команды, а не по строке версии: сборка ветви форка печатает
+# версию без duty-v*. Без поддержки и при ошибке отправки — пропуск с пометкой.
 report_color() {
     local ws=$1 color=$2
     [ -n "$color" ] || return 0
-    local version
-    version=$(herdr --version 2> /dev/null) || { warn "цвет workspace $ws пропущен: herdr --version не выполнен"; return 0; }
-    if ! grep -q 'duty-v' <<< "$version"; then
-        warn "цвет workspace $ws пропущен: herdr не форк duty-v* (токен color не поддерживается)"
+    if ! herdr workspace report-metadata --help 2>&1 | grep -q -- '--token'; then
+        warn "цвет workspace $ws пропущен: токен color не поддерживается этим herdr (нет --token в report-metadata --help)"
         return 0
     fi
     herdr workspace report-metadata "$ws" --source duty --token "color=$color" > /dev/null \
         || warn "цвет $color у workspace $ws не выставлен"
 }
+
+# Срок ожидания приглашения оболочки панели, мс. Замер 2026-11-05 на этой
+# станции, интерактивный bash в псевдотерминале (.bashrc с ble.sh, mise
+# activate, tv init): printf 'exit\n' | script -q -c 'bash -li' /dev/null —
+# 568 / 544 / 548 мс; наибольшее 568 мс, с двойным запасом 1136 мс, округление
+# вверх до секунды — 2 с. Истечение срока не отказ: шаг 4 идёт дальше,
+# а застрявшую в строке ввода команду подхватывает запасной ход.
+shell_ready_timeout_ms=2000
 
 require_tools() {
     [ "${HERDR_ENV:-}" = 1 ] || die 'сессия не в herdr (HERDR_ENV не 1)'
@@ -667,6 +682,14 @@ cmd_start() {
         || die "шаг 2: workspace $ws не виден в herdr workspace list"
     report_color "$ws" "$color"
 
+    # Ожидание приглашения оболочки идёт в фоне, пока пишется служебный блок:
+    # команда, отправленная до конца .bashrc (mise activate, ble.sh), застревает
+    # в строке ввода. Ожидание — событие внутри herdr (wait-output), не опрос;
+    # образец: строка, кончающаяся знаком приглашения, или режим vi ble.sh.
+    herdr pane wait-output "$pane" --source visible --timeout "$shell_ready_timeout_ms" \
+        --regex '(?m)([$%#❯>] *$|-- INSERT --)' > /dev/null 2>&1 &
+    shell_wait_pid=$!
+
     # Шаг 3. Служебный блок: агент читает его вместе с запиской.
     started_at_ms=$(date +%s%3N)
     project_line='вне репозитория'
@@ -694,6 +717,10 @@ ${color_line:+$color_line
 BLOCK
     grep -q "workspace: \`$ws\`" "$task/brief.md" || die "шаг 3: служебный блок не записан в $task/brief.md"
 
+    if ! wait "$shell_wait_pid"; then
+        warn "приглашение оболочки в $pane не дождались за $shell_ready_timeout_ms мс (или wait-output недоступен), агент запускается как есть"
+    fi
+
     # Шаг 4. Агент. --plugin-dir нужен, когда плагин проверяется из другой
     # worktree, чем та, что подключена в корне. Первое приглашение идёт
     # позиционным аргументом: herdr agent prompt на только что запущенном
@@ -712,6 +739,24 @@ BLOCK
         esac
         screen=$(herdr pane read "$pane" --source recent-unwrapped 2>&1 || true)
         place=$(prompt_place "$screen" brief.md)
+        if [ "$place" = none ] && [[ $screen == *'--agent duty:worker'* ]]; then
+            # Команда застряла в строке ввода оболочки (ble.sh в режиме vi: Enter
+            # не принимает неполный буфер). Esc g g d G очищает строку, i возвращает
+            # в insert, ctrl+j (accept-line) принимает буфер.
+            warn "команда агента застряла в строке ввода оболочки $pane, набирается заново (esc g g d G i, ctrl+j)"
+            printf -v shell_cmd '%q ' claude "${claude_args[@]}" "$prompt"
+            if ! herdr pane send-keys "$pane" esc g g d G i > /dev/null \
+                || ! herdr pane send-text "$pane" "${shell_cmd% }" > /dev/null \
+                || ! herdr pane send-keys "$pane" ctrl+j > /dev/null; then
+                die "шаг 4: запасной ход не отправил команду в $pane; workspace $ws оставлен"
+            fi
+            # Текст brief.md уже есть в набранной команде, поэтому ждётся не он, а
+            # рамка интерфейса Claude Code (линия «─»): после неё prompt_place
+            # отличает приглашение в строке ввода или транскрипте от строки оболочки.
+            herdr pane wait-output "$pane" --source recent-unwrapped --regex '(?m)^─{3,}' --timeout 30000 > /dev/null 2>&1 || true
+            screen=$(herdr pane read "$pane" --source recent-unwrapped 2>&1 || true)
+            place=$(prompt_place "$screen" brief.md)
+        fi
         [ "$place" != none ] \
             || die "шаг 4: агент не готов, приглашения на экране нет: $start_out; workspace $ws оставлен, экран: herdr pane read $pane --source recent-unwrapped"
         warn "herdr не подтвердил готовность агента (приглашение на экране: $place)"

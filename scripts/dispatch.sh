@@ -10,6 +10,9 @@
 #               [--results <каталог>] [--plugin-dir <каталог>])
 #   dispatch.sh list [--root <каталог>] [--results <каталог>]
 #   dispatch.sh symbol [--root <каталог>] [--results <каталог>]   (свободный символ)
+#   (корень проекта — --root, иначе scripts/duty_config.py root: DUTY_PROJECT,
+#   CLAUDE_PROJECT_DIR, подъём до .duty/duty.toml; каталог результатов — --results,
+#   иначе paths.results конфигурации; ключи и слои — reference/config.md)
 #   dispatch.sh stalled [--root <каталог>] [--results <каталог>]
 #   dispatch.sh close <имя> [--root <каталог>] [--results <каталог>]
 #
@@ -17,12 +20,15 @@
 # запускается только по этому слову: навык /duty:dispatch передаёт его,
 # когда пользователь согласился.
 #
-# Символ workspace — случайный эмодзи из scripts/symbols.txt, не занятый
-# открытыми задачами (dispatch.sh list); по нему главная сессия и пользователь узнают задачу
+# Символ workspace — случайный эмодзи из набора symbols.tasks конфигурации
+# (вне репозитория — symbols.outside пользовательского слоя; пустой набор —
+# запасной scripts/symbols.txt), не занятый открытыми задачами
+# (dispatch.sh list); symbols.main — постоянный символ главной сессии,
+# задачам не выдаётся; по нему главная сессия и пользователь узнают задачу
 # в подписях herdr и в шапке вопроса (ask.py). Метка workspace и вкладки —
 # «<символ> <имя> · <модель>»; имя агента herdr и сессии Claude — <имя>.
 # Агент получает окружение DUTY_ROLE=worker, DUTY_TASK, DUTY_NAME,
-# DUTY_SYMBOL и DUTY_MODEL. list и close находят workspace по id из
+# DUTY_SYMBOL, DUTY_MODEL и DUTY_PROJECT (корень проекта, если он есть). list и close находят workspace по id из
 # служебного блока brief.md и метке «<имя>», «<имя> · …» или «<символ> <имя> · …»,
 # а агента — по имени, при его отсутствии по панели из строки «- панель
 # агента:» того же блока. Значения служебного блока берутся из последнего
@@ -95,32 +101,78 @@ set -euo pipefail
 shopt -u patsub_replacement 2> /dev/null || true
 
 die() { printf 'dispatch.sh: %s\n' "$*" >&2; exit 1; }
-# Набор символов: по одному эмодзи в строке (одна кодовая точка, один глиф).
+# Запасной набор символов: по одному эмодзи в строке (одна кодовая точка,
+# один глиф); действует, когда конфигурация набора не задаёт.
 # Имя задачи начинается с a-z, поэтому первый токен метки, не содержащий a-z,
 # — всегда символ: эмодзи, а у задач прежних версий буква Ⓐ…Ⓩ.
-symbols_file=${DUTY_SYMBOLS_FILE:-$(dirname "${BASH_SOURCE[0]}")/symbols.txt}
+symbols_fallback=$(dirname "${BASH_SOURCE[0]}")/symbols.txt
 # Метка workspace без символа в начале: «🦊 имя · модель» → «имя · модель».
 JQ_BARE='def bare: sub("^[^a-z ]+ "; "");'
 
 warn() { printf 'dispatch.sh: предупреждение: %s\n' "$*" >&2; }
 
+# Каталог пользовательского слоя: каталог файла DUTY_CONFIG_USER, иначе ~/.config/duty.
+if [ -n "${DUTY_CONFIG_USER:-}" ]; then
+    user_config_dir=$(dirname "$DUTY_CONFIG_USER")
+else
+    user_config_dir=$HOME/.config/duty
+fi
+
 plugin_root=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
 busy="$plugin_root/scripts/busy.py"
 signals="$plugin_root/scripts/signals.py"
 state_waits="$plugin_root/scripts/state-waits.py"
+config_py="$plugin_root/scripts/duty_config.py"
 
-# Корень монорепозитория: из сабмодуля — его надпроект.
-resolve_paths() {
-    if [ -z "$root" ]; then
-        root=${CLAUDE_PROJECT_DIR:-}
-        [ -n "$root" ] || root=$(git rev-parse --show-superproject-working-tree 2> /dev/null || true)
-        [ -n "$root" ] || root=$(git rev-parse --show-toplevel 2> /dev/null) || die 'корень монорепозитория не найден, задайте --root'
+# duty_config.py с корнем проекта, если он найден.
+cfg() {
+    local cmd=$1
+    shift
+    if [ -n "$root" ]; then
+        python3 -I "$config_py" "$cmd" --root "$root" "$@"
+    else
+        python3 -I "$config_py" "$cmd" "$@"
     fi
-    root=$(realpath "$root")
-    [ -d "$root/.git" ] || [ -f "$root/.git" ] || die "$root — не корень репозитория"
-    [ -n "$results" ] || results="$root/../ocp-dev-stand/results"
-    [ -d "$results" ] || die "каталога результатов $results нет, задайте --results"
+}
+
+# Корень проекта и каталог результатов — из конфигурации (reference/config.md).
+# Корня может не быть (вне git): тогда задачи работают из текущего каталога.
+resolve_paths() {
+    local rc=0
+    if [ -z "$root" ]; then
+        root=$(python3 -I "$config_py" root 2> /dev/null) || rc=$?
+        [ "$rc" != 2 ] || die "конфигурация не разбирается: python3 -I $config_py check"
+        [ "$rc" = 0 ] || root=''
+    fi
+    if [ -n "$root" ]; then
+        [ -d "$root" ] || die "каталога проекта $root нет"
+        root=$(realpath "$root")
+    fi
+    if [ -z "$results" ]; then
+        results=$(cfg get paths.results) || die 'каталог результатов не получен: duty_config.py get paths.results'
+    fi
+    # Каталога результатов может ещё не быть (общий режим): первая задача его создаёт.
+    mkdir -p "$results" || die "каталог результатов $results не создан"
     results=$(realpath "$results")
+}
+
+# Набор символов задач в массив symbol_set: symbols.tasks конфигурации
+# (DUTY_SYMBOLS_FILE модуль уже учёл); вне репозитория — symbols.outside
+# пользовательского слоя; пустой набор — запасной symbols.txt.
+load_symbols() {
+    local key=symbols.tasks json
+    [ -n "$root" ] || key=symbols.outside
+    json=$(cfg get "$key" --default '[]') || die "набор символов $key не получен"
+    symbol_set=()
+    local sym
+    while IFS= read -r sym; do
+        [ -z "$sym" ] || symbol_set+=("$sym")
+    done < <(jq -r '.[]?' <<< "$json")
+    if [ ${#symbol_set[@]} -eq 0 ] && [ -r "$symbols_fallback" ]; then
+        while IFS= read -r sym; do
+            [ -z "$sym" ] || symbol_set+=("$sym")
+        done < "$symbols_fallback"
+    fi
 }
 
 require_tools() {
@@ -178,21 +230,21 @@ open_tasks() {
     done
 }
 
-# Случайный эмодзи из набора, которого нет у открытых задач (символы прежних
-# версий — буквы Ⓐ…Ⓩ — в набор не входят и просто занимают место в used).
-# Код 1 — набор исчерпан или не читается.
+# Случайный эмодзи из набора symbol_set, которого нет у открытых задач (символы
+# прежних версий — буквы Ⓐ…Ⓩ — в набор не входят и просто занимают место
+# в used). Код 1 — набор исчерпан или пуст.
 free_symbol() {
     local workspaces=$1 used=' ' dir sym
     local -a free=()
-    [ -r "$symbols_file" ] || return 1
+    load_symbols
+    [ ${#symbol_set[@]} -gt 0 ] || return 1
     while IFS= read -r dir; do
         [ -n "$dir" ] || continue
         used+="$(task_symbol "$dir") "
     done < <(open_tasks "$workspaces")
-    while IFS= read -r sym; do
-        [ -n "$sym" ] || continue
+    for sym in "${symbol_set[@]}"; do
         [[ $used == *" $sym "* ]] || free+=("$sym")
-    done < "$symbols_file"
+    done
     [ ${#free[@]} -gt 0 ] || return 1
     printf '%s' "${free[RANDOM % ${#free[@]}]}"
 }
@@ -391,6 +443,15 @@ cmd_close() {
     fi
 }
 
+# Правила одного слоя (файл worker-rules.md); нет файла или он пуст — «—».
+layer_rules() {
+    if [ -s "$1" ]; then
+        cat "$1"
+    else
+        printf '—'
+    fi
+}
+
 # Записка для --goal: шаблон с подстановкой значений ключей.
 render_brief() {
     local template
@@ -426,6 +487,13 @@ gate_brief() {
         || die "записка из --goal не проходит ворота (reference/brief-template.md):"$'\n'"$out"
 }
 
+# Схема конфигурации проекта: находки или ошибка TOML — отказ до каталога задачи.
+check_config() {
+    local out rc=0
+    out=$(cfg check 2>&1) || rc=$?
+    [ "$rc" = 0 ] || die "конфигурация проекта не проходит проверку (reference/config.md):"$'\n'"$out"
+}
+
 cmd_start() {
     local name=$1 model_arg=$2 model task workspaces agents passed template rules
     local rc rename_out created ws pane started_at_ms state status prompt screen input tab symbol label
@@ -446,6 +514,7 @@ cmd_start() {
     [ -z "$resume" ] || [ -z "$brief_file$goal$rules_file" ] || die '--resume продолжает прежние brief.md и rules.md: без --brief, --goal и --rules'
     [ -z "$brief_file" ] || [ -s "$brief_file" ] || die "записки $brief_file нет или она пуста"
     gate_brief
+    check_config
     [ -z "$rules_file" ] || [ -s "$rules_file" ] || die "файла правил $rules_file нет или он пуст"
 
     task=$results/$name
@@ -469,7 +538,7 @@ cmd_start() {
         done
         workspaces=$(herdr workspace list)
     fi
-    symbol=$(free_symbol "$workspaces") || die "нет свободного символа: все символы из $symbols_file заняты открытыми задачами или файл не читается"
+    symbol=$(free_symbol "$workspaces") || die "нет свободного символа: все символы набора заняты открытыми задачами или набор пуст"
     label="$symbol $name · $model_arg"
     agents=$(herdr agent list)
     jq -e --arg n "$name" '[.result.agents[] | select(.name == $n)] | length == 0' <<< "$agents" > /dev/null \
@@ -503,15 +572,22 @@ cmd_start() {
         [ -z "$rules_file" ] || passed=$(< "$rules_file")
         rules=$(< "$plugin_root/reference/worker-rules.md")
         rules=${rules//'{{NAME}}'/$name}
+        rules=${rules//'{{USER_RULES}}'/$(layer_rules "$user_config_dir/worker-rules.md")}
+        if [ -n "$root" ]; then
+            rules=${rules//'{{PROJECT_RULES}}'/$(layer_rules "$root/.duty/worker-rules.md")}
+        else
+            rules=${rules//'{{PROJECT_RULES}}'/—}
+        fi
         printf '%s\n' "${rules//'{{RULES}}'/$passed}" > "$task/rules.md"
     fi
     [ -s "$task/brief.md" ] && [ -s "$task/rules.md" ] && [ -d "$task/runs" ] \
         || die "шаг 1: файлы задачи в $task не созданы"
 
     # Шаг 2. Workspace.
-    created=$(herdr workspace create --cwd "$root" --label "$label" \
+    created=$(herdr workspace create --cwd "${root:-$PWD}" --label "$label" \
         --env DUTY_ROLE=worker --env "DUTY_TASK=$task" --env "DUTY_NAME=$name" \
-        --env "DUTY_SYMBOL=$symbol" --env "DUTY_MODEL=$model_arg" --no-focus)
+        --env "DUTY_SYMBOL=$symbol" --env "DUTY_MODEL=$model_arg" \
+        ${root:+--env "DUTY_PROJECT=$root"} --no-focus)
     ws=$(jq -er '.result.workspace.workspace_id' <<< "$created") || die "шаг 2: herdr workspace create: $created"
     pane=$(jq -er '.result.root_pane.pane_id' <<< "$created") || die "шаг 2: нет корневой панели: $created"
     herdr workspace list | jq -e --arg w "$ws" '.result.workspaces[] | select(.workspace_id == $w)' > /dev/null \
@@ -519,12 +595,18 @@ cmd_start() {
 
     # Шаг 3. Служебный блок: агент читает его вместе с запиской.
     started_at_ms=$(date +%s%3N)
+    project_line='вне репозитория'
+    [ -z "$root" ] || project_line="\`$root\`"
+    config_line='общий режим'
+    [ -z "$root" ] || [ "$(cfg json | jq -r '._mode')" != project ] || config_line="\`$root/.duty/duty.toml\`"
     cat >> "$task/brief.md" << BLOCK
 
 ## Служебное (заполняет dispatch.sh)
 
 - workspace: \`$ws\`, метка \`$label\`
 - символ workspace: \`$symbol\`
+- проект: $project_line
+- конфигурация: $config_line
 - панель агента: \`$pane\`
 - агент herdr и сессия Claude: \`$name\`, модель \`$model\`
 - главная сессия для SendMessage: \`$main\`

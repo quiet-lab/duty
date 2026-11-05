@@ -86,10 +86,10 @@ class WeekStatsTest(unittest.TestCase):
             path = Path(tmp) / "review-rounds.tsv"
             path.write_text(
                 "дата\tпроект\tзадача\tмодель\tуровень\tнаходок\tвоспроизведено\tисправлено\tтикет\n"
-                "2026-11-02\tp\tt1\topus\thigh\t5\t2\t2\tRP-1\n"
+                "2026-11-02\tp\tt1\topus\thigh\t5\t2\t2\tPRJ-1\n"
                 "2026-11-02\tp\tt2\tsonnet\tmedium\t3\t0\t0\t—\n"
                 "2026-11-02\tp\tt3\t1\tsonnet\tда\tстарая форма\n"
-                "2020-01-01\tp\tt4\topus\thigh\t9\t9\t9\tRP-2\n",
+                "2020-01-01\tp\tt4\topus\thigh\t9\t9\t9\tPRJ-2\n",
                 encoding="utf-8",
             )
             since = 1793577600000  # начало суток 2026-11-02 UTC

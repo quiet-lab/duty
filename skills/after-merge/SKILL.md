@@ -74,21 +74,6 @@ allowed-tools: Bash, Read, Edit
    оставить с причиной. Затем `git -C <сабмодуль> branch -d <ветвь>`
    (не `-D`; отказ — оставить с причиной). Готово: `git worktree list`
    и `git branch --list <ветвь>` её не показывают.
-6. **Зеркало.** Только если в репозитории есть remote `github`
-   (`git -C <сабмодуль> remote get-url github`) и `toRef.displayId` pull
-   request'а — `master`; иначе шаг пропускается с пометкой. Зеркало
-   публикуется в ветвь `main`: хук `forbid` отвергает push в `master`.
-   Токен берётся помощником `gh`:
-
-   ```sh
-   git -C <сабмодуль> fetch origin
-   git -C <сабмодуль> -c 'credential.helper=!gh auth git-credential' \
-     push github origin/master:main
-   ```
-
-   Готово: `git -C <сабмодуль> ls-remote github refs/heads/main` и
-   `git -C <сабмодуль> rev-parse origin/master` дают один хеш. Отказ
-   push — в «Решения за пользователем», повтор и `--force` запрещены.
 
 ## Итог
 

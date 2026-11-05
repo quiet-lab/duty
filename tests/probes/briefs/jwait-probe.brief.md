@@ -2,7 +2,7 @@
 
 ## Цель
 
-Проверить `jwait.sh`: ожидание идущей сборки Jenkins по событию во вкладке и итог в файлы. Проба требует раздела [jenkins] в .duty/duty.toml; задание `dev2/e2e` в примере — заменить заданием проекта.
+Проверить `jwait.sh`: ожидание идущей сборки Jenkins по событию во вкладке и итог в файлы. Проба требует раздела [jenkins] в .duty/duty.toml; задание `stage/e2e` в примере — заменить заданием проекта.
 
 ## Критерий готовности
 
@@ -14,15 +14,15 @@
 
 ## Следующие шаги
 
-1. Запустить вкладку: `bash {{PLUGIN}}/scripts/tab-run.sh jenkins -- '{{PLUGIN}}/scripts/jwait.sh dev2/e2e last'`; `tab_id` записать в `state.md`. Формат — `jwait.sh <задание> <номер|last>`; итог пишется в `$DUTY_TASK/runs/jenkins-dev2-e2e-last/` (`console.log`, `report.md`, `done`).
+1. Запустить вкладку: `bash {{PLUGIN}}/scripts/tab-run.sh jenkins -- '{{PLUGIN}}/scripts/jwait.sh stage/e2e last'`; `tab_id` записать в `state.md`. Формат — `jwait.sh <задание> <номер|last>`; итог пишется в `$DUTY_TASK/runs/jenkins-stage-e2e-last/` (`console.log`, `report.md`, `done`).
 2. Если сборок в ходу нет и вкладка сразу завершилась (`done` уже есть) — записать это в отчёт и перейти к «Завершение».
 3. Иначе ждать внутри хода вызовом Bash с таймаутом 600000 мс: `bash {{PLUGIN}}/scripts/wait-done.sh "$DUTY_TASK/runs/jenkins" --timeout-s 590`, вывод `timeout` — запустить снова.
-4. В отчёт: номер сборки и результат (из `runs/jenkins-dev2-e2e-last/report.md`), длительность ожидания из `runs/jenkins/meta.txt` (`finished_ms - started_ms`), код из `done`.
+4. В отчёт: номер сборки и результат (из `runs/jenkins-stage-e2e-last/report.md`), длительность ожидания из `runs/jenkins/meta.txt` (`finished_ms - started_ms`), код из `done`.
 5. Закрыть вкладку; выполнить «Завершение».
 
 ## Команды проверки
 
-- `cat $DUTY_TASK/runs/jenkins/done`; `head -20 $DUTY_TASK/runs/jenkins-dev2-e2e-last/report.md`.
+- `cat $DUTY_TASK/runs/jenkins/done`; `head -20 $DUTY_TASK/runs/jenkins-stage-e2e-last/report.md`.
 
 ## Принятые решения
 

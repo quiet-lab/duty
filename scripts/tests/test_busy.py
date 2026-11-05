@@ -86,24 +86,24 @@ class BusyTest(unittest.TestCase):
     def test_stale_pid_is_replaced(self) -> None:
         # Устаревшая отметка — файл, оставленный держателем, который завершился.
         stale = {
-            "resource": "studio-oktell-ocp",
+            "resource": "db-main",
             "holder": "old",
             "task": "",
             "pid": dead_pid(),
             "since_ms": 0,
             "note": "",
         }
-        (Path(self.tmp.name) / "studio-oktell-ocp.json").write_text(
+        (Path(self.tmp.name) / "db-main.json").write_text(
             json.dumps(stale), encoding="utf-8"
         )
-        self.assertEqual(run("check", "studio-oktell-ocp")[0], 0)
+        self.assertEqual(run("check", "db-main")[0], 0)
         code, out = run(
-            "claim", "studio-oktell-ocp", "--holder", "new", "--pid", str(os.getpid())
+            "claim", "db-main", "--holder", "new", "--pid", str(os.getpid())
         )
         self.assertEqual(code, 0)
         self.assertIn("устаревшая", out)
         data = json.loads(
-            (Path(self.tmp.name) / "studio-oktell-ocp.json").read_text(encoding="utf-8")
+            (Path(self.tmp.name) / "db-main.json").read_text(encoding="utf-8")
         )
         self.assertEqual(data["holder"], "new")
 

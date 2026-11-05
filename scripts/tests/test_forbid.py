@@ -15,15 +15,15 @@ assert SPEC and SPEC.loader
 forbid = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(forbid)
 
-AXATA = "~/.config/axata/mne-vm-user.env"
+AXATA = "~/.config/example/mne-vm-user.env"
 
 BASE_TOML = """schema = 1
 
 [git]
-protected = ["dev", "dev2", "master"]
+protected = ["dev", "stage", "master"]
 
 [secrets]
-dirs = ["~/.config/axata"]
+dirs = ["~/.config/example"]
 """
 
 
@@ -140,15 +140,15 @@ CASES: dict[str, tuple[list[str], list[str]]] = {
     ),
     "git-protected": (
         [
-            "git push origin dev2",
+            "git push origin stage",
             "git push origin HEAD:master",
             "git push origin x:refs/heads/dev",
-            "git push origin :dev2",
+            "git push origin :stage",
             "git push origin --delete dev",
         ],
         [
             "git push origin devel",
-            "git push origin my-dev2",
+            "git push origin my-stage",
             "git push origin master-fix",
         ],
     ),
@@ -171,49 +171,49 @@ CASES: dict[str, tuple[list[str], list[str]]] = {
     "secret-file": (
         [
             f"cat {AXATA}",
-            "grep password ~/.config/axata/x.env",
-            "sed -n 1p $HOME/.config/axata/jira-pat",
-            'head -c 5 "$HOME/.config/axata/jira-pat"',
-            "base64 < ~/.config/axata/x",
+            "grep password ~/.config/example/x.env",
+            "sed -n 1p $HOME/.config/example/jira-pat",
+            'head -c 5 "$HOME/.config/example/jira-pat"',
+            "base64 < ~/.config/example/x",
             f"cp {AXATA} /tmp/x",
-            "echo $(cat ~/.config/axata/x)",
-            "cat ~/.config/axata/x.env",
-            "grep PASS ~/.config/axata/x.env",
-            "python3 -Ic \"print(open('/home/mne/.config/axata/x.env').read())\"",
-            "sed -n p ~/.config/axata/x.env",
-            "awk '{print}' ~/.config/axata/x.env",
-            "cut -d= -f2 ~/.config/axata/x.env",
-            "tr a-z A-Z < ~/.config/axata/x.env",
-            "od -c ~/.config/axata/x.env",
-            "tee /tmp/x < ~/.config/axata/x.env",
-            "python3 -c \"print(open('/home/mne/.config/axata/x.env').read())\"",
-            "python3 -I - <<'EOF'\nimport sys\nsys.stdout.write(open('/home/mne/.config/axata/x.env').read())\nEOF",
+            "echo $(cat ~/.config/example/x)",
+            "cat ~/.config/example/x.env",
+            "grep PASS ~/.config/example/x.env",
+            "python3 -Ic \"print(open('/home/mne/.config/example/x.env').read())\"",
+            "sed -n p ~/.config/example/x.env",
+            "awk '{print}' ~/.config/example/x.env",
+            "cut -d= -f2 ~/.config/example/x.env",
+            "tr a-z A-Z < ~/.config/example/x.env",
+            "od -c ~/.config/example/x.env",
+            "tee /tmp/x < ~/.config/example/x.env",
+            "python3 -c \"print(open('/home/mne/.config/example/x.env').read())\"",
+            "python3 -I - <<'EOF'\nimport sys\nsys.stdout.write(open('/home/mne/.config/example/x.env').read())\nEOF",
         ],
         [
-            "python3 -I scripts/read-env.py ~/.config/axata/x.env",
-            "python3 -I -c \"import os; open(os.path.expanduser('~/.config/axata/x.env')).read()\"",
+            "python3 -I scripts/read-env.py ~/.config/example/x.env",
+            "python3 -I -c \"import os; open(os.path.expanduser('~/.config/example/x.env')).read()\"",
             "python3 -I -c 'import os; p = os.environ[\"F\"]; print(open(p).read()[:0])'",
-            "python3 -I -c \"p='/home/mne/.config/axata/x.env'; open(p,'w').write('A=2')\"",
-            "sed -i 's/^A=.*/A=1/' ~/.config/axata/x.env",
-            "sed -i.bak -e 's/A/B/' ~/.config/axata/x.env",
-            "grep -c PASS ~/.config/axata/x.env",
-            "grep -ql PASS ~/.config/axata/x.env",
-            "grep -q PASS ~/.config/axata/x.env && echo есть",
-            "ls -l ~/.config/axata/x.env",
-            "cmp ~/.config/axata/x.env ~/.config/axata/y.env",
-            "set -a; . ~/.config/axata/x.env; set +a",
+            "python3 -I -c \"p='/home/mne/.config/example/x.env'; open(p,'w').write('A=2')\"",
+            "sed -i 's/^A=.*/A=1/' ~/.config/example/x.env",
+            "sed -i.bak -e 's/A/B/' ~/.config/example/x.env",
+            "grep -c PASS ~/.config/example/x.env",
+            "grep -ql PASS ~/.config/example/x.env",
+            "grep -q PASS ~/.config/example/x.env && echo есть",
+            "ls -l ~/.config/example/x.env",
+            "cmp ~/.config/example/x.env ~/.config/example/y.env",
+            "set -a; . ~/.config/example/x.env; set +a",
             "grep -rn password docs/",
-            "ls ~/.config/axata/",
+            "ls ~/.config/example/",
             f". {AXATA}",
             f"source {AXATA}",
             f"set -a; . {AXATA}; set +a; echo ok",
             f"test -f {AXATA}",
             f"stat {AXATA}",
             f"chmod 600 {AXATA}",
-            f"cp {AXATA} ~/.config/axata/copy.env",
+            f"cp {AXATA} ~/.config/example/copy.env",
             "cat docs/README.md",
-            "head -c 32 /dev/urandom | base64 > ~/.config/axata/x.env",
-            "cat > ~/.config/axata/x.env <<EOF\nA=1\nEOF",
+            "head -c 32 /dev/urandom | base64 > ~/.config/example/x.env",
+            "cat > ~/.config/example/x.env <<EOF\nA=1\nEOF",
         ],
     ),
     "secret-env": (
@@ -273,7 +273,7 @@ CASES: dict[str, tuple[list[str], list[str]]] = {
             "sshpass -e ssh -p 2222 host",
             "sshpass -e ssh -p2222 host",
             'sshpass -p "$PW" ssh host',
-            'set -a; . ~/.config/axata/mne-vm-user.env; set +a; ssh "$MNE_VM_USER@$h"',
+            'set -a; . ~/.config/example/mne-vm-user.env; set +a; ssh "$MNE_VM_USER@$h"',
         ],
     ),
 }
@@ -281,7 +281,7 @@ CASES: dict[str, tuple[list[str], list[str]]] = {
 NEUTRAL = [
     "ls -la",
     "git add path/a path/b",
-    "git commit -m 'git stash; pkill; env; cat ~/.config/axata/x'",
+    "git commit -m 'git stash; pkill; env; cat ~/.config/example/x'",
     "cat <<'EOF'\ngit stash\npkill x\nEOF",
     "python3 -I -m py_compile hooks/forbid.py",
     "# git stash",
@@ -374,17 +374,17 @@ class ForbidTest(unittest.TestCase):
         self.assertNotIn("монорепозитори", out["permissionDecisionReason"])
 
     def test_hook_protected_text_from_config(self) -> None:
-        done = self.run_hook(self.bash("git push origin dev2"), "worker")
+        done = self.run_hook(self.bash("git push origin stage"), "worker")
         reason = json.loads(done.stdout)["hookSpecificOutput"][
             "permissionDecisionReason"
         ]
-        self.assertIn("dev, dev2, master", reason)
+        self.assertIn("dev, master, stage", reason)
 
     def test_hook_closes_on_broken_config(self) -> None:
         (Path(self.root_dir) / ".duty" / "local.toml").write_text(
             "[git\nprotected =", encoding="utf-8"
         )
-        for command in ("git push origin dev2", "cat ~/.config/axata/jira-pat"):
+        for command in ("git push origin stage", "cat ~/.config/example/jira-pat"):
             done = self.run_hook(self.bash(command), "worker")
             out = json.loads(done.stdout)["hookSpecificOutput"]
             self.assertEqual(out["permissionDecision"], "deny")
@@ -395,13 +395,13 @@ class ForbidTest(unittest.TestCase):
 
     def test_hook_wrong_type_keeps_defaults_and_reports_once(self) -> None:
         (Path(self.root_dir) / ".duty" / "duty.toml").write_text(
-            'schema = 1\n[git]\nprotected = "dev2"\n', encoding="utf-8"
+            'schema = 1\n[git]\nprotected = "stage"\n', encoding="utf-8"
         )
         done = self.run_hook(self.bash("git push origin main"), "worker")
         out = json.loads(done.stdout)["hookSpecificOutput"]
         self.assertEqual(out["permissionDecision"], "deny")
         self.assertEqual(done.stderr.count("git.protected"), 1)
-        done = self.run_hook(self.bash("git push origin dev2"), "worker")
+        done = self.run_hook(self.bash("git push origin stage"), "worker")
         self.assertEqual(done.stdout, "")
 
     def test_hook_silent_outside_worker(self) -> None:
@@ -429,8 +429,8 @@ class ConfigTest(unittest.TestCase):
     def test_defaults_without_config(self) -> None:
         cfg = settings_for(None)
         self.assertEqual(forbid.check("git push origin main", cfg), "git-protected")
-        self.assertIsNone(forbid.check("git push origin dev2", cfg))
-        self.assertIsNone(forbid.check("cat ~/.config/axata/x.env", cfg))
+        self.assertIsNone(forbid.check("git push origin stage", cfg))
+        self.assertIsNone(forbid.check("cat ~/.config/example/x.env", cfg))
         # остальные secret-* действуют без каталогов
         self.assertEqual(forbid.check("printenv", cfg), "secret-env")
 
@@ -466,10 +466,10 @@ class ConfigTest(unittest.TestCase):
 
     def test_second_secret_dir(self) -> None:
         cfg = settings_for(
-            'schema = 1\n[secrets]\ndirs = ["~/.config/axata", "/etc/secrets"]\n'
+            'schema = 1\n[secrets]\ndirs = ["~/.config/example", "/etc/secrets"]\n'
         )
         self.assertEqual(forbid.check("cat /etc/secrets/db.env", cfg), "secret-file")
-        self.assertEqual(forbid.check("cat ~/.config/axata/x", cfg), "secret-file")
+        self.assertEqual(forbid.check("cat ~/.config/example/x", cfg), "secret-file")
         self.assertIsNone(forbid.check("cat /var/etc/secretsx/db.env", cfg))
         self.assertIsNone(forbid.check("grep -c x /etc/secrets/db.env", cfg))
 

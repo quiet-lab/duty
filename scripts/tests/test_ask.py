@@ -156,11 +156,11 @@ class AskTest(unittest.TestCase):
             "1",
             "строка назначения",
             "--ref",
-            "docs/decisions/README.md",
+            "docs/guide/README.md",
         )
         self.assertEqual(r.returncode, 0, r.stderr)
         text = (self.task / "questions" / "01-readme.md").read_text(encoding="utf-8")
-        self.assertIn("строка назначения\n\n- ссылка: docs/decisions/README.md", text)
+        self.assertIn("строка назначения\n\n- ссылка: docs/guide/README.md", text)
         self.assertTrue((self.signals / "answer-probe-01.json").exists())
         self.assertEqual(self.run_cmd("list", "--open").stdout.strip(), "вопросов нет")
         rows = json.loads(self.run_cmd("list", "--json").stdout)

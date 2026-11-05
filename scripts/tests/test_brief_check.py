@@ -122,7 +122,7 @@ class CheckBriefTest(unittest.TestCase):
 
 Все команды зелёные:
 
-- `cd claude-plugins/duty && python3 -m pytest -q scripts/tests`.
+- `cd duty && python3 -m pytest -q scripts/tests`.
 
 ## Условие остановки
 

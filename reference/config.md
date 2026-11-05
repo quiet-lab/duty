@@ -204,34 +204,34 @@ Python API (импорт по пути, как `gates` в `branches.py`):
 `path("paths.results")`, `has("bitbucket")`. Ошибка TOML —
 исключение `ConfigError`.
 
-## Пример: монорепозиторий
+## Пример: проект с несколькими репозиториями
 
 ```toml
-# monorepo-ocp/.duty/duty.toml
+# example-project/.duty/duty.toml
 schema = 1
 
 [project]
-name = "monorepo-ocp"
+name = "example-project"
 
 [paths]
-results = "../ocp-dev-stand/results"
-busy = "../ocp-dev-stand/busy"
-signals = "../ocp-dev-stand/signals"
-sandbox = "../ocp-dev-stand/results/duty-tests/sandbox"
+results = "../results"
+busy = "../busy"
+signals = "../signals"
+sandbox = "../results/duty-tests/sandbox"
 
 [git]
-protected = ["dev", "dev2", "master"]
-working = ["new_ocp", "dev-local"]
+protected = ["develop", "staging", "main"]
+working = ["integration", "dev-local"]
 keep_prefixes = ["backup/", "saved/"]
-task_prefixes = ["dev2-RP-", "bugfix/RP-", "chore/", "feature/"]
+task_prefixes = ["staging-PRJ-", "bugfix/PRJ-", "chore/", "feature/"]
 named_dev_branches = true
-default_parent = "master"
+default_parent = "main"
 parent_key = "parent"
 forbid_add_all = true
 forbid_stash = true
 
 [secrets]
-dirs = ["~/.config/axata"]
+dirs = ["~/.config/example"]
 
 [forbid]
 network = true
@@ -239,31 +239,30 @@ herdr_direct = true
 
 [[forbid.rules]]
 words = ["instances-down", "all"]
-reason = "экземпляры стенда снимаются только своими номерами (legacy/devlab/AGENTS.md)"
+reason = "экземпляры стенда снимаются только своими номерами (docs/stand.md)"
 
 [bitbucket]
-url = "https://git.service-desk.site"
-token_file = "~/.config/axata/bitbucket-http-token"
-user = "a.pinchuk"
-sets_repo = "legacy/release-sets"
+url = "https://bitbucket.example"
+token_file = "~/.config/example/bitbucket-http-token"
+user = "ivanov"
+sets_repo = "libs/release-sets"
 
 [jenkins]
-env_file = "~/.config/axata/jenkins-credentials.env"
-cli_url = "http://10.200.100.8:8080/"
+env_file = "~/.config/example/jenkins-credentials.env"
+cli_url = "http://jenkins.example:8080/"
 insecure_tls = true
 fake_job = "z__fake"
-nodes = ["HeavyCI_1", "QMS_DEV", "QMS_PROD", "QMS_FEATURE"]
+nodes = ["node-1", "node-2", "node-3", "node-4"]
 feed_markers = ["pr-feed/", "Лента сборок PR-"]
 
 [jira]
-url = "https://jira.service-desk.site"
-token_file = "~/.config/axata/jira-pat"
-ticket = "RP-\\d+"
+url = "https://jira.example"
+token_file = "~/.config/example/jira-pat"
+ticket = "PRJ-\\d+"
 
 [docs]
 rules = ["CLAUDE.md", ".claude/rules/*.md", "docs/isolation.md",
-         "docs/decisions/08-agents-and-docs/0066-*.md",
-         "docs/decisions/08-agents-and-docs/0067-*.md"]
+         "docs/decisions/01-process/0001-*.md"]
 rules_optional = ["~/.claude/CLAUDE.md"]
 review = ".claude/rules/code-review.md"
 decisions = "docs/decisions"
@@ -273,11 +272,11 @@ prose = "docs/russian-prose.md"
 lint = "python3 -I scripts/docs-lint.py"
 sweep_area = ["docs/", "*.md", ".claude/rules/", "openspec/"]
 sweep_exclude = ["openspec/changes/archive/", "docs/decisions/README.md"]
-openspec = ["openspec", "legacy/queue-manager-service/openspec"]
+openspec = ["openspec", "services/api/openspec"]
 
 [[docs.post_change]]
-paths = ["docs/jenkins/"]
-note = "just confluence-mirror"
+paths = ["docs/ci/"]
+note = "just wiki-mirror"
 
 [[busy.resources]]
 name = "station"
@@ -285,30 +284,30 @@ why = "замер производительности на станции ис�
 until = "замеры переезжают на выделенный узел"
 
 [[busy.resources]]
-name = "studio-<домен>"
-why = "у домена студии Oktell один слушатель событий и одна очередь по набранному номеру"
-until = "домен на каждого исполнителя (docs/studio/)"
+name = "db-<домен>"
+why = "у домена базы один слушатель событий и одна очередь"
+until = "домен на каждого исполнителя (docs/stand.md)"
 
 [[busy.resources]]
-name = "dev-stand-<N>"
+name = "stand-<N>"
 why = "экземпляр стенда с его базой и портами принадлежит одному прогону"
 until = "экземпляр создаётся и удаляется самим прогоном"
 
 [cleanup]
-keep_trees = ["../ocp-dev-stand/src/qms", "../ocp-dev-stand/src/ui",
-              "../ocp-dev-stand/src/tests", "../ocp-dev-stand/src/jssip-phone"]
-skip_trees = ["../ocp-dev-stand/src/*-wt"]
-docker_keep_projects = ["ocp-stand"]
+keep_trees = ["../stand/src/api", "../stand/src/ui",
+              "../stand/src/tests"]
+skip_trees = ["../stand/src/*-wt"]
+docker_keep_projects = ["example-stand"]
 
 [stats]
-test_repos = ["legacy/tests"]
-rules_paths = [".claude/", "claude-plugins/"]
+test_repos = ["libs/tests"]
+rules_paths = [".claude/"]
 pipeline_paths = ["deploy/", "scripts/", "jenkins/", ".jenkins/"]
 
 [symbols]
 main = "🍀"
 tasks = ["🌱", "🌲", "🌳", "🌴", "🌵", "🌾", "🌿", "🍃", "🪴", "🍏", "🍐",
-         "🥝", "🍈", "🫒", "🥦", "🥬", "🫑", "🫛", "🫝", "🥑", "🌽"]
+         "🐴", "🐱", "🐁", "🐀"]
 ```
 
 ## Пример: dotfiles
@@ -358,11 +357,15 @@ tasks = ["🦄", "🦌", "🦊", "🦇", "🦍", "🦏", "🦒", "🦓", "🦔",
 ## Пример: сам плагин duty
 
 ```toml
-# claude-plugins/duty/.duty/duty.toml
+# duty/.duty/duty.toml
 schema = 1
 
 [project]
 name = "duty"
+
+[git]
+protected = ["main"]
+default_parent = "main"
 
 [symbols]
 main = "🦑"

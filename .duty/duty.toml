@@ -3,6 +3,10 @@ schema = 1
 [project]
 name = "duty"
 
+[git]
+protected = ["main"]
+default_parent = "main"
+
 [symbols]
 color = "#89b4fa"
 main = "🦑"

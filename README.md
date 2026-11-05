@@ -243,8 +243,8 @@ push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane 
 `agents/worker.md`, «Завершение». Оставшийся закрывает главная сессия:
 
 ```sh
-bash claude-plugins/duty/scripts/dispatch.sh list           # открытые workspace задач: агент, report.md
-bash claude-plugins/duty/scripts/dispatch.sh close <имя>    # агент idle/done, report.md есть
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" list           # открытые workspace задач: агент, report.md
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" close <имя>    # агент idle/done, report.md есть
 ```
 
 `close` снимает забытые отметки держателя `<имя>` через `busy.py`
@@ -329,7 +329,7 @@ workspace herdr (`tab-run.sh`: `herdr tab create`, `herdr pane run`);
 --pdeathsig`).
 
 Вкладка закрывается сама по `done` (`tab_id` лежит в `runs/<имя>/tab`).
-`dispatch.sh close` закрывает оставшиеся как подстраховку. Полный текст
+`dispatch.sh" close` закрывает оставшиеся как подстраховку. Полный текст
 правила — `agents/worker.md`, п. 4.
 
 ## Веб-просмотр прогонов
@@ -339,7 +339,7 @@ workspace herdr (`tab-run.sh`: `herdr tab create`, `herdr pane run`);
 `inotifywait`:
 
 ```sh
-python3 -I claude-plugins/duty/scripts/runs-web.py [--results <каталог>] [--port 8765] [--host 127.0.0.1]
+python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/runs-web.py" [--results <каталог>] [--port 8765] [--host 127.0.0.1]
 # адрес по умолчанию: http://127.0.0.1:8765/ ; --port 0 — свободный порт
 ```
 
@@ -440,29 +440,13 @@ decision-number.sh <каталог записей> --insert <файл> [--after 
 
 Плагин не привязан к проекту; проектное лежит в `.duty/` в корне проекта.
 
-**Через marketplace проекта.** Если проект хранит плагин как сабмодуль
-(например, `claude-plugins/duty`), каталог `.claude-plugin/marketplace.json`
-в корне проекта объявляет marketplace с плагином `duty` (источник
-`./claude-plugins/duty`), `.claude/settings.json` — `extraKnownMarketplaces`
-(источник `directory`, путь `.`) и `enabledPlugins["duty@<marketplace>"]`.
-Интерактивная сессия при первом запуске предлагает доверить marketplace и
-установить плагин; для `claude -p` и скриптов установка выполняется один раз:
+Репозиторий плагина — GitHub `quiet-lab/duty`, ветвь `main`; установка —
+marketplace `quiet-lab` (`claude plugin install duty@quiet-lab`),
+обновление — `claude plugin update duty@quiet-lab`; проектное — `.duty/`
+проекта.
 
-```sh
-claude plugin install duty@<marketplace> --scope project
-```
-
-Плагин читается прямо из каталога сабмодуля (`claude plugin list`
-показывает `Read from: …/claude-plugins/duty`), правки действуют
-со следующего запуска сессии без переустановки.
-
-**Зеркало на GitHub.** Репозиторий плагина публикуется зеркалом
-`quiet-lab/duty` в ветвь `main`; обновляет его шаг 6 навыка
-`/duty:after-merge` после слияния pull request'а в `master`.
-
-**Общий случай.** Плагин ставится в любой репозиторий из своего marketplace
-(`claude plugin marketplace add <источник>`, затем `claude plugin install
-duty@<marketplace>`). Дальше:
+**Общий случай.** Плагин ставится в любой репозиторий из marketplace
+`quiet-lab` (`claude plugin install duty@quiet-lab`). Дальше:
 
 1. `python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/duty_config.py" init` создаёт
    `.duty/duty.toml` с `schema = 1`, именем проекта и закомментированными
@@ -607,7 +591,7 @@ inotify-tools`) или оборвалось наблюдение, 124 — ист
 называются с уникальной частью (номер pull request'а или сборки).
 `dispatch.sh start` снимает `task-done-<имя>` прежней задачи с тем же
 именем. Сигнал `task-done-<имя>` даёт исполнитель при завершении, а на случай его
-сбоя — `dispatch.sh close` (с `--keep`). Хук SessionStart печатает только
+сбоя — `dispatch.sh" close` (с `--keep`). Хук SessionStart печатает только
 ожидания (`list --waits`, с отметкой «сигнал дан»): сигналы-защёлки копятся,
 полный перечень — `signals.py list`. Файл сигнала, не разбирающийся как
 объект JSON, `list` показывает как «повреждён», `wait` выходит с кодом 2,
@@ -670,7 +654,7 @@ inotify-tools`) или оборвалось наблюдение, 124 — ист
 оставить его дерево, а не остановить. Исключение — исполнитель задачи:
 свои ожидания (`signals.py wait`, `wait-done.sh`, `inotifywait`)
 он завершает по записанным в `state.md` PID (`agents/worker.md`,
-«Завершение»); сам `dispatch.sh close` только докладывает `orphans=`.
+«Завершение»); сам `dispatch.sh" close` только докладывает `orphans=`.
 
 ## Доступы
 
@@ -698,7 +682,7 @@ python3 -I <плагин>/scripts/week-stats.py --offline   # неделя в ц
 for t in <плагин>/scripts/tests/test_*.py; do python3 -I "$t"; done
 python3 -I <плагин>/scripts/rules-lint.py repeats --root "$PWD"   # повторы правил: ноль находок
 bash -n <плагин>/scripts/dispatch.sh                  # разбор сценария выноса
-bash <плагин>/scripts/dispatch.sh list                # перечень workspace задач
+bash <плагин>/scripts/dispatch.sh" list                # перечень workspace задач
 bash <плагин>/scripts/dispatch.sh stalled             # задачи для продолжения
 claude -p '/duty:gates' --model haiku --output-format json < /dev/null
 ```

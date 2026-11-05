@@ -216,7 +216,7 @@ class IsolationTest(Base):
 
     def test_wrong_leaf_type_falls_back_to_default(self) -> None:
         root = self.repo(
-            toml='schema = 1\n[git]\nprotected = "dev2"\nforbid_stash = 1\n'
+            toml='schema = 1\n[git]\nprotected = "stage"\nforbid_stash = 1\n'
             '[[busy.resources]]\nname = "s"\n'
         )
         cfg = duty_config.load(root)
@@ -228,7 +228,7 @@ class IsolationTest(Base):
         self.assertIn("git.forbid_stash", text)
         self.assertIn("нет ключа why", text)
         env = self.cli("env", cwd=root).stdout
-        self.assertNotIn("DUTY_CFG_GIT_PROTECTED=dev2", env)
+        self.assertNotIn("DUTY_CFG_GIT_PROTECTED=stage", env)
 
 
 class RootTest(Base):
@@ -310,7 +310,7 @@ class RootTest(Base):
         git(root, "worktree", "add", "-q", "-b", f"t-{name}", str(wt))
         (wt / ".duty").mkdir()
         (wt / ".duty" / "duty.toml").write_text(
-            'schema = 1\n[paths]\nbusy = "../ocp-dev-stand/busy"\n', encoding="utf-8"
+            'schema = 1\n[paths]\nbusy = "../example-stand/busy"\n', encoding="utf-8"
         )
         return root, wt
 
@@ -318,7 +318,7 @@ class RootTest(Base):
         self.assertEqual((cfg.root, cfg.base, cfg.mode), (wt, root, "project"))
         self.assertEqual(cfg.files[-1], wt / ".duty" / "duty.toml")
         self.assertEqual(
-            cfg.get("paths.busy"), str(root.parent / "ocp-dev-stand" / "busy")
+            cfg.get("paths.busy"), str(root.parent / "example-stand" / "busy")
         )
 
     def test_worktree_without_main_duty_uses_worktree_files(self) -> None:

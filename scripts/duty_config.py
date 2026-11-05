@@ -48,7 +48,7 @@ ENV_PATHS = {
 }
 COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}")
 # Ключи, которые допустимы только в пользовательском слое.
-USER_ONLY = {"paths.state", "symbols.outside", "symbols.outside_color"}
+USER_ONLY = {"paths.state", "symbols.outside", "symbols.outside_colors"}
 
 # Типы значений схемы: str, int, bool, list (список строк) и записи вида
 # ("tables", {поле: тип}) — массив таблиц, у которого обязательны все поля.
@@ -110,8 +110,8 @@ SCHEMA_KEYS: dict[str, dict[str, Any]] = {
         "main": STR,
         "tasks": LIST,
         "outside": LIST,
-        "color": STR,
-        "outside_color": STR,
+        "colors": LIST,
+        "outside_colors": LIST,
     },
 }
 
@@ -161,8 +161,8 @@ DEFAULTS: dict[str, Any] = {
         "main": "",
         "tasks": [],
         "outside": [],
-        "color": "",
-        "outside_color": "",
+        "colors": [],
+        "outside_colors": [],
     },
 }
 OPTIONAL_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -732,16 +732,17 @@ def _check_symbols(cfg: Config) -> list[str]:
 
 
 def _check_colors(cfg: Config) -> list[str]:
-    """Цвета workspace: пусто (не задан) или `#rrggbb`."""
+    """Палитры цветов workspace: каждый элемент — строка `#rrggbb`."""
     out: list[str] = []
-    for key in ("color", "outside_color"):
+    for key in ("colors", "outside_colors"):
         dotted = f"symbols.{key}"
         src = _origin(cfg.layers, dotted)
         value = cfg.get(dotted)
-        if src is None or not isinstance(value, str) or value == "":
+        if src is None or not isinstance(value, list):
             continue
-        if not COLOR_RE.fullmatch(value):
-            out.append(f"{src}: {dotted}: цвет «{value}» не в формате #rrggbb")
+        for item in value:
+            if not isinstance(item, str) or not COLOR_RE.fullmatch(item):
+                out.append(f"{src}: {dotted}: цвет «{item}» не в формате #rrggbb")
     return out
 
 
@@ -836,7 +837,7 @@ name = {name}  # имя для подписей, статистики и кат�
 # [symbols]                     # по одной кодовой точке, без повторов между наборами
 # main = ""                     # постоянный символ главной сессии репозитория
 # tasks = []                    # символы workspace задач (пусто — scripts/symbols.txt плагина)
-# color = ""                    # цвет заголовка workspace задач, #rrggbb (пусто — не задаётся)
+# colors = []                  # палитра цветов заголовка workspace задач, #rrggbb (пусто — scripts/colors.txt плагина)
 """
 
 

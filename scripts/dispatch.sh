@@ -23,8 +23,11 @@
 # Символ workspace — случайный эмодзи из набора symbols.tasks конфигурации
 # (вне репозитория — symbols.outside пользовательского слоя; пустой набор —
 # запасной scripts/symbols.txt), не занятый открытыми задачами
-# (dispatch.sh list), цвет заголовка — symbols.color; symbols.main — постоянный символ главной сессии,
-# задачам не выдаётся; по нему главная сессия и пользователь узнают задачу
+# (dispatch.sh list); цвет заголовка — случайный из палитры symbols.colors
+# (вне репозитория — symbols.outside_colors пользовательского слоя; пустая
+# палитра — запасной scripts/colors.txt), не занятый открытыми задачами,
+# хранится в служебном блоке brief.md; symbols.main — постоянный символ
+# главной сессии, задачам не выдаётся; по нему главная сессия и пользователь узнают задачу
 # в подписях herdr и в шапке вопроса (ask.py). Метка workspace и вкладки —
 # «<символ> <имя> · <модель>»; имя агента herdr и сессии Claude — <имя>.
 # Агент получает окружение DUTY_ROLE=worker, DUTY_TASK, DUTY_NAME,
@@ -109,6 +112,8 @@ die() { printf 'dispatch.sh: %s\n' "$*" >&2; exit 1; }
 # Имя задачи начинается с a-z, поэтому первый токен метки, не содержащий a-z,
 # — всегда символ: эмодзи, а у задач прежних версий буква Ⓐ…Ⓩ.
 symbols_fallback=$(dirname "${BASH_SOURCE[0]}")/symbols.txt
+# Запасная палитра цветов заголовка: #rrggbb в строке.
+colors_fallback=$(dirname "${BASH_SOURCE[0]}")/colors.txt
 # Метка workspace без символа в начале: «🦊 имя · модель» → «имя · модель».
 JQ_BARE='def bare: sub("^[^a-z ]+ "; "");'
 
@@ -178,13 +183,23 @@ load_symbols() {
     fi
 }
 
-# Цвет заголовка workspace задачи: symbols.color конфигурации проекта (вне
-# репозитория — symbols.outside_color пользовательского слоя). Пусто — цвет
-# не задан и токен не шлётся.
-workspace_color() {
-    local key=symbols.color
-    [ -n "$root" ] || key=symbols.outside_color
-    cfg get "$key" --default '' || die "цвет $key не получен"
+# Палитра цветов задач в массив color_set: symbols.colors конфигурации проекта
+# (вне репозитория — symbols.outside_colors пользовательского слоя); пустая
+# палитра — запасной colors.txt.
+load_colors() {
+    local key=symbols.colors json
+    [ -n "$root" ] || key=symbols.outside_colors
+    json=$(cfg get "$key" --default '[]') || die "палитра $key не получена"
+    color_set=()
+    local c
+    while IFS= read -r c; do
+        [ -z "$c" ] || color_set+=("$c")
+    done < <(jq -r '.[]?' <<< "$json")
+    if [ ${#color_set[@]} -eq 0 ] && [ -r "$colors_fallback" ]; then
+        while IFS= read -r c; do
+            [ -z "$c" ] || color_set+=("$c")
+        done < "$colors_fallback"
+    fi
 }
 
 # Токен color на workspace: herdr.fg = "$color" понимает только форк herdr
@@ -218,6 +233,11 @@ task_workspace() {
 # Символ workspace из служебного блока brief.md задачи.
 task_symbol() {
     sed -n 's/^- символ workspace: `\([^`]*\)`.*/\1/p' "$1/brief.md" 2> /dev/null | tail -1
+}
+
+# Цвет workspace из служебного блока brief.md задачи.
+task_color() {
+    sed -n 's/^- цвет workspace: `\([^`]*\)`.*/\1/p' "$1/brief.md" 2> /dev/null | tail -1
 }
 
 # Строка «Шаг:» из state.md задачи, до 100 знаков; нет — «—».
@@ -273,6 +293,24 @@ free_symbol() {
         [[ $used == *" $sym "* ]] || free+=("$sym")
     done
     [ ${#free[@]} -gt 0 ] || return 1
+    printf '%s' "${free[RANDOM % ${#free[@]}]}"
+}
+
+# Случайный цвет из набора color_set, которого нет у открытых задач; все цвета
+# заняты — случайный из всего набора; набор пуст — пустая строка.
+free_color() {
+    local workspaces=$1 used=' ' dir c
+    local -a free=()
+    load_colors
+    [ ${#color_set[@]} -gt 0 ] || return 0
+    while IFS= read -r dir; do
+        [ -n "$dir" ] || continue
+        used+="$(task_color "$dir") "
+    done < <(open_tasks "$workspaces")
+    for c in "${color_set[@]}"; do
+        [[ $used == *" $c "* ]] || free+=("$c")
+    done
+    [ ${#free[@]} -gt 0 ] || free=("${color_set[@]}")
     printf '%s' "${free[RANDOM % ${#free[@]}]}"
 }
 
@@ -566,6 +604,7 @@ cmd_start() {
         workspaces=$(herdr workspace list)
     fi
     symbol=$(free_symbol "$workspaces") || die "нет свободного символа: все символы набора заняты открытыми задачами или набор пуст"
+    color=$(free_color "$workspaces") || die 'цвет workspace не выбран'
     label="$symbol $name · $model_arg"
     agents=$(herdr agent list)
     jq -e --arg n "$name" '[.result.agents[] | select(.name == $n)] | length == 0' <<< "$agents" > /dev/null \
@@ -626,7 +665,6 @@ cmd_start() {
     pane=$(jq -er '.result.root_pane.pane_id' <<< "$created") || die "шаг 2: нет корневой панели: $created"
     herdr workspace list | jq -e --arg w "$ws" '.result.workspaces[] | select(.workspace_id == $w)' > /dev/null \
         || die "шаг 2: workspace $ws не виден в herdr workspace list"
-    color=$(workspace_color)
     report_color "$ws" "$color"
 
     # Шаг 3. Служебный блок: агент читает его вместе с запиской.
@@ -635,13 +673,16 @@ cmd_start() {
     [ -z "$root" ] || project_line="\`$root\`"
     config_line='общий режим'
     [ -z "$root" ] || [ "$(cfg json | jq -r '._mode')" != project ] || config_line="\`$root/.duty/duty.toml\`"
+    color_line=
+    [ -z "$color" ] || color_line="- цвет workspace: \`$color\`"
     cat >> "$task/brief.md" << BLOCK
 
 ## Служебное (заполняет dispatch.sh)
 
 - workspace: \`$ws\`, метка \`$label\`
 - символ workspace: \`$symbol\`
-- проект: $project_line
+${color_line:+$color_line
+}- проект: $project_line
 - конфигурация: $config_line
 - панель агента: \`$pane\`
 - агент herdr и сессия Claude: \`$name\`, модель \`$model\`

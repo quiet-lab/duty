@@ -198,9 +198,11 @@ push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane 
 `symbols.outside` пользовательского слоя, пустой набор — запасной
 `scripts/symbols.txt`; `dispatch.sh symbol`), не занятый открытыми
 задачами того же каталога результатов (`symbols.main` — постоянный символ
-главной сессии, его ставит хук подписи пользователя, плагин только хранит); цвет заголовка — `symbols.color` (вне репозитория — `symbols.outside_color`):
+главной сессии, его ставит хук подписи пользователя, плагин только хранит); цвет заголовка — случайный из палитры `symbols.colors` (вне репозитория — `symbols.outside_colors`
+пользовательского слоя, пустая палитра — запасной `scripts/colors.txt`), не занятый открытыми
+задачами того же каталога результатов, хранится в служебном блоке `brief.md`:
 `herdr workspace report-metadata <workspace> --source duty --token color=<#rrggbb>`
-сразу после создания; ключ не задан — токен не шлётся, herdr не форк `duty-v*`
+сразу после создания; herdr не форк `duty-v*`
 (`herdr --version`) — пропуск с предупреждением; `herdr workspace create [--parent <workspace главной сессии>] --label "<символ> <имя> · <модель>"
 --env DUTY_ROLE=worker --env DUTY_TASK=<каталог> --env DUTY_NAME=<имя>
 --env DUTY_SYMBOL=<символ> --env DUTY_MODEL=<модель> --env DUTY_PROJECT=<корень проекта>
@@ -470,7 +472,7 @@ marketplace quiet-lab>`, затем `claude plugin install duty@quiet-lab`;
 
 **Пользовательский слой** — `~/.config/duty/config.toml`: значения по
 умолчанию для всех проектов (каталог состояния `paths.state`, набор
-символов для workspace вне репозиториев `symbols.outside`, запреты станции).
+символов и палитра цветов для workspace вне репозиториев `symbols.outside`, `symbols.outside_colors`, запреты станции).
 Порядок слоёв — `reference/config.md`.
 
 ## Конфигурация

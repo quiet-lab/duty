@@ -149,8 +149,8 @@
 | `symbols.main` | строка | `""` | хук подписи пользователя `herdr-session-label.sh` (dotfiles); плагин только проверяет (`duty_config.py check`): постоянный символ главной сессии, из наборов задач исключается |
 | `symbols.tasks` | список | `[]` (тогда `scripts/symbols.txt`) | `dispatch.sh symbol` (`load_symbols`); `DUTY_SYMBOLS_FILE` перекрывает только этот ключ |
 | `symbols.outside` | список | `[]` (тогда `scripts/symbols.txt`, как у `symbols.tasks`) | `dispatch.sh symbol` (`load_symbols`); только пользовательский слой: workspace вне репозиториев |
-| `symbols.color` | строка `#rrggbb` | `""` | `dispatch.sh` (`report_color`): цвет заголовка workspace задач; пусто — токен не шлётся |
-| `symbols.outside_color` | строка `#rrggbb` | `""` | `dispatch.sh` (`report_color`); только пользовательский слой: цвет workspace вне репозиториев |
+| `symbols.colors` | список `#rrggbb` | `[]` (тогда `scripts/colors.txt`) | `dispatch.sh` (`load_colors`, `free_color`): палитра, из которой задаче выдаётся случайный цвет заголовка workspace, не занятый открытыми задачами |
+| `symbols.outside_colors` | список `#rrggbb` | `[]` (тогда `scripts/colors.txt`, как у `symbols.colors`) | `dispatch.sh` (`load_colors`); только пользовательский слой: палитра workspace вне репозиториев |
 
 У массивов таблиц обязательны все поля. Символ — ровно одна кодовая
 точка (`len == 1`): флаг из нескольких точек вроде «🏳️‍🌈» и символ

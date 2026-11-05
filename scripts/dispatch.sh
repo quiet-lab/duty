@@ -51,6 +51,9 @@
 #   1. каталог задачи <results>/<имя>/ с brief.md, rules.md и runs/ — файлы
 #      непустые;
 #   2. workspace с меткой «<имя> · <модель>» (слово из аргумента), DUTY_ROLE=worker, DUTY_TASK=<каталог> —
+#      дочерний workspace главной сессии (--parent $HERDR_WORKSPACE_ID, один
+#      уровень), если задан HERDR_WORKSPACE_ID, DUTY_ROLE не worker и herdr
+#      знает флаг; иначе без --parent —
 #      есть в herdr workspace list;
 #   3. служебный блок в brief.md — строка с id workspace есть в файле;
 #   4. claude --agent duty:worker в корневой панели, приглашение прочитать
@@ -607,8 +610,15 @@ cmd_start() {
     [ -s "$task/brief.md" ] && [ -s "$task/rules.md" ] && [ -d "$task/runs" ] \
         || die "шаг 1: файлы задачи в $task не созданы"
 
-    # Шаг 2. Workspace.
-    created=$(herdr workspace create --cwd "${root:-$PWD}" --label "$label" \
+    # Шаг 2. Workspace. Дочерний workspace главной сессии (один уровень):
+    # --parent — только из панели herdr, не из workspace задачи (DUTY_ROLE=worker)
+    # и только если установленный herdr знает флаг; иначе вызов без него.
+    parent_args=()
+    if [ -n "${HERDR_WORKSPACE_ID:-}" ] && [ "${DUTY_ROLE:-}" != worker ] \
+        && herdr workspace create --help 2>&1 | grep -q -- '--parent'; then
+        parent_args=(--parent "$HERDR_WORKSPACE_ID")
+    fi
+    created=$(herdr workspace create "${parent_args[@]}" --cwd "${root:-$PWD}" --label "$label" \
         --env DUTY_ROLE=worker --env "DUTY_TASK=$task" --env "DUTY_NAME=$name" \
         --env "DUTY_SYMBOL=$symbol" --env "DUTY_MODEL=$model_arg" \
         ${root:+--env "DUTY_PROJECT=$root"} --no-focus)

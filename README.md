@@ -201,10 +201,13 @@ push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane 
 главной сессии, его ставит хук подписи пользователя, плагин только хранит); цвет заголовка — `symbols.color` (вне репозитория — `symbols.outside_color`):
 `herdr workspace report-metadata <workspace> --source duty --token color=<#rrggbb>`
 сразу после создания; ключ не задан — токен не шлётся, herdr не форк `duty-v*`
-(`herdr --version`) — пропуск с предупреждением; `herdr workspace create --label "<символ> <имя> · <модель>"
+(`herdr --version`) — пропуск с предупреждением; `herdr workspace create [--parent <workspace главной сессии>] --label "<символ> <имя> · <модель>"
 --env DUTY_ROLE=worker --env DUTY_TASK=<каталог> --env DUTY_NAME=<имя>
 --env DUTY_SYMBOL=<символ> --env DUTY_MODEL=<модель> --env DUTY_PROJECT=<корень проекта>
---no-focus`; служебный блок в `brief.md` (workspace, символ, панель, имя агента,
+--no-focus`; workspace задачи — дочерний workspace главной сессии, один
+уровень: `--parent "$HERDR_WORKSPACE_ID"` передаётся, если переменная задана,
+`DUTY_ROLE` не `worker` и `herdr workspace create --help` содержит `--parent`,
+иначе вызов идёт без флага; служебный блок в `brief.md` (workspace, символ, панель, имя агента,
 имя главной сессии, каталог плагина, проект, файл конфигурации);
 `herdr agent start <имя> --kind claude -- --agent duty:worker --model
 <модель> --name <имя> "<приглашение>"` (первое приглашение — позиционным

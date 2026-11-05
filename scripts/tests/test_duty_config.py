@@ -303,6 +303,38 @@ class RootTest(Base):
         os.environ["DUTY_PROJECT"] = str(wt)
         self.assertEqual(duty_config.find_root(cwd=wt), wt)
 
+    def _worktree_without_main_duty(self, name: str) -> tuple[Path, Path]:
+        root = self.repo(name, toml=None)
+        git(root, "commit", "-q", "--allow-empty", "-m", "x")
+        wt = self.tmp / f"wt-{name}"
+        git(root, "worktree", "add", "-q", "-b", f"t-{name}", str(wt))
+        (wt / ".duty").mkdir()
+        (wt / ".duty" / "duty.toml").write_text(
+            'schema = 1\n[paths]\nbusy = "../ocp-dev-stand/busy"\n', encoding="utf-8"
+        )
+        return root, wt
+
+    def _check_wt_only(self, cfg: "duty_config.Config", root: Path, wt: Path) -> None:
+        self.assertEqual((cfg.root, cfg.base, cfg.mode), (wt, root, "project"))
+        self.assertEqual(cfg.files[-1], wt / ".duty" / "duty.toml")
+        self.assertEqual(
+            cfg.get("paths.busy"), str(root.parent / "ocp-dev-stand" / "busy")
+        )
+
+    def test_worktree_without_main_duty_uses_worktree_files(self) -> None:
+        root, wt = self._worktree_without_main_duty("wo")
+        self.assertEqual(duty_config.find_root(root=wt), wt)
+        self.assertEqual(duty_config.find_root(cwd=wt), wt)
+        self._check_wt_only(duty_config.load(root=wt), root, wt)
+        self._check_wt_only(duty_config.load(cwd=wt), root, wt)
+        data = json.loads(self.cli("json", "--root", str(wt)).stdout)
+        self.assertEqual((data["_root"], data["_base"]), (str(wt), str(root)))
+
+    def test_env_project_on_worktree_paths_from_main_tree(self) -> None:
+        root, wt = self._worktree_without_main_duty("we")
+        os.environ["DUTY_PROJECT"] = str(wt)
+        self._check_wt_only(duty_config.load(cwd=self.tmp), root, wt)
+
     def test_no_git_no_root(self) -> None:
         plain = self.tmp / "plain"
         plain.mkdir()

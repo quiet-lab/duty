@@ -11,8 +11,10 @@
 Корень проекта — первый найденный: `--root`, `DUTY_PROJECT`,
 `CLAUDE_PROJECT_DIR`, подъём от текущего каталога (`--cwd`) до каталога
 с `.duty/duty.toml` не выше надпроекта git (из linked worktree — главное
-рабочее дерево, `main_tree`); без `.duty/` корень — надпроект
-или верх git (общий режим), без git корня нет.
+рабочее дерево, `main_tree`, если в нём есть `.duty/duty.toml`, иначе сам
+worktree); без `.duty/` корень — надпроект или верх git (общий режим), без git
+корня нет. Относительные пути конфигурации отсчитываются от базы: главное
+дерево для linked worktree, иначе корень.
 
 Команды: root, get, json, env, check, init. Коды выхода: 0 — успех,
 1 — находки `check` или отказ `init`, 2 — ошибка TOML или неверное обращение,
@@ -210,6 +212,25 @@ def main_tree(path: Path) -> Path | None:
     return None
 
 
+def _has_duty(d: Path) -> bool:
+    return (d / ".duty" / "duty.toml").is_file()
+
+
+def _worktree_root(path: Path) -> Path:
+    """Откуда читать конфигурацию для каталога `path`.
+
+    Linked worktree: главное дерево, если в нём есть `.duty/duty.toml`,
+    иначе верх самого worktree; не worktree — `path`.
+    """
+    main = main_tree(path)
+    if main is None:
+        return path
+    if _has_duty(main):
+        return main
+    top = _git(path, "rev-parse", "--show-toplevel")
+    return Path(top).resolve() if top and _has_duty(Path(top).resolve()) else main
+
+
 def find_root(
     root: str | os.PathLike[str] | None = None,
     cwd: str | os.PathLike[str] | None = None,
@@ -218,15 +239,14 @@ def find_root(
     if root:
         given = Path(root).expanduser().resolve()
         if given.is_dir():
-            return main_tree(given) or given
+            return _worktree_root(given)
         return given
     for env in ("DUTY_PROJECT", "CLAUDE_PROJECT_DIR"):
         if os.environ.get(env):
             return Path(os.environ[env]).expanduser().resolve()
     start = Path(cwd or os.getcwd()).resolve()
-    main = main_tree(start)
-    if main is not None:
-        return main
+    if main_tree(start) is not None:
+        return _worktree_root(start)
     bound = git_bound(start)
     if bound is None:
         return None
@@ -299,7 +319,9 @@ def read_symbols(path: Path) -> list[str]:
 class Config:
     """Слитая конфигурация проекта.
 
-    Атрибуты: root — корень (None вне git), mode — "project" при
+    Атрибуты: root — каталог, откуда читаются файлы слоёв (None вне git),
+    base — база относительных путей (главное дерево для linked worktree,
+    иначе root), mode — "project" при
     `.duty/duty.toml`, иначе "general", name — имя проекта, files — прочитанные
     файлы слоёв по порядку, layers — пары (файл, данные) для проверки схемы,
     findings — значения неверного типа, замененные значениями по умолчанию.
@@ -308,6 +330,7 @@ class Config:
     def __init__(
         self,
         root: Path | None,
+        base: Path | None,
         mode: str,
         name: str,
         data: dict[str, Any],
@@ -317,6 +340,7 @@ class Config:
     ) -> None:
         self.findings = findings or []
         self.root = root
+        self.base = base
         self.mode = mode
         self.name = name
         self.data = data
@@ -341,6 +365,7 @@ class Config:
     def as_json(self) -> dict[str, Any]:
         out = copy.deepcopy(self.data)
         out["_root"] = str(self.root) if self.root else None
+        out["_base"] = str(self.base) if self.base else None
         out["_files"] = [str(f) for f in self.files]
         out["_mode"] = self.mode
         return out
@@ -439,7 +464,7 @@ def load(
     raw_name = data.get("project", {}).get("name")
     name = raw_name if isinstance(raw_name, str) and raw_name else (found or here).name
     data.setdefault("project", {})["name"] = name
-    base = found or here
+    base = (main_tree(found) or found) if found else here
     paths = data.setdefault("paths", {})
     for key in [k for k, v in paths.items() if not isinstance(v, str)]:
         del paths[key]
@@ -466,7 +491,16 @@ def load(
             data["symbols"]["tasks"] = read_symbols(Path(symbols_file).expanduser())
         except OSError as error:
             raise ConfigError(f"{symbols_file}: {error}") from error
-    return Config(found, mode, name, data, [f for f, _ in layers], layers, findings)
+    return Config(
+        found,
+        base if found else None,
+        mode,
+        name,
+        data,
+        [f for f, _ in layers],
+        layers,
+        findings,
+    )
 
 
 # --- Проверка схемы ---------------------------------------------------------
@@ -592,7 +626,7 @@ def check_config(cfg: Config) -> list[str]:
 def check_notes(cfg: Config) -> list[str]:
     """Примечания `check`: не находки, код выхода не меняют (нет файла доступа)."""
     out: list[str] = []
-    base = cfg.root or Path.cwd()
+    base = cfg.base or cfg.root or Path.cwd()
     for section, spec in SCHEMA_KEYS.items():
         for key in spec:
             if not key.endswith("_file"):

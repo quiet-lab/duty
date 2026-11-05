@@ -90,7 +90,7 @@ ME = subprocess.run(
     check=False,
 ).stdout.strip()
 # Маски каталогов, чьи worktree не перечисляются и не измеряются (cleanup.skip_trees).
-SKIP_MASKS = [str(CFG.path_of(t, ROOT)) for t in CFG.get("cleanup.skip_trees", [])]
+SKIP_MASKS = [str(CFG.path_of(t)) for t in CFG.get("cleanup.skip_trees", [])]
 
 
 def skipped(path: Path) -> bool:
@@ -101,7 +101,7 @@ def skipped(path: Path) -> bool:
 
 # Основные деревья стенда переводит на новую ревизию сам стенд; удаляются
 # только вместе со стендом.
-STAND_MAIN = {CFG.path_of(t, ROOT).resolve() for t in CFG.get("cleanup.keep_trees", [])}
+STAND_MAIN = {CFG.path_of(t).resolve() for t in CFG.get("cleanup.keep_trees", [])}
 # Поля строки: вид, сабмодуль, родитель, что, размер, решение, команда.
 rows: list[tuple[str, str, str, str, str, str, str]] = []
 

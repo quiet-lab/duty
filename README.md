@@ -453,6 +453,10 @@ claude plugin install duty@<marketplace> --scope project
 показывает `Read from: …/claude-plugins/duty`), правки действуют
 со следующего запуска сессии без переустановки.
 
+**Зеркало на GitHub.** Репозиторий плагина публикуется зеркалом
+`quiet-lab/duty` в ветвь `main`; обновляет его шаг 6 навыка
+`/duty:after-merge` после слияния pull request'а в `master`.
+
 **Общий случай.** Плагин ставится в любой репозиторий из своего marketplace
 (`claude plugin marketplace add <источник>`, затем `claude plugin install
 duty@<marketplace>`). Дальше:

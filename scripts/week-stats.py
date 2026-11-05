@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
 """Неделя в цифрах: показатели работы за период для /duty:inspect.
 
-Показатели: время жизни набора (pull request'ы `release-sets` от создания
-до слияния), занятость Jenkins и доля случайных падений, вопросов агентов
+Показатели: время жизни набора (pull request'ы репозитория наборов
+`bitbucket.sets_repo` от создания до слияния), занятость Jenkins и доля случайных падений, вопросов агентов
 в день, новых записей решений, воспроизведённых ломающих находок ревью,
 доля моделей в коммитах и доля коммитов в код и тесты. Период — `--days`
 суток до текущего момента (по умолчанию 7). Порогов и действий нет: только
 числа.
 
-Только чтение: git без fetch, REST только GET. Токены читаются из файлов
-`~/.config/axata/` и не выводятся; ответ 401 или 403 Bitbucket останавливает
-обращения к нему без повторов (`gates.py`). Недоступный источник даёт
-в строке «не получено» с причиной, остальные строки считаются.
+Только чтение: git без fetch, REST только GET. Адреса, файлы доступа, классы
+путей и каталог записей решений берутся из `.duty/duty.toml` (`[bitbucket]`,
+`[jenkins]`, `[stats]`, `[docs]`, `[paths]`); токены читаются из файлов и не
+выводятся; ответ 401 или 403 Bitbucket останавливает обращения к нему без
+повторов (`gates.py`). Недоступный источник и отсутствующий раздел даёт
+в строке «не получено» или «не считалось» с причиной, остальные строки
+считаются.
 """
 
 import argparse
 import json
-import os
 import re
 import statistics
 import subprocess
@@ -34,18 +36,23 @@ import gates
 HOUR_MS = 3_600_000
 DAY_MS = 24 * HOUR_MS
 REVIEW_STATS = Path.home() / ".claude" / "stats" / "review-rounds.tsv"
-# Форма строки статистики ревью (`.claude/rules/code-review.md` монорепозитория):
+# Форма строки статистики ревью:
 # дата, проект, задача, модель исполнителя, уровень, находок всего,
 # воспроизведено ломающих, исправлено, тикет.
 REVIEW_COLUMNS = 9
 MODEL_RE = re.compile(
     r"^Co-Authored-By:\s*Claude\s+(\w+)", re.IGNORECASE | re.MULTILINE
 )
-RECORD_RE = re.compile(r"(^|/)docs/decisions/(\d{2}-[^/]+/)?\d{4}-[^/]+\.md$")
-FAKE_JOB = "z__fake"
 BUILD_TREE = (
     "number,url,result,timestamp,duration,building,actions[lastBuiltRevision[SHA1]]"
 )
+
+
+def record_re(decisions: str) -> re.Pattern[str]:
+    """Путь записи решения в каталоге `docs.decisions`: `[NN-тема/]NNNN-имя.md`."""
+    return re.compile(
+        rf"(^|/){re.escape(decisions.strip('/'))}/(\d{{2}}-[^/]+/)?\d{{4}}-[^/]+\.md$"
+    )
 
 
 def run_git(repo: Path, *args: str) -> str:
@@ -79,12 +86,13 @@ def hours(ms: float) -> str:
 
 
 def set_lifetimes(root: Path, since_ms: int, now_ms: int) -> str:
-    url = run_git(
-        root / "legacy" / "release-sets", "remote", "get-url", "origin"
-    ).strip()
+    sets_repo = gates.config().get("bitbucket.sets_repo", "")
+    if not sets_repo:
+        return "наборов нет: sets_repo не задан"
+    url = run_git(root / sets_repo, "remote", "get-url", "origin").strip()
     m = re.search(r"/scm/([^/]+)/([^/]+?)(?:\.git)?$", url)
     if not m:
-        return "не получено: нет origin у legacy/release-sets"
+        return f"не получено: нет origin у {sets_repo}"
     base = (
         f"/rest/api/1.0/projects/{m.group(1).upper()}/repos/{m.group(2)}/pull-requests"
     )
@@ -127,7 +135,8 @@ def set_lifetimes(root: Path, since_ms: int, now_ms: int) -> str:
 
 
 def jenkins_builds(env: dict[str, str], since_ms: int) -> list[dict]:
-    """Сборки всех заданий с началом в периоде, кроме проверочных `z__fake`."""
+    """Сборки всех заданий с началом в периоде, кроме проверочных (`jenkins.fake_job`)."""
+    fake = gates.config().get("jenkins.fake_job", "")
     out: list[dict] = []
 
     def walk(url: str, path: list[str]) -> None:
@@ -140,7 +149,7 @@ def jenkins_builds(env: dict[str, str], since_ms: int) -> list[dict]:
                 walk(job["url"], [*path, job["name"]])
             return
         name = "/".join(path)
-        if FAKE_JOB in name:
+        if fake and fake in name:
             return
         tree = urllib.parse.quote(f"allBuilds[{BUILD_TREE}]{{0,200}}", safe=",[]{}")
         b = gates.jenkins(url.rstrip("/") + f"/api/json?tree={tree}", env) or {}
@@ -149,7 +158,9 @@ def jenkins_builds(env: dict[str, str], since_ms: int) -> list[dict]:
                 build["job"] = name
                 out.append(build)
 
-    walk(env.get("JENKINS_URL", "https://jen.service-desk.site/"), [])
+    if not env.get("JENKINS_URL"):
+        raise ConnectionError("в файле доступа Jenkins нет JENKINS_URL")
+    walk(env["JENKINS_URL"], [])
     return out
 
 
@@ -245,10 +256,14 @@ def failure_classes(builds: list[dict], env: dict[str, str]) -> Counter:
 
 def classify_path(repo_name: str, path: str) -> str:
     """Класс пути коммита: код, тесты, документация, правила, конвейер."""
+    cfg = gates.config()
+    rules_paths = tuple(cfg.get("stats.rules_paths", []))
+    pipeline_paths = tuple(cfg.get("stats.pipeline_paths", []))
+    test_repos = cfg.get("stats.test_repos", [])
     base = path.rsplit("/", 1)[-1]
     if (
-        repo_name == "claude-plugins/duty"
-        or path.startswith((".claude/", "claude-plugins/"))
+        (repo_name != "." and f"{repo_name}/".startswith(rules_paths))
+        or path.startswith(rules_paths)
         or base in ("CLAUDE.md", "AGENTS.md")
     ):
         return "правила"
@@ -256,7 +271,7 @@ def classify_path(repo_name: str, path: str) -> str:
         base.startswith("Jenkinsfile")
         or base in ("justfile", "Justfile")
         or path.endswith(".just")
-        or path.startswith(("deploy/", "scripts/", "jenkins/", ".jenkins/"))
+        or path.startswith(pipeline_paths)
     ):
         return "конвейер"
     if (
@@ -267,7 +282,7 @@ def classify_path(repo_name: str, path: str) -> str:
     ):
         return "документация"
     if (
-        repo_name == "legacy/tests"
+        repo_name in test_repos
         or re.search(r"(^|/)(tests?|e2e|__tests__|devlab)/", path)
         or re.search(r"(\.spec\.|\.test\.|test_[^/]*\.py$|playwright\.config)", path)
     ):
@@ -306,12 +321,8 @@ def git_stats(root: Path, since_ms: int) -> dict:
                 if len(parts) == 3:
                     added = 0 if parts[0] == "-" else int(parts[0])
                     removed = 0 if parts[1] == "-" else int(parts[1])
-                    # Указатели сабмодулей в монорепозитории — не код.
-                    if (
-                        name == "."
-                        and parts[2].startswith(("legacy/", "claude-plugins/"))
-                        and (root / parts[2] / ".git").exists()
-                    ):
+                    # Указатели сабмодулей в корневом репозитории — не код.
+                    if name == "." and (root / parts[2] / ".git").exists():
                         weight["указатели"] += 1
                     else:
                         weight[classify_path(name, parts[2])] += added + removed + 1
@@ -320,6 +331,9 @@ def git_stats(root: Path, since_ms: int) -> dict:
 
 
 def new_records(root: Path, since_ms: int) -> int:
+    decisions = gates.config().get("docs.decisions", "")
+    if not decisions:
+        raise ValueError("docs.decisions не задан")
     log = run_git(
         root,
         "log",
@@ -329,9 +343,10 @@ def new_records(root: Path, since_ms: int) -> int:
         "--format=",
         "--name-only",
         "--",
-        "docs/decisions",
+        decisions,
     )
-    return sum(1 for line in log.splitlines() if RECORD_RE.search(line))
+    rx = record_re(decisions)
+    return sum(1 for line in log.splitlines() if rx.search(line))
 
 
 # --- Вопросы и ревью ---------------------------------------------------------
@@ -376,8 +391,10 @@ def review_stats(path: Path, since_ms: int) -> str:
 def collect(args: argparse.Namespace) -> list[tuple[str, str]]:
     now = time.time_ns() // 1_000_000
     since = now - args.days * DAY_MS
-    root = Path(args.root).resolve()
+    cfg = gates.config()
+    root = cfg.root
     rows: list[tuple[str, str]] = []
+    absent = lambda section: f"не считалось: в .duty/duty.toml нет раздела [{section}]"  # noqa: E731
 
     def guarded(label: str, fn) -> None:
         try:
@@ -391,38 +408,47 @@ def collect(args: argparse.Namespace) -> list[tuple[str, str]]:
         rows.append(("Время жизни набора", "не считалось (--offline)"))
         rows.append(("Занятость Jenkins", "не считалось (--offline)"))
     else:
-        guarded("Время жизни набора", lambda: set_lifetimes(root, since, now))
-        try:
-            env = gates.jenkins_env()
-            builds = jenkins_builds(env, since)
-            busy = busy_ms(builds, since, now)
-            failed, rand = random_failures(builds)
-            rows.append(
-                (
-                    "Занятость Jenkins",
-                    f"{hours(busy)} из {hours(now - since)} ({pct(busy, now - since)}), сборок {len(builds)}",
-                )
-            )
-            classes = failure_classes(builds, env)
-            listed = ", ".join(f"{k} {v}" for k, v in classes.most_common())
-            rows.append(
-                (
-                    "Случайные падения",
+        if cfg.has("bitbucket"):
+            guarded("Время жизни набора", lambda: set_lifetimes(root, since, now))
+        else:
+            rows.append(("Время жизни набора", absent("bitbucket")))
+        if not cfg.has("jenkins"):
+            rows.append(("Занятость Jenkins", absent("jenkins")))
+        else:
+            try:
+                env = gates.jenkins_env()
+                builds = jenkins_builds(env, since)
+                busy = busy_ms(builds, since, now)
+                failed, rand = random_failures(builds)
+                rows.append(
                     (
-                        f"{rand} из {failed} падений ({pct(rand, failed)}) "
-                        f"прошли повтором на той же ревизии; классы: {listed or '—'}"
-                    ),
+                        "Занятость Jenkins",
+                        f"{hours(busy)} из {hours(now - since)} ({pct(busy, now - since)}), сборок {len(builds)}",
+                    )
                 )
-            )
-        except (OSError, ValueError, KeyError, ConnectionError) as e:
-            rows.append(
-                ("Занятость Jenkins", f"не получено: {type(e).__name__}: {e}"[:200])
-            )
+                classes = failure_classes(builds, env)
+                listed = ", ".join(f"{k} {v}" for k, v in classes.most_common())
+                rows.append(
+                    (
+                        "Случайные падения",
+                        (
+                            f"{rand} из {failed} падений ({pct(rand, failed)}) "
+                            f"прошли повтором на той же ревизии; классы: {listed or '—'}"
+                        ),
+                    )
+                )
+            except (OSError, ValueError, KeyError, ConnectionError) as e:
+                rows.append(
+                    ("Занятость Jenkins", f"не получено: {type(e).__name__}: {e}"[:200])
+                )
     guarded(
         "Вопросов агентов в день",
         lambda: questions_per_day(ask.results_dir(args.results), since, args.days),
     )
-    guarded("Новых записей решений", lambda: str(new_records(root, since)))
+    if cfg.get("docs.decisions", ""):
+        guarded("Новых записей решений", lambda: str(new_records(root, since)))
+    else:
+        rows.append(("Новых записей решений", "не считалось: docs.decisions не задан"))
     guarded("Ревью", lambda: review_stats(Path(args.review_stats), since))
     stats = git_stats(root, since)
     total = stats["commits"]
@@ -451,8 +477,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--root",
-        default=os.environ.get("CLAUDE_PROJECT_DIR") or ".",
-        help="корень монорепозитория",
+        help="корень проекта; по умолчанию его находит duty_config.py",
     )
     p.add_argument(
         "--results",
@@ -466,6 +491,14 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     if args.days < 1:
         p.error("--days не меньше 1")
+    try:
+        cfg = gates.config(args.root)
+    except gates.duty_config.ConfigError as e:
+        print(f"ошибка конфигурации: {e}", file=sys.stderr)
+        return 2
+    if cfg.root is None:
+        print("корень проекта не найден: запустите из репозитория git или задайте --root", file=sys.stderr)
+        return 2
     rows = collect(args)
     if args.json:
         print(json.dumps(dict(rows), ensure_ascii=False))

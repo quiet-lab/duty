@@ -4,12 +4,16 @@
 исполнители Jenkins с очередью ожидания и агенты, сессии и отметки занятости
 на станции.
 
-Только чтение. Токены читаются из файлов ~/.config/axata/ и никуда не выводятся.
+Только чтение. Адреса и файлы доступа берутся из `.duty/duty.toml`
+(`reference/config.md`: `[bitbucket]`, `[jenkins]`, `[paths]`), токены читаются
+из файлов и никуда не выводятся; без `[bitbucket]` скрипт сообщает об этом
+одной строкой. Ключ `--root <корень проекта>` задаёт корень.
 Ответ 401 или 403 от Bitbucket останавливает работу без повторов: четыре
 неверных входа блокируют учётную запись до ввода CAPTCHA.
 """
 
 import base64
+import importlib.util
 import json
 import os
 import ssl
@@ -20,11 +24,38 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-BB = "https://git.service-desk.site"
-CFG = Path.home() / ".config" / "axata"
-# Jenkins отдаёт сертификат внутреннего центра, поэтому проверка выключена,
-# как и в curl -k из docs/rollout.md.
-INSECURE = ssl._create_unverified_context()
+# Каталог скрипта убран из sys.path ключом -I, поэтому модули подключаются по пути.
+_spec = importlib.util.spec_from_file_location("dutylib", Path(__file__).with_name("dutylib.py"))
+dutylib = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(dutylib)
+duty_config = dutylib.import_path("duty_config", Path(__file__).with_name("duty_config.py"))
+
+_CFG = None
+
+
+def config(root: str | None = None):
+    """Конфигурация проекта: загружается один раз, дальше берётся из памяти."""
+    global _CFG
+    if _CFG is None or root is not None:
+        _CFG = duty_config.load(root=root)
+    return _CFG
+
+
+def cfg_file(raw: str) -> Path:
+    """Путь из конфигурации: `~` раскрывается, относительный — от корня проекта."""
+    p = Path(raw).expanduser()
+    return p if p.is_absolute() else (config().root or Path.cwd()) / p
+
+
+def ssl_context():
+    """Проверка сертификата Jenkins выключается только ключом `jenkins.insecure_tls`."""
+    if config().get("jenkins.insecure_tls", False):
+        return ssl._create_unverified_context()
+    return ssl.create_default_context()
+
+
+def missing_section(section: str, what: str) -> str:
+    return f"в .duty/duty.toml нет раздела [{section}]: {what} не проверено"
 
 
 class BitbucketDenied(Exception):
@@ -32,8 +63,9 @@ class BitbucketDenied(Exception):
 
 
 def bb(path: str) -> dict:
-    token = (CFG / "bitbucket-http-token").read_text().strip()
-    req = urllib.request.Request(BB + path, headers={"Authorization": f"Bearer {token}"})
+    cfg = config()
+    token = cfg_file(cfg.get("bitbucket.token_file", "")).read_text().strip()
+    req = urllib.request.Request(cfg.get("bitbucket.url", "").rstrip("/") + path, headers={"Authorization": f"Bearer {token}"})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.load(r)
@@ -45,7 +77,10 @@ def bb(path: str) -> dict:
 
 def jenkins_env() -> dict[str, str]:
     env = {}
-    for line in (CFG / "jenkins-credentials.env").read_text().splitlines():
+    raw = config().get("jenkins.env_file", "")
+    if not raw:
+        return env
+    for line in cfg_file(raw).read_text().splitlines():
         if "=" in line and not line.lstrip().startswith("#"):
             k, v = line.split("=", 1)
             env[k.strip()] = v.strip().strip('"')
@@ -56,7 +91,7 @@ def jenkins(url: str, env: dict[str, str]) -> dict | None:
     auth = base64.b64encode(f"{env['JENKINS_USER']}:{env['JENKINS_TOKEN']}".encode()).decode()
     req = urllib.request.Request(url, headers={"Authorization": f"Basic {auth}"})
     try:
-        with urllib.request.urlopen(req, timeout=20, context=INSECURE) as r:
+        with urllib.request.urlopen(req, timeout=20, context=ssl_context()) as r:
             return json.load(r)
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
         return None
@@ -79,7 +114,7 @@ def gate_summary(statuses: list[dict], env: dict[str, str]) -> tuple[str, str]:
     # Последняя по времени сборка — та, что решает о слиянии.
     last = max(statuses, key=lambda s: s.get("dateAdded", 0))
     url = last.get("url", "").removesuffix("display/redirect")
-    if not url.startswith("http"):
+    if not url.startswith("http") or not env:
         return builds, "—"
     d = jenkins(url.rstrip("/") + "/wfapi/describe", env)
     if d is None:
@@ -121,15 +156,15 @@ def run_info(url: str, base: str, env: dict[str, str]) -> tuple[str, str]:
 
 
 def jenkins_now(env: dict[str, str], now_ms: int) -> int:
-    base = env.get("JENKINS_URL", "https://jen.service-desk.site/")
-    comp = jenkins_get(
+    base = env.get("JENKINS_URL", "")
+    comp = base and jenkins_get(
         base,
         "/computer/api/json?tree=computer[displayName,offline,temporarilyOffline,offlineCauseReason,"
         f"numExecutors,executors[{EXEC_TREE}],oneOffExecutors[{EXEC_TREE}]]",
         env,
     )
     print("## Исполнители Jenkins\n")
-    if comp is None:
+    if not comp:
         print("Jenkins недоступен (computer/api/json не ответил).")
         return 1
     print("| Узел | Состояние | Задание и сборка | Идёт | Кто запустил |")
@@ -218,10 +253,8 @@ def station_now(now_ms: int) -> None:
             continue
         name = a.get("name") or a.get("terminal_title_stripped") or a["pane_id"]
         print(f"| агент herdr {a['workspace_id']} | {cell(name)} | {short(a.get('cwd', '?'))} | {cell(a.get('agent_status'))} | ? |")
-    busy_dir = Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()).resolve().parent / "ocp-dev-stand" / "busy"
-    if not busy_dir.is_dir():
-        busy_dir = Path.home() / "work/telecom/axata/ocp-dev-stand/busy"
-    for f in sorted(busy_dir.glob("*.json")) if busy_dir.is_dir() else []:
+    busy_dir = config().path("paths.busy")
+    for f in sorted(busy_dir.glob("*.json")) if busy_dir and busy_dir.is_dir() else []:
         try:
             d = json.loads(f.read_text())
         except (OSError, ValueError):
@@ -238,15 +271,32 @@ def station_now(now_ms: int) -> None:
 
 def now_main() -> int:
     now_ms = int(time.time() * 1000)
-    rc = jenkins_now(jenkins_env(), now_ms)
+    has_jenkins = config().has("jenkins")
+    rc = jenkins_now(jenkins_env(), now_ms) if has_jenkins else 0
     station_now(now_ms)
+    if not has_jenkins:
+        print("\n" + missing_section("jenkins", "исполнители Jenkins") + ".")
     return rc
 
 
 def main() -> int:
-    if sys.argv[1:2] == ["now"]:
+    argv = sys.argv[1:]
+    root = None
+    if "--root" in argv:
+        i = argv.index("--root")
+        root = argv[i + 1] if i + 1 < len(argv) else None
+        del argv[i : i + 2]
+    try:
+        config(root)
+    except duty_config.ConfigError as e:
+        print(f"ошибка конфигурации: {e}", file=sys.stderr)
+        return 2
+    if argv[:1] == ["now"]:
         return now_main()
-    env = jenkins_env()
+    if not config().has("bitbucket"):
+        print(missing_section("bitbucket", "pull request'ы"))
+        return 0
+    env = jenkins_env() if config().has("jenkins") else {}
     try:
         prs = bb("/rest/api/1.0/dashboard/pull-requests?state=OPEN&role=AUTHOR&limit=100")["values"]
         now = time.time()

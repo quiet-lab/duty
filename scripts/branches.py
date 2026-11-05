@@ -6,7 +6,11 @@
 сведения.
 
 Использование: branches.py [all|<подстрока репозитория>] [--mine] [--no-pr]
-[--root <корень монорепозитория>]
+[--root <корень проекта>]
+
+Защищённые и рабочие ветви, префиксы задач, ключ родителя сабмодуля, шаблон
+тикета и адрес Bitbucket берутся из `.duty/duty.toml` (`reference/config.md`:
+`[git]`, `[jira]`, `[bitbucket]`). Без `[bitbucket]` скрипт работает как с --no-pr.
 
 --mine   только ветви пользователя (git config user.name): последний коммит его
          или не менее половины собственных коммитов ветви;
@@ -14,7 +18,6 @@
 """
 
 import importlib.util
-import os
 import re
 import subprocess
 import sys
@@ -27,18 +30,28 @@ _spec = importlib.util.spec_from_file_location("gates", Path(__file__).with_name
 gates = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gates)
 
-# Ветви, которых в таблице нет: линии приёма и рабочая ветвь сабмодулей.
-HIDDEN = {"dev", "dev2", "master", "new_ocp"}
-KEEP_PREFIXES = ("backup/", "saved/")
-TASK_PREFIXES = ("dev2-", "feature/", "bugfix/", "chore/", "RP-", "backup/", "saved/")
+# Заполняются из конфигурации в setup(): ветви, которых в таблице нет
+# (git.protected и git.working), префиксы сохранённых копий и задач.
+HIDDEN: set[str] = set()
+KEEP_PREFIXES: tuple[str, ...] = ()
+TASK_PREFIXES: tuple[str, ...] = ()
+NAMED_DEV = False
+MAX_PR_PAGES = 5
+
+
+def setup(cfg) -> None:
+    global HIDDEN, KEEP_PREFIXES, TASK_PREFIXES, NAMED_DEV
+    HIDDEN = set(cfg.get("git.protected", [])) | set(cfg.get("git.working", []))
+    KEEP_PREFIXES = tuple(cfg.get("git.keep_prefixes", []))
+    TASK_PREFIXES = tuple(dict.fromkeys([*cfg.get("git.task_prefixes", []), *KEEP_PREFIXES]))
+    NAMED_DEV = bool(cfg.get("git.named_dev_branches", False))
 
 
 def named_dev_branch(name):
-    # Именная ветвь разработчика линии dev: имя без префикса и без косой черты;
-    # её собирает Jenkins, слитой она не считается.
-    return "/" not in name and not name.startswith(TASK_PREFIXES) and name not in ("dev", "dev2", "master", "new_ocp")
-MAX_PR_PAGES = 5
-DEFAULT_ROOT = Path.home() / "work/telecom/axata/monorepo-ocp"
+    # Именная ветвь разработчика: имя без префикса и без косой черты;
+    # её собирает Jenkins, слитой она не считается. Без git.named_dev_branches
+    # именных ветвей нет.
+    return NAMED_DEV and "/" not in name and not name.startswith(TASK_PREFIXES) and name not in HIDDEN
 
 
 def git(repo: Path, *args: str) -> str:
@@ -50,26 +63,19 @@ def git_ok(repo: Path, *args: str) -> bool:
     return subprocess.run(["git", *args], cwd=repo, capture_output=True).returncode == 0
 
 
-def find_root(explicit: str | None) -> Path:
-    if explicit:
-        return Path(explicit).resolve()
-    for cand in (os.environ.get("CLAUDE_PROJECT_DIR"), git(Path.cwd(), "rev-parse", "--show-toplevel")):
-        if cand and (Path(cand) / ".gitmodules").exists():
-            return Path(cand).resolve()
-    return DEFAULT_ROOT
-
-
-def repos(root: Path) -> list[tuple[str, Path, str]]:
-    """Репозитории: имя, каталог, родитель (ключ parent, иначе branch)."""
-    res = [(".", root, "master")]
+def repos(root: Path, cfg) -> list[tuple[str, Path, str]]:
+    """Репозитории: имя, каталог, родитель (ключ git.parent_key, иначе branch, иначе git.default_parent)."""
+    default = cfg.get("git.default_parent", "master")
+    parent_key = cfg.get("git.parent_key", "parent")
+    res = [(".", root, default)]
     out = git(root, "config", "-f", ".gitmodules", "--get-regexp", r"\.path$")
     for line in out.splitlines():
         key, path = line.split()
         name = key.removeprefix("submodule.").removesuffix(".path")
-        parent = git(root, "config", "-f", ".gitmodules", f"submodule.{name}.parent") or git(
+        parent = git(root, "config", "-f", ".gitmodules", f"submodule.{name}.{parent_key}") or git(
             root, "config", "-f", ".gitmodules", f"submodule.{name}.branch"
         )
-        res.append((path, root / path, parent or "master"))
+        res.append((path, root / path, parent or default))
     return res
 
 
@@ -150,7 +156,20 @@ def main() -> int:
     skip = {"--mine", "--no-pr", "--root", explicit}
     words = [a for a in argv if a not in skip]
     want = words[0] if words and words[0] != "all" else None
-    root = find_root(explicit)
+    try:
+        cfg = gates.config(explicit)
+    except gates.duty_config.ConfigError as e:
+        print(f"ошибка конфигурации: {e}", file=sys.stderr)
+        return 2
+    root = cfg.root
+    if root is None:
+        print("корень проекта не найден: запустите из репозитория git или задайте --root <корень>", file=sys.stderr)
+        return 2
+    setup(cfg)
+    ticket_re = cfg.get("jira.ticket", "") if cfg.has("jira") else ""
+    if not cfg.has("bitbucket"):
+        no_pr = True
+        print(gates.missing_section("bitbucket", "pull request'ы") + ".")
     me = git(root, "config", "user.name")
     me_mail = git(root, "config", "user.email").split("@")[0]
     is_me = lambda name, mail: name == me or (me_mail and mail.split("@")[0].strip("<>") == me_mail)  # noqa: E731
@@ -161,7 +180,7 @@ def main() -> int:
     counts: dict[str, int] = {}
     denied = ""
     notes: list[str] = []
-    for rel, repo, parent in repos(root):
+    for rel, repo, parent in repos(root, cfg):
         if want and want not in rel and want not in (str(bb_slug(repo)) if bb_slug(repo) else ""):
             continue
         if not (repo / ".git").exists():
@@ -242,7 +261,8 @@ def main() -> int:
             else:
                 prop = f"оставить: коммитов впереди: {ahead}, PR нет"
             counts[prop.split(":")[0]] = counts.get(prop.split(":")[0], 0) + 1
-            ticket = ", ".join(dict.fromkeys(re.findall(r"RP-\d+", name, re.I))) or "—"
+            ticket = ", ".join(dict.fromkeys(re.findall(ticket_re, name, re.I))) if ticket_re else ""
+            ticket = ticket or "—"
             date = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
             wt = wts.get(name)
             wt_cell = f"да: {'/'.join(Path(wt).parts[-2:])}" if wt else "нет"

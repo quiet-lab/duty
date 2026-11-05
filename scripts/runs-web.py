@@ -13,6 +13,7 @@
 import argparse
 import codecs
 import html
+import importlib.util
 import json
 import os
 import re
@@ -28,7 +29,21 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 SCRIPTS = Path(__file__).resolve().parent
-DEFAULT_RESULTS = "~/work/telecom/axata/ocp-dev-stand/results"
+# Каталог скрипта убран из sys.path ключом -I, поэтому модуль подключается по пути.
+_spec = importlib.util.spec_from_file_location("duty_config", Path(__file__).with_name("duty_config.py"))
+duty_config = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(duty_config)
+
+
+def config_path(key: str) -> Path:
+    """Путь `[paths]` из конфигурации проекта (с перекрытием переменными окружения)."""
+    try:
+        path = duty_config.load().path(key)
+    except duty_config.ConfigError as error:
+        raise SystemExit(f"ошибка конфигурации: {error}")
+    assert path is not None
+    return path
+
 DEFAULT_PORT = 8765
 # Имена каталогов задачи и прогона: tab-run.sh и dispatch.sh допускают только
 # такие, поэтому прочие значения запроса отвергаются (выход из каталога результатов).
@@ -390,15 +405,18 @@ def raise_interrupt(signum: int, frame: object) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--results", default=os.environ.get("DUTY_RESULTS_DIR") or DEFAULT_RESULTS,
-                   help="каталог результатов задач (в нём <задача>/runs/<прогон>/)")
+    p.add_argument("--results", default=None,
+                   help="каталог результатов задач (в нём <задача>/runs/<прогон>/); "
+                        "по умолчанию paths.results конфигурации проекта")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = p.parse_args(argv)
     if shutil.which("inotifywait") is None:
         print("нет inotifywait: pacman -S inotify-tools", file=sys.stderr)
         return 2
-    server = make_server(Path(os.path.expanduser(args.results)), args.host, args.port)
+    server = make_server(
+        Path(os.path.expanduser(args.results)) if args.results else config_path("paths.results"),
+        args.host, args.port)
     # SIGTERM закрывает сервер так же, как Ctrl-C.
     os_signal.signal(os_signal.SIGTERM, raise_interrupt)
     print(f"duty-runs-web: http://{args.host}:{server.server_address[1]}/", flush=True)

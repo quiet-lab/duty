@@ -5,6 +5,9 @@
 атомарно (`O_CREAT|O_EXCL`) и снимается удалением. Отметки советующие:
 они не мешают тому, кто их не читает. Без сторонних зависимостей.
 
+Каталог реестра — `paths.busy` конфигурации проекта (`.duty/duty.toml`,
+перекрытие — `DUTY_BUSY_DIR`).
+
 Команды: claim, release, list, check. Коды выхода: 0 — успех или свободно,
 3 — ресурс занят, 2 — неверное обращение.
 """
@@ -12,6 +15,7 @@
 import argparse
 import contextlib
 import fcntl
+import importlib.util
 import json
 import os
 import re
@@ -21,14 +25,28 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-DEFAULT_DIR = "~/work/telecom/axata/ocp-dev-stand/busy"
+# Каталог скрипта убран из sys.path ключом -I, поэтому модуль подключается по пути.
+_spec = importlib.util.spec_from_file_location("duty_config", Path(__file__).with_name("duty_config.py"))
+duty_config = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(duty_config)
+
+
+def config_path(key: str) -> Path:
+    """Путь `[paths]` из конфигурации проекта (с перекрытием переменными окружения)."""
+    try:
+        path = duty_config.load().path(key)
+    except duty_config.ConfigError as error:
+        raise SystemExit(f"ошибка конфигурации: {error}")
+    assert path is not None
+    return path
+
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 EXIT_BUSY = 3
 EXIT_USAGE = 2
 
 
 def registry_dir() -> Path:
-    return Path(os.environ.get("DUTY_BUSY_DIR") or os.path.expanduser(DEFAULT_DIR))
+    return config_path("paths.busy")
 
 
 def now_ms() -> int:

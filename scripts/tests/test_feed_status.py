@@ -1,7 +1,10 @@
 """Статус «Лента сборок PR-…» не влияет на ворота: `python3 -I scripts/tests/test_feed_status.py`."""
 
 import importlib.util
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -55,6 +58,22 @@ class FeedStatusTest(unittest.TestCase):
 
     def test_green_only_feed_is_no_builds(self):
         self.assertEqual(self._green([FEED_RUNNING]), "нет сборок")
+
+
+class NoSectionTest(unittest.TestCase):
+    def test_no_bitbucket_section_is_one_line_and_exit_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            env = {**os.environ, "DUTY_CONFIG_USER": str(Path(tmp) / "нет.toml")}
+            for key in ("DUTY_PROJECT", "CLAUDE_PROJECT_DIR"):
+                env.pop(key, None)
+            done = subprocess.run(
+                [sys.executable, "-I", str(SCRIPTS / "gates.py"), "--root", tmp],
+                capture_output=True, text=True, env=env, check=False,
+            )
+        self.assertEqual(done.returncode, 0)
+        self.assertEqual(len(done.stdout.strip().splitlines()), 1)
+        self.assertIn("нет раздела [bitbucket]", done.stdout)
 
 
 if __name__ == "__main__":

@@ -256,8 +256,17 @@ def settings_from_config(cfg: object) -> Settings:
     )
 
 
+class ConfigUnreadable(Exception):
+    """Конфигурация не читается: хук закрывается, а не открывается."""
+
+
 def load_settings(cwd: str | None = None) -> Settings:
-    """Конфигурация загружается один раз на вызов хука; сбой — значения по умолчанию."""
+    """Конфигурация загружается один раз на вызов хука.
+
+    Ошибка TOML — ConfigUnreadable (вызов отвергается); прочий сбой загрузки —
+    значения по умолчанию. Значения неверного типа заменены умолчаниями, их
+    перечень печатается в stderr один раз.
+    """
     try:
         path = PLUGIN / "scripts" / "duty_config.py"
         spec = importlib.util.spec_from_file_location("duty_config", path)
@@ -266,8 +275,17 @@ def load_settings(cwd: str | None = None) -> Settings:
         module = importlib.util.module_from_spec(spec)
         sys.modules.setdefault("duty_config", module)
         spec.loader.exec_module(module)
-        return settings_from_config(module.load(root=None, cwd=cwd or os.getcwd()))
-    except Exception as error:  # noqa: BLE001 - без конфигурации хук не падает
+        cfg = module.load(root=None, cwd=cwd or os.getcwd())
+        if cfg.findings:
+            print(
+                "forbid.py: значения конфигурации неверного типа заменены "
+                "умолчаниями:\n" + "\n".join(cfg.findings),
+                file=sys.stderr,
+            )
+        return settings_from_config(cfg)
+    except Exception as error:
+        if type(error).__name__ == "ConfigError":
+            raise ConfigUnreadable(str(error)) from error
         print(
             f"forbid.py: конфигурация не загружена, значения по умолчанию: {error!r}",
             file=sys.stderr,
@@ -852,9 +870,27 @@ def main() -> int:
         command = tool_input.get("command") if isinstance(tool_input, dict) else None
         if not isinstance(command, str):
             return 0
-        cfg = load_settings(
-            data.get("cwd") if isinstance(data.get("cwd"), str) else None
-        )
+        try:
+            cfg = load_settings(
+                data.get("cwd") if isinstance(data.get("cwd"), str) else None
+            )
+        except ConfigUnreadable as error:
+            print(
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": (
+                                f"конфигурация duty не читается: {error}; "
+                                "исправьте и повторите"
+                            ),
+                        }
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
         found = check(command, cfg)
         if found:
             print(

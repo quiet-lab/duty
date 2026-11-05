@@ -63,7 +63,8 @@ if sigs=$(python3 -I "$root/scripts/signals.py" list --waits 2> /dev/null) && [ 
     add "$sigs"
 fi
 
-if findings=$(cd "$project" && python3 -I "$config_py" check 2>&1) && [ -z "$findings" ]; then
+# Примечания (код 0) не показываются: только находки и ошибки (код не 0).
+if findings=$(cd "$project" && python3 -I "$config_py" check 2>&1); then
     :
 elif [ -n "$findings" ]; then
     add "Конфигурация .duty/duty.toml: $(printf '%s' "$findings" | paste -sd';' - | sed 's/;/; /g')"

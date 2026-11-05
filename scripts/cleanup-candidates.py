@@ -91,9 +91,7 @@ ME = subprocess.run(
 ).stdout.strip()
 # Основные деревья стенда переводит на новую ревизию сам стенд; удаляются
 # только вместе со стендом.
-STAND_MAIN = {
-    (ROOT / t).expanduser().resolve() for t in CFG.get("cleanup.keep_trees", [])
-}
+STAND_MAIN = {CFG.path_of(t, ROOT).resolve() for t in CFG.get("cleanup.keep_trees", [])}
 # Поля строки: вид, сабмодуль, родитель, что, размер, решение, команда.
 rows: list[tuple[str, str, str, str, str, str, str]] = []
 

@@ -182,6 +182,33 @@ class LayersTest(Base):
         self.assertEqual(cfg.get("symbols.tasks"), ["🐶", "🐱"])
 
 
+class IsolationTest(Base):
+    def test_symbols_file_does_not_touch_defaults(self) -> None:
+        root = self.repo()
+        listing = self.tmp / "symbols.txt"
+        listing.write_text("🌱\n🌲\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"DUTY_SYMBOLS_FILE": str(listing)}):
+            self.assertEqual(duty_config.load(root).get("symbols.tasks"), ["🌱", "🌲"])
+        self.assertEqual(duty_config.DEFAULTS["symbols"]["tasks"], [])
+        self.assertEqual(duty_config.load(root).get("symbols.tasks"), [])
+
+    def test_wrong_leaf_type_falls_back_to_default(self) -> None:
+        root = self.repo(
+            toml='schema = 1\n[git]\nprotected = "dev2"\nforbid_stash = 1\n'
+            '[[busy.resources]]\nname = "s"\n'
+        )
+        cfg = duty_config.load(root)
+        self.assertEqual(cfg.get("git.protected"), ["main", "master"])
+        self.assertIs(cfg.get("git.forbid_stash"), True)
+        self.assertEqual(cfg.get("busy.resources"), [])
+        text = "\n".join(cfg.findings)
+        self.assertIn("git.protected: ожидается список строк, получено str", text)
+        self.assertIn("git.forbid_stash", text)
+        self.assertIn("нет ключа why", text)
+        env = self.cli("env", cwd=root).stdout
+        self.assertNotIn("DUTY_CFG_GIT_PROTECTED=dev2", env)
+
+
 class RootTest(Base):
     def test_explicit_root_wins(self) -> None:
         a, b, c = self.repo("a"), self.repo("b"), self.repo("c")
@@ -406,6 +433,25 @@ class CheckTest(Base):
         text = "\n".join(out)
         self.assertIn("jenkins.env_file: нет файла ~/none.env", text)
         self.assertIn("jira.token_file: нет файла rel", text)
+
+    def test_missing_access_file_is_note_with_code_0(self) -> None:
+        root = self.repo(
+            toml='schema = 1\n[jira]\nurl = "u"\ntoken_file = "~/none-token"\n'
+        )
+        r = self.cli("check", cwd=root)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("примечание:", r.stdout)
+        self.assertIn("jira.token_file: нет файла ~/none-token", r.stdout)
+
+    def test_required_keys_of_services(self) -> None:
+        code, out = self.findings(
+            'schema = 1\n[bitbucket]\nuser = "u"\n[jenkins]\nenv_file = ""\n'
+        )
+        text = "\n".join(out)
+        self.assertEqual(code, 1)
+        self.assertIn("bitbucket.url: обязателен", text)
+        self.assertIn("bitbucket.token_file: обязателен", text)
+        self.assertIn("jenkins.env_file: обязателен", text)
 
     def test_user_only_keys(self) -> None:
         _, out = self.findings(

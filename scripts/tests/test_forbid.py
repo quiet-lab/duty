@@ -380,6 +380,30 @@ class ForbidTest(unittest.TestCase):
         ]
         self.assertIn("dev, dev2, master", reason)
 
+    def test_hook_closes_on_broken_config(self) -> None:
+        (Path(self.root_dir) / ".duty" / "local.toml").write_text(
+            "[git\nprotected =", encoding="utf-8"
+        )
+        for command in ("git push origin dev2", "cat ~/.config/axata/jira-pat"):
+            done = self.run_hook(self.bash(command), "worker")
+            out = json.loads(done.stdout)["hookSpecificOutput"]
+            self.assertEqual(out["permissionDecision"], "deny")
+            self.assertIn(
+                "конфигурация duty не читается", out["permissionDecisionReason"]
+            )
+            self.assertIn("local.toml", out["permissionDecisionReason"])
+
+    def test_hook_wrong_type_keeps_defaults_and_reports_once(self) -> None:
+        (Path(self.root_dir) / ".duty" / "duty.toml").write_text(
+            'schema = 1\n[git]\nprotected = "dev2"\n', encoding="utf-8"
+        )
+        done = self.run_hook(self.bash("git push origin main"), "worker")
+        out = json.loads(done.stdout)["hookSpecificOutput"]
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.assertEqual(done.stderr.count("git.protected"), 1)
+        done = self.run_hook(self.bash("git push origin dev2"), "worker")
+        self.assertEqual(done.stdout, "")
+
     def test_hook_silent_outside_worker(self) -> None:
         for role in (None, "main"):
             done = self.run_hook(self.bash("git stash"), role)
@@ -460,19 +484,19 @@ class ConfigTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(forbid.check(f"cat {path}", cfg), "secret-file")
 
-    def test_broken_config_falls_back(self) -> None:
+    def test_broken_config_is_unreadable(self) -> None:
         tmp, root = make_root("schema = [broken")
         self.addCleanup(tmp.cleanup)
         saved = os.environ.get("DUTY_PROJECT")
         os.environ["DUTY_PROJECT"] = str(root)
         try:
-            cfg = forbid.load_settings(str(root))
+            with self.assertRaises(forbid.ConfigUnreadable):
+                forbid.load_settings(str(root))
         finally:
             if saved is None:
                 os.environ.pop("DUTY_PROJECT", None)
             else:
                 os.environ["DUTY_PROJECT"] = saved
-        self.assertEqual(cfg.protected, {"main", "master"})
 
 
 if __name__ == "__main__":

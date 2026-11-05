@@ -157,6 +157,21 @@ class ExcludeWorktreeTest(unittest.TestCase):
         self.assertEqual(len(row), 1, out)
         self.assertIn("branch -D", row[0])
 
+    def test_keep_trees_expands_tilde(self) -> None:
+        keep = self.base / "home" / "keep"
+        keep.parent.mkdir()
+        git(self.sub, "worktree", "add", "-b", "kept", str(keep))
+        git(keep, "commit", "--allow-empty", "-m", "kept")
+        git(keep, "push", "-u", "origin", "kept")
+        git(self.sub, "push", "origin", "--delete", "kept")
+        (self.root / ".duty" / "duty.toml").write_text(
+            f'schema = 1\n[paths]\nresults = "{self.base / "results"}"\n'
+            '[cleanup]\nkeep_trees = ["~/keep"]\n',
+            encoding="utf-8",
+        )
+        out = self.candidates()
+        self.assertNotIn(str(keep), out)
+
     def write_extension(self, name: str, body: str) -> None:
         folder = self.root / ".duty" / "cleanup.d"
         folder.mkdir(exist_ok=True)

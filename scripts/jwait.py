@@ -62,8 +62,14 @@ def config(root: str | None = None):
 
 
 def env_path() -> Path:
-    p = Path(config().get("jenkins.env_file", "")).expanduser()
-    return p if p.is_absolute() else (config().root or Path.cwd()) / p
+    raw = config().get("jenkins.env_file", "")
+    if not isinstance(raw, str) or not raw.strip():
+        raise WaitError("[jenkins]: env_file не задан — Jenkins не проверено")
+    p = Path(raw).expanduser()
+    path = p if p.is_absolute() else (config().root or Path.cwd()) / p
+    if not path.is_file():
+        raise WaitError(f"[jenkins]: env_file: нет файла {raw} — Jenkins не проверено")
+    return path
 
 
 def ssl_context() -> ssl.SSLContext:

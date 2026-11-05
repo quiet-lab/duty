@@ -104,6 +104,12 @@ SCHEMA_KEYS: dict[str, dict[str, Any]] = {
     "symbols": {"main": STR, "tasks": LIST, "outside": LIST},
 }
 
+# Ключи, обязательные при наличии таблицы: без них сервис не работает.
+REQUIRED_KEYS = {
+    "bitbucket": ("url", "token_file"),
+    "jenkins": ("env_file",),
+}
+
 # Значения по умолчанию, не зависящие от корня. Таблиц bitbucket, jenkins
 # и jira здесь нет: их отсутствие означает «сервис не подключён»;
 # значения их необязательных ключей — в OPTIONAL_DEFAULTS.
@@ -215,7 +221,7 @@ def read_toml(path: Path) -> dict[str, Any]:
 
 def merge(base: dict[str, Any], top: dict[str, Any]) -> dict[str, Any]:
     """Слияние слоёв: таблицы — по ключам, остальное (и списки) — замена."""
-    out = dict(base)
+    out = copy.deepcopy(base)
     for key, value in top.items():
         if isinstance(value, dict) and isinstance(out.get(key), dict):
             out[key] = merge(out[key], value)
@@ -261,7 +267,8 @@ class Config:
 
     Атрибуты: root — корень (None вне git), mode — "project" при
     `.duty/duty.toml`, иначе "general", name — имя проекта, files — прочитанные
-    файлы слоёв по порядку, layers — пары (файл, данные) для проверки схемы.
+    файлы слоёв по порядку, layers — пары (файл, данные) для проверки схемы,
+    findings — значения неверного типа, замененные значениями по умолчанию.
     """
 
     def __init__(
@@ -272,7 +279,9 @@ class Config:
         data: dict[str, Any],
         files: list[Path],
         layers: list[tuple[Path, dict[str, Any]]],
+        findings: list[str] | None = None,
     ) -> None:
+        self.findings = findings or []
         self.root = root
         self.mode = mode
         self.name = name
@@ -287,6 +296,10 @@ class Config:
     def has(self, key: str) -> bool:
         return lookup(self.data, key)[0]
 
+    def path_of(self, value: str, base: Path | None = None) -> Path:
+        """Путь из конфигурации: `~` раскрывается, относительный — от base (корня)."""
+        return _abs(value, base or self.root or Path.cwd())
+
     def path(self, key: str) -> Path | None:
         value = self.get(key)
         return Path(value) if isinstance(value, str) and value else None
@@ -297,6 +310,50 @@ class Config:
         out["_files"] = [str(f) for f in self.files]
         out["_mode"] = self.mode
         return out
+
+
+def sanitize_layer(
+    path: Path, layer: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Слой без значений, тип которых не совпал со схемой, и находки о них.
+
+    Отброшенное значение заменяется значением по умолчанию при слиянии.
+    Неизвестные таблицы и ключи остаются: о них сообщает `check`.
+    """
+    clean: dict[str, Any] = {}
+    found: list[str] = []
+    for section, body in layer.items():
+        if section == "schema":
+            continue
+        spec = SCHEMA_KEYS.get(section)
+        if spec is None:
+            clean[section] = body
+            continue
+        if not isinstance(body, dict):
+            found.append(
+                f"{path}: {section}: ожидается таблица, получено {_type_name(body)}"
+            )
+            continue
+        table: dict[str, Any] = {}
+        for key, value in body.items():
+            kind = spec.get(key)
+            dotted = f"{section}.{key}"
+            if kind is None:
+                table[key] = value
+            elif isinstance(kind, tuple):
+                bad = _check_tables(path, dotted, kind[1], value)
+                if bad:
+                    found += bad
+                else:
+                    table[key] = value
+            elif _type_ok(kind, value):
+                table[key] = value
+            else:
+                found.append(
+                    f"{path}: {dotted}: ожидается {_EXPECTED[kind]}, получено {_type_name(value)}"
+                )
+        clean[section] = table
+    return clean, found
 
 
 def load(
@@ -326,16 +383,13 @@ def load(
     data = merge(
         DEFAULTS, {"git": {"protected": protected, "default_parent": head or "master"}}
     )
-    for _, layer in layers:
-        # Таблица неверного типа в слияние не идёт: о ней сообщает check.
-        data = merge(
-            data,
-            {
-                k: v
-                for k, v in layer.items()
-                if k != "schema" and (k not in SCHEMA_KEYS or isinstance(v, dict))
-            },
-        )
+    findings: list[str] = []
+    for path, layer in layers:
+        # Значение неверного типа в слияние не идёт: действует умолчание,
+        # находка остаётся в Config.findings и в выводе check.
+        clean, bad = sanitize_layer(path, layer)
+        findings += bad
+        data = merge(data, clean)
     for section, extra in OPTIONAL_DEFAULTS.items():
         if isinstance(data.get(section), dict):
             data[section] = merge(extra, data[section])
@@ -370,7 +424,7 @@ def load(
             data["symbols"]["tasks"] = read_symbols(Path(symbols_file).expanduser())
         except OSError as error:
             raise ConfigError(f"{symbols_file}: {error}") from error
-    return Config(found, mode, name, data, [f for f, _ in layers], layers)
+    return Config(found, mode, name, data, [f for f, _ in layers], layers, findings)
 
 
 # --- Проверка схемы ---------------------------------------------------------
@@ -479,10 +533,27 @@ def check_config(cfg: Config) -> list[str]:
             project_file=path.name == "duty.toml" and path.parent.name == ".duty",
             user_layer=path == user,
         )
+    for section, keys in REQUIRED_KEYS.items():
+        src = _origin(cfg.layers, section)
+        if src is None or not isinstance(cfg.get(section), dict):
+            continue
+        for key in keys:
+            value = cfg.get(f"{section}.{key}")
+            if not isinstance(value, str) or not value.strip():
+                out.append(
+                    f"{src}: {section}.{key}: обязателен при наличии [{section}]"
+                )
+    out += _check_symbols(cfg)
+    return out
+
+
+def check_notes(cfg: Config) -> list[str]:
+    """Примечания `check`: не находки, код выхода не меняют (нет файла доступа)."""
+    out: list[str] = []
     base = cfg.root or Path.cwd()
     for section, spec in SCHEMA_KEYS.items():
         for key in spec:
-            if not (key.endswith("_file")):
+            if not key.endswith("_file"):
                 continue
             dotted = f"{section}.{key}"
             src = _origin(cfg.layers, dotted)
@@ -493,8 +564,7 @@ def check_config(cfg: Config) -> list[str]:
                 and value
                 and not _abs(value, base).is_file()
             ):
-                out.append(f"{src}: {dotted}: нет файла {value}")
-    out += _check_symbols(cfg)
+                out.append(f"примечание: {src}: {dotted}: нет файла {value}")
     return out
 
 
@@ -733,7 +803,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(env_lines(cfg, args.prefix)))
     elif args.cmd == "check":
         findings = check_config(cfg)
-        for line in findings:
+        for line in findings + check_notes(cfg):
             print(line)
         return EXIT_FINDINGS if findings else 0
     return 0

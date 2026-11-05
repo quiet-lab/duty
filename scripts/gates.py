@@ -66,9 +66,26 @@ class BitbucketDenied(Exception):
     pass
 
 
+class NotConfigured(Exception):
+    """Нужный файл доступа не задан или отсутствует: сервис не проверяется."""
+
+
+def access_file(section: str, key: str, what: str) -> Path:
+    """Файл доступа из конфигурации; не задан или нет файла — NotConfigured."""
+    raw = config().get(f"{section}.{key}", "")
+    if not isinstance(raw, str) or not raw.strip():
+        raise NotConfigured(f"[{section}]: {key} не задан — {what} не проверено")
+    path = cfg_file(raw)
+    if not path.is_file():
+        raise NotConfigured(
+            f"[{section}]: {key}: нет файла {raw} — {what} не проверено"
+        )
+    return path
+
+
 def bb(path: str) -> dict:
     cfg = config()
-    token = cfg_file(cfg.get("bitbucket.token_file", "")).read_text().strip()
+    token = access_file("bitbucket", "token_file", "pull request'ы").read_text().strip()
     req = urllib.request.Request(
         cfg.get("bitbucket.url", "").rstrip("/") + path,
         headers={"Authorization": f"Bearer {token}"},
@@ -84,10 +101,7 @@ def bb(path: str) -> dict:
 
 def jenkins_env() -> dict[str, str]:
     env = {}
-    raw = config().get("jenkins.env_file", "")
-    if not raw:
-        return env
-    for line in cfg_file(raw).read_text().splitlines():
+    for line in access_file("jenkins", "env_file", "Jenkins").read_text().splitlines():
         if "=" in line and not line.lstrip().startswith("#"):
             k, v = line.split("=", 1)
             env[k.strip()] = v.strip().strip('"')
@@ -319,7 +333,12 @@ def station_now(now_ms: int) -> None:
 def now_main() -> int:
     now_ms = int(time.time() * 1000)
     has_jenkins = config().has("jenkins")
-    rc = jenkins_now(jenkins_env(), now_ms) if has_jenkins else 0
+    rc = 0
+    if has_jenkins:
+        try:
+            rc = jenkins_now(jenkins_env(), now_ms)
+        except NotConfigured as e:
+            print(e)
     station_now(now_ms)
     if not has_jenkins:
         print("\n" + missing_section("jenkins", "исполнители Jenkins") + ".")
@@ -343,7 +362,11 @@ def main() -> int:
     if not config().has("bitbucket"):
         print(missing_section("bitbucket", "pull request'ы"))
         return 0
-    env = jenkins_env() if config().has("jenkins") else {}
+    try:
+        env = jenkins_env() if config().has("jenkins") else {}
+    except NotConfigured as e:
+        print(e)
+        env = {}
     try:
         prs = bb(
             "/rest/api/1.0/dashboard/pull-requests?state=OPEN&role=AUTHOR&limit=100"
@@ -378,6 +401,9 @@ def main() -> int:
                 f"{p['toRef']['displayId']} | {builds} | {gate} | {merge} | {age} |"
             )
         print(f"\nВсего открытых: {len(prs)}")
+    except NotConfigured as e:
+        print(e)
+        return 0
     except BitbucketDenied as e:
         print(
             f"ОСТАНОВКА: {e}. Повторять нельзя: четыре неверных входа блокируют учётную запись."

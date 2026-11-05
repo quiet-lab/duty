@@ -40,14 +40,16 @@ git -C "$root" submodule foreach --quiet \
 
 prefixes=$(python3 -I -c '
 import json, sys
-print(" ".join(json.loads(sys.argv[1] or "[]")))' "$(cfgget git.task_prefixes)")
-section "Свои ветви в origin (${prefixes:-git.task_prefixes не задан}), без fetch"
+print("\n".join(json.loads(sys.argv[1] or "[]")))' "$(cfgget git.task_prefixes)")
+shown=$(printf '%s' "$prefixes" | paste -sd' ' -)
+section "Свои ветви в origin (${shown:-git.task_prefixes не задан}), без fetch"
 if [ -n "$prefixes" ]; then
-    patterns=""
-    for p in $prefixes; do patterns="$patterns refs/remotes/origin/$p*"; done
+    # Образцы идут по одному на строку и передаются аргументами xargs: слова
+    # не разбиваются, `*` раскрывает только git for-each-ref.
+    patterns=$(printf '%s\n' "$prefixes" | sed 's|^|refs/remotes/origin/|; s|$|*|')
     export patterns
     git -C "$root" submodule foreach --quiet \
-        'git for-each-ref --format="%(refname:short) %(committerdate:relative)" $patterns | sed "s|^|$sm_path: |" | head -10'
+        'printf "%s\n" "$patterns" | xargs -d "\n" git for-each-ref --format="%(refname:short) %(committerdate:relative)" | sed "s|^|$sm_path: |" | head -10'
 fi
 
 section 'Открытые pull request'"'"'ы (Bitbucket, Jenkins)'

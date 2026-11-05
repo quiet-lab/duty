@@ -399,6 +399,8 @@ def collect(args: argparse.Namespace) -> list[tuple[str, str]]:
     def guarded(label: str, fn) -> None:
         try:
             rows.append((label, fn()))
+        except gates.NotConfigured as e:
+            rows.append((label, f"не считалось: {e}"))
         except gates.BitbucketDenied as e:
             rows.append((label, f"не получено: {e}; повтор не выполняется"))
         except (OSError, ValueError, KeyError, ConnectionError) as e:
@@ -437,6 +439,8 @@ def collect(args: argparse.Namespace) -> list[tuple[str, str]]:
                         ),
                     )
                 )
+            except gates.NotConfigured as e:
+                rows.append(("Занятость Jenkins", f"не считалось: {e}"))
             except (OSError, ValueError, KeyError, ConnectionError) as e:
                 rows.append(
                     ("Занятость Jenkins", f"не получено: {type(e).__name__}: {e}"[:200])

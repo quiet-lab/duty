@@ -254,6 +254,9 @@ def main() -> int:
         if not no_pr and not denied and slug:
             try:
                 prs = prs_by_branch(*slug)
+            except gates.NotConfigured as e:
+                no_pr = True
+                print(f"{e}.")
             except gates.BitbucketDenied as e:
                 denied = str(e)
         wts = worktree_branches(repo)
@@ -279,6 +282,8 @@ def main() -> int:
                 if pr["state"] == "OPEN":
                     try:
                         ci = green(pr["fromRef"]["latestCommit"])
+                    except gates.NotConfigured:
+                        pass
                     except gates.BitbucketDenied as e:
                         denied = str(e)
                     pr_cell += f", сборки: {ci or 'не проверены'}"

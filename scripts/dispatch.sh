@@ -189,7 +189,9 @@ workspace_color() {
 report_color() {
     local ws=$1 color=$2
     [ -n "$color" ] || return 0
-    if ! herdr --version 2> /dev/null | grep -q 'duty-v'; then
+    local version
+    version=$(herdr --version 2> /dev/null) || { warn "цвет workspace $ws пропущен: herdr --version не выполнен"; return 0; }
+    if ! grep -q 'duty-v' <<< "$version"; then
         warn "цвет workspace $ws пропущен: herdr не форк duty-v* (токен color не поддерживается)"
         return 0
     fi
@@ -614,7 +616,8 @@ cmd_start() {
     pane=$(jq -er '.result.root_pane.pane_id' <<< "$created") || die "шаг 2: нет корневой панели: $created"
     herdr workspace list | jq -e --arg w "$ws" '.result.workspaces[] | select(.workspace_id == $w)' > /dev/null \
         || die "шаг 2: workspace $ws не виден в herdr workspace list"
-    report_color "$ws" "$(workspace_color)"
+    color=$(workspace_color)
+    report_color "$ws" "$color"
 
     # Шаг 3. Служебный блок: агент читает его вместе с запиской.
     started_at_ms=$(date +%s%3N)

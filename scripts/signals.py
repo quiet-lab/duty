@@ -7,11 +7,15 @@
 отметку `<имя>.waiting-<кто>`; `list` показывает сигналы и ожидания.
 Требуется `inotifywait` (inotify-tools). Без сторонних библиотек.
 
+Каталог сигналов — `paths.signals` конфигурации проекта (`.duty/duty.toml`,
+перекрытие — `DUTY_SIGNALS_DIR`).
+
 Команды: signal, wait, list, clear. Коды выхода: 0 — успех, 2 — неверное
 обращение или сбой наблюдения, 124 — истёк --timeout-s.
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -22,7 +26,21 @@ import sys
 import time
 from pathlib import Path
 
-DEFAULT_DIR = "~/work/telecom/axata/ocp-dev-stand/signals"
+# Каталог скрипта убран из sys.path ключом -I, поэтому модуль подключается по пути.
+_spec = importlib.util.spec_from_file_location("duty_config", Path(__file__).with_name("duty_config.py"))
+duty_config = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(duty_config)
+
+
+def config_path(key: str) -> Path:
+    """Путь `[paths]` из конфигурации проекта (с перекрытием переменными окружения)."""
+    try:
+        path = duty_config.load().path(key)
+    except duty_config.ConfigError as error:
+        raise SystemExit(f"ошибка конфигурации: {error}")
+    assert path is not None
+    return path
+
 # Точек в имени нет, поэтому суффикс «.waiting-» отметки ожидания однозначен;
 # «_» допущен, чтобы имя задачи из dispatch.sh годилось как имя сигнала и ожидающего.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -40,7 +58,7 @@ FATAL_SIGNALS = (os_signal.SIGTERM, os_signal.SIGINT, os_signal.SIGHUP)
 
 
 def signals_dir() -> Path:
-    return Path(os.environ.get("DUTY_SIGNALS_DIR") or os.path.expanduser(DEFAULT_DIR))
+    return config_path("paths.signals")
 
 
 def now_ms() -> int:

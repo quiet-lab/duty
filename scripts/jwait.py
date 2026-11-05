@@ -3,11 +3,16 @@
 Вызывается из `jwait.sh`. Источник событий — команда Jenkins CLI
 `console <задание> <номер> -f` по WebSocket (`/cli/ws`) прямо на контроллере:
 сервер шлёт журнал сборки по мере записи и кадр EXIT, когда сборка
-закончилась, поэтому ожидание — одно чтение сокета, без опроса. Внешний
-nginx `jen.service-desk.site` не пропускает заголовки Upgrade, а режим
-`-http` CLI через него отвечает 500, поэтому CLI идёт на адрес контроллера
-(`JENKINS_CLI_URL`, по умолчанию `http://10.200.100.8:8080/`); выбор —
-запись 0049 монорепозитория.
+закончилась, поэтому ожидание — одно чтение сокета, без опроса. Прокси
+перед Jenkins может не пропускать заголовки Upgrade, а режим `-http` CLI
+через него отвечать 500; тогда CLI идёт на адрес контроллера:
+`jenkins.cli_url` конфигурации проекта (пусто — `JENKINS_URL` из файла
+доступа), перекрытие — переменная `JENKINS_CLI_URL`.
+
+Адрес Jenkins и учётные данные — файл `jenkins.env_file` (`JENKINS_URL`,
+`JENKINS_USER`, `JENKINS_TOKEN`), проверка сертификата выключается
+`jenkins.insecure_tls`; без раздела `[jenkins]` в `.duty/duty.toml` итог —
+report.md с причиной и код 2. Корень проекта — `--root` или `duty_config.py`.
 
 Итог: `<каталог>/console.log` (журнал сборки), `<каталог>/report.md`
 (итог, длительность, этапы `wfapi/describe`, хвост журнала упавшего этапа)
@@ -24,6 +29,7 @@ STDOUT (7), STDERR (8), EXIT (4) с кодом int32.
 import argparse
 import base64
 import html
+import importlib.util
 import json
 import os
 import re
@@ -37,11 +43,32 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-CFG = Path.home() / '.config' / 'axata'
-DEFAULT_CLI_URL = 'http://10.200.100.8:8080/'
-# Сертификат jen.service-desk.site выдан внутренним центром: проверка
-# выключена, как у curl -k в reference/access.md.
-INSECURE = ssl._create_unverified_context()
+# Каталог скрипта убран из sys.path ключом -I, поэтому модуль подключается по пути.
+_spec = importlib.util.spec_from_file_location('duty_config', Path(__file__).with_name('duty_config.py'))
+duty_config = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(duty_config)
+
+_CFG = None
+
+
+def config(root: str | None = None):
+    """Конфигурация проекта: загружается один раз."""
+    global _CFG
+    if _CFG is None or root is not None:
+        _CFG = duty_config.load(root=root)
+    return _CFG
+
+
+def env_path() -> Path:
+    p = Path(config().get('jenkins.env_file', '')).expanduser()
+    return p if p.is_absolute() else (config().root or Path.cwd()) / p
+
+
+def ssl_context() -> ssl.SSLContext:
+    """Проверка сертификата выключается только ключом `jenkins.insecure_tls`."""
+    if config().get('jenkins.insecure_tls', False):
+        return ssl._create_unverified_context()
+    return ssl.create_default_context()
 
 OP_ARG, OP_LOCALE, OP_ENCODING, OP_START, OP_EXIT = 0, 1, 2, 3, 4
 OP_STDOUT, OP_STDERR = 7, 8
@@ -62,7 +89,7 @@ class WaitError(Exception):
 
 def env() -> dict[str, str]:
     out: dict[str, str] = {}
-    for line in (CFG / 'jenkins-credentials.env').read_text().splitlines():
+    for line in env_path().read_text().splitlines():
         if '=' in line and not line.lstrip().startswith('#'):
             k, v = line.split('=', 1)
             out[k.strip()] = v.strip().strip('"').strip("'")
@@ -92,14 +119,14 @@ def job_name(job: str) -> str:
 def rest(base: str, path: str, auth: str) -> dict | None:
     req = urllib.request.Request(base.rstrip('/') + '/' + path, headers={'Authorization': auth})
     try:
-        with urllib.request.urlopen(req, timeout=30, context=INSECURE) as r:
+        with urllib.request.urlopen(req, timeout=30, context=ssl_context()) as r:
             return json.load(r)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
         if exc.code in (401, 403):
             raise WaitError(f'Jenkins ответил {exc.code} на {path}: учётные данные '
-                            f'{CFG / "jenkins-credentials.env"}') from None
+                            f'{env_path()}') from None
         raise WaitError(f'Jenkins ответил {exc.code} на {path}') from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise WaitError(f'Jenkins недоступен ({path}): {exc}') from None
@@ -108,7 +135,7 @@ def rest(base: str, path: str, auth: str) -> dict | None:
 def rest_text(base: str, path: str, auth: str) -> str:
     req = urllib.request.Request(base.rstrip('/') + '/' + path, headers={'Authorization': auth})
     try:
-        with urllib.request.urlopen(req, timeout=30, context=INSECURE) as r:
+        with urllib.request.urlopen(req, timeout=30, context=ssl_context()) as r:
             return r.read().decode('utf-8', errors='replace')
     except (urllib.error.URLError, TimeoutError, OSError):
         return ''
@@ -121,7 +148,7 @@ class CliSocket:
         u = urllib.parse.urlsplit(url)
         port = u.port or (443 if u.scheme == 'https' else 80)
         raw = socket.create_connection((u.hostname, port), timeout=30)
-        self.sock = INSECURE.wrap_socket(raw, server_hostname=u.hostname) \
+        self.sock = ssl_context().wrap_socket(raw, server_hostname=u.hostname) \
             if u.scheme == 'https' else raw
         key = base64.b64encode(os.urandom(16)).decode()
         path = u.path.rstrip('/') + '/cli/ws'
@@ -283,10 +310,16 @@ def write_done(out: Path, code: int) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument('job', help='задание: dev2/qms/PR-2580 или адрес задания')
+    p.add_argument('job', help='задание: папка/задание или адрес задания')
     p.add_argument('build', help='номер сборки или last')
     p.add_argument('--out', default='', help='каталог итога')
+    p.add_argument('--root', default=None, help='корень проекта')
     a = p.parse_args()
+    try:
+        cfg = config(a.root)
+    except duty_config.ConfigError as exc:
+        print(f'ошибка конфигурации: {exc}', file=sys.stderr)
+        return 2
 
     name = job_name(a.job)
     if not name:
@@ -298,6 +331,8 @@ def main() -> int:
     number: int | None = None
     error = ''
     try:
+        if not cfg.has('jenkins'):
+            raise WaitError('нет раздела [jenkins] в .duty/duty.toml')
         e = env()
         auth = auth_header(e)
         base = e['JENKINS_URL']
@@ -316,8 +351,7 @@ def main() -> int:
     elif os.environ.get('DUTY_TASK'):
         out = Path(os.environ['DUTY_TASK']) / 'runs' / f'jenkins-{tag}'
     else:
-        out = (Path.home() / 'work' / 'telecom' / 'axata' / 'ocp-dev-stand' / 'results'
-               / 'wait' / tag)
+        out = cfg.path('paths.results') / 'wait' / tag
     out.mkdir(parents=True, exist_ok=True)
     (out / 'done').unlink(missing_ok=True)
 
@@ -325,7 +359,7 @@ def main() -> int:
     try:
         if error or number is None:
             raise WaitError(error)
-        cli_url = os.environ.get('JENKINS_CLI_URL') or e.get('JENKINS_CLI_URL') or DEFAULT_CLI_URL
+        cli_url = os.environ.get('JENKINS_CLI_URL') or e.get('JENKINS_CLI_URL') or cfg.get('jenkins.cli_url', '') or base
         bp = f'{jp}{number}/'
         info = rest(base, bp + 'api/json?tree=building', auth)
         if info is None:
@@ -352,7 +386,7 @@ def main() -> int:
         code = report(out, base, auth, name, number, bp, note)
     except (WaitError, KeyError, ValueError, OSError) as exc:
         (out / 'report.md').write_text(f'# Ожидание сборки `{name}` {a.build}\n\n'
-                                       f'Не удалось: {exc}\n')
+                                       f'не удалось: {exc}\n')
         code = 2
     write_done(out, code)
     print((out / 'report.md').read_text())

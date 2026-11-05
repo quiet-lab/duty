@@ -5,19 +5,19 @@
 #       печатает номер, который получит запись, вставленная последней
 #       в каталог: последний номер каталога плюс один; в пустом каталоге —
 #       последний номер предыдущих каталогов плюс один. Ничего не меняет.
-#   decision-number.sh <каталог записей> --insert <файл> [--after <номер>]
-#       вставляет запись сценарием scripts/renumber-decisions.py монорепозитория
-#       (insert --catalog <NN> --last или insert --after <номер>): последующие
-#       записи сдвигаются, ссылки на них переписываются; затем указатель
-#       docs/decisions/README.md порождается заново (--write-index).
+#   decision-number.sh <каталог записей> --insert <файл> [--after <номер>] [--root <корень>]
+#       вставляет запись командой проекта docs.decision_insert из .duty/duty.toml
+#       (к ней дописывается --catalog <NN> --last <файл> или --after <номер> <файл>):
+#       последующие записи сдвигаются, ссылки на них переписываются; затем
+#       указатель порождается заново командой docs.decision_index. Команды
+#       выполняются в корне проекта: надпроект git каталога записей или --root.
+#       Ключи не заданы — отказ с подсказкой (reference/config.md).
 #       Печатает путь записи. Имя файла — тема латиницей через дефис
 #       (<тема>.md или NNNN-<тема>.md), номер ставит сценарий.
 #
 # Нумерация сквозная и повествовательная: номер — место записи в порядке
 # каталогов, а не её постоянный идентификатор. Ветви, вставившие записи
 # параллельно, сводятся при слиянии перенумерацией renumber-decisions.py.
-# Сценарий перенумерации — переменная DUTY_RENUMBER (по умолчанию
-# scripts/renumber-decisions.py корня репозитория каталога).
 set -euo pipefail
 
 die() { printf 'decision-number.sh: %s\n' "$*" >&2; exit 2; }
@@ -31,11 +31,12 @@ nn=$(basename "$catalog")
 [[ $nn =~ ^([0-9]{2})-[a-z0-9-]+$ ]] || die "$catalog — не тематический каталог <NN>-<тема>"
 nn=${BASH_REMATCH[1]}
 
-insert='' after=''
+insert='' after='' project=''
 while [ $# -gt 0 ]; do
     case $1 in
         --insert) insert=${2:?--insert без файла}; shift 2 ;;
         --after) after=${2:?--after без номера}; shift 2 ;;
+        --root) project=${2:?--root без каталога}; shift 2 ;;
         *) die "неизвестный ключ $1" ;;
     esac
 done
@@ -70,8 +71,19 @@ slug=$(basename "$insert" .md)
 [[ $slug =~ ^([0-9]{4}-)?([a-z0-9][a-z0-9-]*)$ ]] || die "имя $slug: тема латиницей через дефис"
 slug=${BASH_REMATCH[2]}
 root=$(git -C "$decisions" rev-parse --show-toplevel 2> /dev/null) || die "$decisions не в git-репозитории"
-renumber=${DUTY_RENUMBER:-$root/scripts/renumber-decisions.py}
-[ -f "$renumber" ] || die "нет сценария перенумерации $renumber"
+
+# Команды вставки и указателя — из конфигурации проекта (reference/config.md).
+if [ -z "$project" ]; then
+    project=$(git -C "$decisions" rev-parse --show-superproject-working-tree 2> /dev/null || true)
+    [ -n "$project" ] || project=$root
+fi
+config_get() { python3 -I "$(dirname "${BASH_SOURCE[0]}")/duty_config.py" get "$1" --root "$project" --default ''; }
+insert_cmd=$(config_get docs.decision_insert) || die "не прочитана конфигурация проекта $project"
+index_cmd=$(config_get docs.decision_index) || die "не прочитана конфигурация проекта $project"
+[ -n "$insert_cmd" ] || die 'задайте docs.decision_insert в .duty/duty.toml'
+[ -n "$index_cmd" ] || die 'задайте docs.decision_index в .duty/duty.toml'
+eval "insert_argv=($insert_cmd)"
+eval "index_argv=($index_cmd)"
 
 # WARNING: замок на вставку в одном рабочем дереве. Почему иначе нельзя:
 # вставка переименовывает записи и переписывает ссылки во многих файлах
@@ -147,11 +159,11 @@ rollback() {
 }
 
 if [ -n "$after" ]; then
-    python3 -I "$renumber" insert --after "$((10#$after))" "$insert" >&2 || rollback
+    (cd "$project" && "${insert_argv[@]}" --after "$((10#$after))" "$insert") >&2 || rollback
 else
-    python3 -I "$renumber" insert --catalog "$nn" --last "$insert" >&2 || rollback
+    (cd "$project" && "${insert_argv[@]}" --catalog "$nn" --last "$insert") >&2 || rollback
 fi
-python3 -I "$renumber" --write-index >&2 || rollback
+(cd "$project" && "${index_argv[@]}") >&2 || rollback
 [ -z "$source_file" ] || rm -f -- "$source_file"
 
 found=$(find "$target" -maxdepth 1 -type f -name "[0-9][0-9][0-9][0-9]-$slug.md" | head -1)

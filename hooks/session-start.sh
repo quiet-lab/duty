@@ -3,14 +3,28 @@
 # из state.md, задачи, которые можно продолжить, очередь вопросов агентов,
 # реестр занятости, ожидания сигналов (с пометкой «⚠ просрочено +N мин» у
 # ожиданий и отметок дольше срока) и напоминание о /duty:dispatch.
-# В сессии агента (DUTY_ROLE=worker) и вне herdr молчит. Любой сбой
-# не должен мешать старту сессии.
-
-[ "${DUTY_ROLE:-}" = worker ] && exit 0
-[ "${HERDR_ENV:-}" = 1 ] || exit 0
+# Находки проверки схемы конфигурации (duty_config.py check) и подсказка
+# про общий режим (нет .duty/) дописываются после перечней.
+# В сессии агента (DUTY_ROLE=worker) отдаёт содержимое
+# <корень проекта>/.duty/worker-context.md, если файл есть, иначе молчит;
+# вне herdr сессия главной не получает ничего. Любой сбой не должен мешать
+# старту сессии.
 
 root=${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 project=${CLAUDE_PROJECT_DIR:-$PWD}
+config_py="$root/scripts/duty_config.py"
+
+if [ "${DUTY_ROLE:-}" = worker ]; then
+    command -v jq > /dev/null || exit 0
+    proj=${DUTY_PROJECT:-$(cd "$project" && python3 -I "$config_py" root 2> /dev/null)} || exit 0
+    context="$proj/.duty/worker-context.md"
+    [ -n "$proj" ] && [ -s "$context" ] || exit 0
+    jq -n --arg ctx "Контекст проекта (.duty/worker-context.md):"$'\n'"$(< "$context")" \
+        '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'
+    exit 0
+fi
+
+[ "${HERDR_ENV:-}" = 1 ] || exit 0
 command -v jq > /dev/null || exit 0
 
 text=''
@@ -47,6 +61,17 @@ fi
 if sigs=$(python3 -I "$root/scripts/signals.py" list --waits 2> /dev/null) && [ "$sigs" != 'ожиданий нет' ] && [ -n "$sigs" ]; then
     add "Ожидания сигналов задачами (signals.py list --waits; все сигналы — signals.py list):"
     add "$sigs"
+fi
+
+# Примечания (код 0) не показываются: только находки и ошибки (код не 0).
+if findings=$(cd "$project" && python3 -I "$config_py" check 2>&1); then
+    :
+elif [ -n "$findings" ]; then
+    add "Конфигурация .duty/duty.toml: $(printf '%s' "$findings" | paste -sd';' - | sed 's/;/; /g')"
+fi
+
+if mode=$(cd "$project" && python3 -I "$config_py" json 2> /dev/null | jq -r '._mode') && [ "$mode" = general ]; then
+    add "Проекта .duty/ нет: плагин в общем режиме; создать — python3 -I $root/scripts/duty_config.py init"
 fi
 
 if printf '%s' "$text" | grep -q '⚠ просрочено\|⚠ без срока'; then

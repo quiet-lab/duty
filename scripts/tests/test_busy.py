@@ -365,7 +365,16 @@ class BusyTest(unittest.TestCase):
         self.assertFalse(root.exists())
 
     def test_ttl_marks_overdue_in_list(self) -> None:
-        run("claim", "r-ttl", "--holder", "a", "--ttl-min", "10", "--pid", str(os.getpid()))
+        run(
+            "claim",
+            "r-ttl",
+            "--holder",
+            "a",
+            "--ttl-min",
+            "10",
+            "--pid",
+            str(os.getpid()),
+        )
         run("claim", "r-free", "--holder", "a", "--pid", str(os.getpid()))
         path = Path(self.tmp.name) / "r-ttl.json"
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -373,9 +382,13 @@ class BusyTest(unittest.TestCase):
         data["since_ms"] -= 25 * 60_000
         path.write_text(json.dumps(data), encoding="utf-8")
         _, out = run("list")
-        ttl_line = next(line for line in out.splitlines() if line.startswith("| r-ttl "))
+        ttl_line = next(
+            line for line in out.splitlines() if line.startswith("| r-ttl ")
+        )
         self.assertIn("⚠ просрочено +15 мин", ttl_line)
-        free_line = next(line for line in out.splitlines() if line.startswith("| r-free "))
+        free_line = next(
+            line for line in out.splitlines() if line.startswith("| r-free ")
+        )
         self.assertNotIn("просрочено", free_line)
 
 

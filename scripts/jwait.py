@@ -3,11 +3,16 @@
 Вызывается из `jwait.sh`. Источник событий — команда Jenkins CLI
 `console <задание> <номер> -f` по WebSocket (`/cli/ws`) прямо на контроллере:
 сервер шлёт журнал сборки по мере записи и кадр EXIT, когда сборка
-закончилась, поэтому ожидание — одно чтение сокета, без опроса. Внешний
-nginx `jen.service-desk.site` не пропускает заголовки Upgrade, а режим
-`-http` CLI через него отвечает 500, поэтому CLI идёт на адрес контроллера
-(`JENKINS_CLI_URL`, по умолчанию `http://10.200.100.8:8080/`); выбор —
-запись 0049 монорепозитория.
+закончилась, поэтому ожидание — одно чтение сокета, без опроса. Прокси
+перед Jenkins может не пропускать заголовки Upgrade, а режим `-http` CLI
+через него отвечать 500; тогда CLI идёт на адрес контроллера:
+`jenkins.cli_url` конфигурации проекта (пусто — `JENKINS_URL` из файла
+доступа), перекрытие — переменная `JENKINS_CLI_URL`.
+
+Адрес Jenkins и учётные данные — файл `jenkins.env_file` (`JENKINS_URL`,
+`JENKINS_USER`, `JENKINS_TOKEN`), проверка сертификата выключается
+`jenkins.insecure_tls`; без раздела `[jenkins]` в `.duty/duty.toml` итог —
+report.md с причиной и код 2. Корень проекта — `--root` или `duty_config.py`.
 
 Итог: `<каталог>/console.log` (журнал сборки), `<каталог>/report.md`
 (итог, длительность, этапы `wfapi/describe`, хвост журнала упавшего этапа)
@@ -24,6 +29,7 @@ STDOUT (7), STDERR (8), EXIT (4) с кодом int32.
 import argparse
 import base64
 import html
+import importlib.util
 import json
 import os
 import re
@@ -37,11 +43,26 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-CFG = Path.home() / '.config' / 'axata'
-DEFAULT_CLI_URL = 'http://10.200.100.8:8080/'
-# Сертификат jen.service-desk.site выдан внутренним центром: проверка
-# выключена, как у curl -k в reference/access.md.
-INSECURE = ssl._create_unverified_context()
+# Каталог скрипта убран из sys.path ключом -I, поэтому модуль подключается по пути.
+_spec = importlib.util.spec_from_file_location(
+    "dutylib", Path(__file__).with_name("dutylib.py")
+)
+dutylib = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(dutylib)
+duty_config = dutylib.duty_config
+config = dutylib.config
+
+
+def env_path() -> Path:
+    try:
+        return dutylib.access_file("jenkins", "env_file", "Jenkins")
+    except dutylib.NotConfigured as error:
+        raise WaitError(str(error)) from error
+
+
+def ssl_context() -> ssl.SSLContext:
+    return dutylib.ssl_context(config())
+
 
 OP_ARG, OP_LOCALE, OP_ENCODING, OP_START, OP_EXIT = 0, 1, 2, 3, 4
 OP_STDOUT, OP_STDERR = 7, 8
@@ -62,56 +83,66 @@ class WaitError(Exception):
 
 def env() -> dict[str, str]:
     out: dict[str, str] = {}
-    for line in (CFG / 'jenkins-credentials.env').read_text().splitlines():
-        if '=' in line and not line.lstrip().startswith('#'):
-            k, v = line.split('=', 1)
+    for line in env_path().read_text().splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
             out[k.strip()] = v.strip().strip('"').strip("'")
     return out
 
 
 def auth_header(e: dict[str, str]) -> str:
     raw = f"{e['JENKINS_USER']}:{e['JENKINS_TOKEN']}".encode()
-    return 'Basic ' + base64.b64encode(raw).decode()
+    return "Basic " + base64.b64encode(raw).decode()
 
 
 def job_path(job: str) -> str:
     """`a/b` → `job/a/job/b/`; адрес задания или сборки тоже принимается."""
-    if job.startswith(('http://', 'https://')):
-        parts = urllib.parse.urlsplit(job).path.strip('/').split('/')
-        names = [urllib.parse.unquote(parts[i + 1]) for i, p in enumerate(parts[:-1])
-                 if p == 'job']
-        job = '/'.join(names)
-    return ''.join(f'job/{urllib.parse.quote(n, safe="")}/' for n in job.split('/') if n)
+    if job.startswith(("http://", "https://")):
+        parts = urllib.parse.urlsplit(job).path.strip("/").split("/")
+        names = [
+            urllib.parse.unquote(parts[i + 1])
+            for i, p in enumerate(parts[:-1])
+            if p == "job"
+        ]
+        job = "/".join(names)
+    return "".join(
+        f"job/{urllib.parse.quote(n, safe='')}/" for n in job.split("/") if n
+    )
 
 
 def job_name(job: str) -> str:
     path = job_path(job)
-    return '/'.join(urllib.parse.unquote(p) for p in path.strip('/').split('/')[1::2])
+    return "/".join(urllib.parse.unquote(p) for p in path.strip("/").split("/")[1::2])
 
 
 def rest(base: str, path: str, auth: str) -> dict | None:
-    req = urllib.request.Request(base.rstrip('/') + '/' + path, headers={'Authorization': auth})
+    req = urllib.request.Request(
+        base.rstrip("/") + "/" + path, headers={"Authorization": auth}
+    )
     try:
-        with urllib.request.urlopen(req, timeout=30, context=INSECURE) as r:
+        with urllib.request.urlopen(req, timeout=30, context=ssl_context()) as r:
             return json.load(r)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
         if exc.code in (401, 403):
-            raise WaitError(f'Jenkins ответил {exc.code} на {path}: учётные данные '
-                            f'{CFG / "jenkins-credentials.env"}') from None
-        raise WaitError(f'Jenkins ответил {exc.code} на {path}') from None
+            raise WaitError(
+                f"Jenkins ответил {exc.code} на {path}: учётные данные {env_path()}"
+            ) from None
+        raise WaitError(f"Jenkins ответил {exc.code} на {path}") from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise WaitError(f'Jenkins недоступен ({path}): {exc}') from None
+        raise WaitError(f"Jenkins недоступен ({path}): {exc}") from None
 
 
 def rest_text(base: str, path: str, auth: str) -> str:
-    req = urllib.request.Request(base.rstrip('/') + '/' + path, headers={'Authorization': auth})
+    req = urllib.request.Request(
+        base.rstrip("/") + "/" + path, headers={"Authorization": auth}
+    )
     try:
-        with urllib.request.urlopen(req, timeout=30, context=INSECURE) as r:
-            return r.read().decode('utf-8', errors='replace')
+        with urllib.request.urlopen(req, timeout=30, context=ssl_context()) as r:
+            return r.read().decode("utf-8", errors="replace")
     except (urllib.error.URLError, TimeoutError, OSError):
-        return ''
+        return ""
 
 
 class CliSocket:
@@ -119,25 +150,31 @@ class CliSocket:
 
     def __init__(self, url: str, auth: str) -> None:
         u = urllib.parse.urlsplit(url)
-        port = u.port or (443 if u.scheme == 'https' else 80)
+        port = u.port or (443 if u.scheme == "https" else 80)
         raw = socket.create_connection((u.hostname, port), timeout=30)
-        self.sock = INSECURE.wrap_socket(raw, server_hostname=u.hostname) \
-            if u.scheme == 'https' else raw
+        self.sock = (
+            ssl_context().wrap_socket(raw, server_hostname=u.hostname)
+            if u.scheme == "https"
+            else raw
+        )
         key = base64.b64encode(os.urandom(16)).decode()
-        path = u.path.rstrip('/') + '/cli/ws'
+        path = u.path.rstrip("/") + "/cli/ws"
         # Origin обязателен: Jenkins сверяет его с адресом из запроса.
-        self.sock.sendall((
-            f'GET {path} HTTP/1.1\r\nHost: {u.netloc}\r\nUpgrade: websocket\r\n'
-            f'Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n'
-            f'Authorization: {auth}\r\nOrigin: {u.scheme}://{u.netloc}\r\n\r\n').encode())
-        self.rf = self.sock.makefile('rb')
-        status = self.rf.readline().decode('latin-1').strip()
+        self.sock.sendall(
+            (
+                f"GET {path} HTTP/1.1\r\nHost: {u.netloc}\r\nUpgrade: websocket\r\n"
+                f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
+                f"Authorization: {auth}\r\nOrigin: {u.scheme}://{u.netloc}\r\n\r\n"
+            ).encode()
+        )
+        self.rf = self.sock.makefile("rb")
+        status = self.rf.readline().decode("latin-1").strip()
         headers = []
-        while (line := self.rf.readline()) not in (b'\r\n', b''):
-            headers.append(line.decode('latin-1').strip())
-        if ' 101 ' not in f'{status} ':
-            why = next((h for h in headers if h.lower().startswith('x-cli-error')), '')
-            raise WaitError(f'CLI {url}: {status} {why}'.strip())
+        while (line := self.rf.readline()) not in (b"\r\n", b""):
+            headers.append(line.decode("latin-1").strip())
+        if " 101 " not in f"{status} ":
+            why = next((h for h in headers if h.lower().startswith("x-cli-error")), "")
+            raise WaitError(f"CLI {url}: {status} {why}".strip())
         self.sock.settimeout(SILENCE_S)
 
     def send(self, payload: bytes, opcode: int = 2) -> None:
@@ -146,9 +183,9 @@ class CliSocket:
         if n < 126:
             head = bytes([0x80 | opcode, 0x80 | n])
         elif n < 65536:
-            head = bytes([0x80 | opcode, 0x80 | 126]) + struct.pack('>H', n)
+            head = bytes([0x80 | opcode, 0x80 | 126]) + struct.pack(">H", n)
         else:
-            head = bytes([0x80 | opcode, 0x80 | 127]) + struct.pack('>Q', n)
+            head = bytes([0x80 | opcode, 0x80 | 127]) + struct.pack(">Q", n)
         body = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
         self.sock.sendall(head + mask + body)
 
@@ -165,10 +202,10 @@ class CliSocket:
             b0, b1 = self._read(2)
             opcode, fin, n = b0 & 0x0F, b0 & 0x80, b1 & 0x7F
             if n == 126:
-                n = struct.unpack('>H', self._read(2))[0]
+                n = struct.unpack(">H", self._read(2))[0]
             elif n == 127:
-                n = struct.unpack('>Q', self._read(8))[0]
-            data = self._read(n) if n else b''
+                n = struct.unpack(">Q", self._read(8))[0]
+            data = self._read(n) if n else b""
             if opcode == 8:
                 return None
             if opcode == 9:
@@ -178,14 +215,14 @@ class CliSocket:
                 continue
             parts.append(data)
             if fin:
-                return b''.join(parts)
+                return b"".join(parts)
 
     def run(self, args: list[str]) -> None:
         for a in args:
             enc = a.encode()
-            self.send(bytes([OP_ARG]) + struct.pack('>H', len(enc)) + enc)
-        for op, val in ((OP_ENCODING, 'UTF-8'), (OP_LOCALE, 'en')):
-            self.send(bytes([op]) + struct.pack('>H', len(val)) + val.encode())
+            self.send(bytes([OP_ARG]) + struct.pack(">H", len(enc)) + enc)
+        for op, val in ((OP_ENCODING, "UTF-8"), (OP_LOCALE, "en")):
+            self.send(bytes([op]) + struct.pack(">H", len(val)) + val.encode())
         self.send(bytes([OP_START]))
 
     def close(self) -> None:
@@ -195,13 +232,15 @@ class CliSocket:
             pass
 
 
-def follow(cli_url: str, auth: str, name: str, number: int, log_path: Path) -> int | None:
+def follow(
+    cli_url: str, auth: str, name: str, number: int, log_path: Path
+) -> int | None:
     """Журнал сборки до кадра EXIT; код команды console или None при обрыве."""
     cli = CliSocket(cli_url, auth)
     try:
-        cli.run(['console', name, str(number), '-f'])
+        cli.run(["console", name, str(number), "-f"])
         # Журнал переписывается с начала: console -f отдаёт его целиком.
-        with log_path.open('wb') as log:
+        with log_path.open("wb") as log:
             while True:
                 msg = cli.message()
                 if msg is None:
@@ -211,7 +250,7 @@ def follow(cli_url: str, auth: str, name: str, number: int, log_path: Path) -> i
                     log.write(data)
                     log.flush()
                 elif op == OP_EXIT:
-                    return struct.unpack('>i', data)[0]
+                    return struct.unpack(">i", data)[0]
     except (EOFError, OSError):
         return None
     finally:
@@ -219,145 +258,193 @@ def follow(cli_url: str, auth: str, name: str, number: int, log_path: Path) -> i
 
 
 def strip_html(text: str) -> str:
-    return html.unescape(re.sub(r'<[^>]+>', '', text))
+    return html.unescape(re.sub(r"<[^>]+>", "", text))
 
 
 def tail(text: str, n: int = TAIL_LINES) -> str:
-    return '\n'.join(text.rstrip('\n').splitlines()[-n:])
+    return "\n".join(text.rstrip("\n").splitlines()[-n:])
 
 
-def report(out: Path, base: str, auth: str, name: str, number: int, build_path: str,
-           note: str) -> int:
-    info = rest(base, build_path + 'api/json?tree=result,duration,building,url,timestamp',
-                auth) or {}
-    desc = rest(base, build_path + 'wfapi/describe', auth) or {}
-    result = info.get('result')
-    code = 0 if result == 'SUCCESS' else 1
-    lines = [f'# Сборка `{name}` #{number}', '',
-             f'- итог: **{result or "не записан"}**'
-             f'{" (ещё идёт)" if info.get("building") else ""}',
-             f'- длительность: {info.get("duration", 0) / 60000:.1f} мин',
-             f'- начало: `{info.get("timestamp")}` мс Unix UTC',
-             f'- адрес: {info.get("url", base + build_path)}',
-             f'- журнал: `{out / "console.log"}`']
+def report(
+    out: Path, base: str, auth: str, name: str, number: int, build_path: str, note: str
+) -> int:
+    info = (
+        rest(
+            base,
+            build_path + "api/json?tree=result,duration,building,url,timestamp",
+            auth,
+        )
+        or {}
+    )
+    desc = rest(base, build_path + "wfapi/describe", auth) or {}
+    result = info.get("result")
+    code = 0 if result == "SUCCESS" else 1
+    lines = [
+        f"# Сборка `{name}` #{number}",
+        "",
+        (
+            f"- итог: **{result or 'не записан'}**"
+            f"{' (ещё идёт)' if info.get('building') else ''}"
+        ),
+        f"- длительность: {info.get('duration', 0) / 60000:.1f} мин",
+        f"- начало: `{info.get('timestamp')}` мс Unix UTC",
+        f"- адрес: {info.get('url', base + build_path)}",
+        f"- журнал: `{out / 'console.log'}`",
+    ]
     if note:
-        lines.append(f'- ожидание: {note}')
-    stages = desc.get('stages', [])
+        lines.append(f"- ожидание: {note}")
+    stages = desc.get("stages", [])
     if stages:
-        lines += ['', '| этап | итог | мин |', '|---|---|---|']
-        lines += [f'| {s["name"]} | {s["status"]} | {s.get("durationMillis", 0) / 60000:.1f} |'
-                  for s in stages]
-    failed = [s for s in stages if s.get('status') in ('FAILED', 'UNSTABLE', 'ABORTED')]
+        lines += ["", "| этап | итог | мин |", "|---|---|---|"]
+        lines += [
+            f"| {s['name']} | {s['status']} | {s.get('durationMillis', 0) / 60000:.1f} |"
+            for s in stages
+        ]
+    failed = [s for s in stages if s.get("status") in ("FAILED", "UNSTABLE", "ABORTED")]
     for s in failed:
-        lines += ['', f'## Упавший этап «{s["name"]}»', '']
-        sd = rest(base, s['_links']['self']['href'].lstrip('/'), auth) or {}
-        bad = [n for n in sd.get('stageFlowNodes', [])
-               if n.get('status') in ('FAILED', 'UNSTABLE', 'ABORTED')]
+        lines += ["", f"## Упавший этап «{s['name']}»", ""]
+        sd = rest(base, s["_links"]["self"]["href"].lstrip("/"), auth) or {}
+        bad = [
+            n
+            for n in sd.get("stageFlowNodes", [])
+            if n.get("status") in ("FAILED", "UNSTABLE", "ABORTED")
+        ]
         if not bad:
-            lines.append('Упавших шагов нет: этап пропущен после прежнего падения.')
+            lines.append("Упавших шагов нет: этап пропущен после прежнего падения.")
         for node in bad:
-            text = ''
-            href = node.get('_links', {}).get('log', {}).get('href')
+            text = ""
+            href = node.get("_links", {}).get("log", {}).get("href")
             if href:
-                text = strip_html((rest(base, href.lstrip('/'), auth) or {}).get('text', ''))
+                text = strip_html(
+                    (rest(base, href.lstrip("/"), auth) or {}).get("text", "")
+                )
             if not text.strip():
-                text = node.get('parameterDescription') or ''
-            lines += [f'Шаг «{node["name"]}» ({node["status"]}):', '', '```',
-                      tail(text) or '(журнал шага пуст)', '```', '']
-    console = out / 'console.log'
+                text = node.get("parameterDescription") or ""
+            lines += [
+                f"Шаг «{node['name']}» ({node['status']}):",
+                "",
+                "```",
+                tail(text) or "(журнал шага пуст)",
+                "```",
+                "",
+            ]
+    console = out / "console.log"
     if not console.exists() or console.stat().st_size == 0:
-        console.write_text(rest_text(base, build_path + 'consoleText', auth))
+        console.write_text(rest_text(base, build_path + "consoleText", auth))
     if code:
-        lines += ['', f'## Хвост журнала сборки ({TAIL_LINES} строк)', '', '```',
-                  tail(console.read_text(errors='replace')), '```']
-    (out / 'report.md').write_text('\n'.join(lines) + '\n')
+        lines += [
+            "",
+            f"## Хвост журнала сборки ({TAIL_LINES} строк)",
+            "",
+            "```",
+            tail(console.read_text(errors="replace")),
+            "```",
+        ]
+    (out / "report.md").write_text("\n".join(lines) + "\n")
     return code
 
 
 def write_done(out: Path, code: int) -> None:
     # Отметка появляется переименованием: ждущий видит её целиком.
-    tmp = out / '.done.tmp'
-    tmp.write_text(f'{code}\n')
-    tmp.rename(out / 'done')
+    tmp = out / ".done.tmp"
+    tmp.write_text(f"{code}\n")
+    tmp.rename(out / "done")
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument('job', help='задание: dev2/qms/PR-2580 или адрес задания')
-    p.add_argument('build', help='номер сборки или last')
-    p.add_argument('--out', default='', help='каталог итога')
+    p.add_argument("job", help="задание: папка/задание или адрес задания")
+    p.add_argument("build", help="номер сборки или last")
+    p.add_argument("--out", default="", help="каталог итога")
+    p.add_argument("--root", default=None, help="корень проекта")
     a = p.parse_args()
+    try:
+        cfg = config(a.root)
+    except duty_config.ConfigError as exc:
+        print(f"ошибка конфигурации: {exc}", file=sys.stderr)
+        return 2
 
     name = job_name(a.job)
     if not name:
-        p.error(f'не разобрано имя задания: {a.job}')
-    slug = re.sub(r'[^A-Za-z0-9._-]+', '-', name).strip('-')
+        p.error(f"не разобрано имя задания: {a.job}")
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-")
     jp = job_path(a.job)
     e: dict[str, str] = {}
-    auth = base = ''
+    auth = base = ""
     number: int | None = None
-    error = ''
+    error = ""
     try:
+        if not cfg.has("jenkins"):
+            raise WaitError("нет раздела [jenkins] в .duty/duty.toml")
         e = env()
         auth = auth_header(e)
-        base = e['JENKINS_URL']
-        if a.build == 'last':
-            last = rest(base, jp + 'lastBuild/api/json?tree=number', auth)
+        base = e["JENKINS_URL"]
+        if a.build == "last":
+            last = rest(base, jp + "lastBuild/api/json?tree=number", auth)
             if not last:
-                raise WaitError(f'у задания {name} нет сборок')
-            number = int(last['number'])
+                raise WaitError(f"у задания {name} нет сборок")
+            number = int(last["number"])
         else:
             number = int(a.build)
     except (WaitError, KeyError, ValueError, OSError) as exc:
         error = str(exc)
-    tag = f'{slug}-{number if number is not None else a.build}'
+    tag = f"{slug}-{number if number is not None else a.build}"
     if a.out:
         out = Path(a.out)
-    elif os.environ.get('DUTY_TASK'):
-        out = Path(os.environ['DUTY_TASK']) / 'runs' / f'jenkins-{tag}'
+    elif os.environ.get("DUTY_TASK"):
+        out = Path(os.environ["DUTY_TASK"]) / "runs" / f"jenkins-{tag}"
     else:
-        out = (Path.home() / 'work' / 'telecom' / 'axata' / 'ocp-dev-stand' / 'results'
-               / 'wait' / tag)
+        out = cfg.path("paths.results") / "wait" / tag
     out.mkdir(parents=True, exist_ok=True)
-    (out / 'done').unlink(missing_ok=True)
+    (out / "done").unlink(missing_ok=True)
 
     code = 2
     try:
         if error or number is None:
             raise WaitError(error)
-        cli_url = os.environ.get('JENKINS_CLI_URL') or e.get('JENKINS_CLI_URL') or DEFAULT_CLI_URL
-        bp = f'{jp}{number}/'
-        info = rest(base, bp + 'api/json?tree=building', auth)
+        cli_url = (
+            os.environ.get("JENKINS_CLI_URL")
+            or e.get("JENKINS_CLI_URL")
+            or cfg.get("jenkins.cli_url", "")
+            or base
+        )
+        bp = f"{jp}{number}/"
+        info = rest(base, bp + "api/json?tree=building", auth)
         if info is None:
-            raise WaitError(f'сборки {name} #{number} нет')
-        print(f'жду {name} #{number}, итог — {out}', file=sys.stderr, flush=True)
-        note, failures, started = '', 0, time.time()
-        while info and info.get('building'):
+            raise WaitError(f"сборки {name} #{number} нет")
+        print(f"жду {name} #{number}, итог — {out}", file=sys.stderr, flush=True)
+        note, failures, started = "", 0, time.time()
+        while info and info.get("building"):
             got = None
             try:
-                got = follow(cli_url, auth, name, number, out / 'console.log')
+                got = follow(cli_url, auth, name, number, out / "console.log")
             except WaitError as exc:
                 note = str(exc)
             except OSError as exc:
-                note = f'CLI {cli_url}: {exc}'
+                note = f"CLI {cli_url}: {exc}"
             if got is not None:
                 break
-            info = rest(base, bp + 'api/json?tree=building', auth)
+            info = rest(base, bp + "api/json?tree=building", auth)
             failures += 1
-            if info and info.get('building') and failures >= MAX_RECONNECTS:
-                raise WaitError(f'соединение CLI обрывалось {failures} раз подряд: {note}')
+            if info and info.get("building") and failures >= MAX_RECONNECTS:
+                raise WaitError(
+                    f"соединение CLI обрывалось {failures} раз подряд: {note}"
+                )
         if failures:
-            note = (note + '; ' if note else '') + f'переподключений: {failures}'
-        note = (note + '; ' if note else '') + f'ждал {(time.time() - started) / 60:.1f} мин'
+            note = (note + "; " if note else "") + f"переподключений: {failures}"
+        note = (
+            note + "; " if note else ""
+        ) + f"ждал {(time.time() - started) / 60:.1f} мин"
         code = report(out, base, auth, name, number, bp, note)
     except (WaitError, KeyError, ValueError, OSError) as exc:
-        (out / 'report.md').write_text(f'# Ожидание сборки `{name}` {a.build}\n\n'
-                                       f'Не удалось: {exc}\n')
+        (out / "report.md").write_text(
+            f"# Ожидание сборки `{name}` {a.build}\n\nне удалось: {exc}\n"
+        )
         code = 2
     write_done(out, code)
-    print((out / 'report.md').read_text())
+    print((out / "report.md").read_text())
     return code
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

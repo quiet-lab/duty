@@ -1,6 +1,6 @@
-# duty — дежурство по монорепозиторию
+# duty — дежурство по проекту
 
-Плагин Claude Code для монорепозитория `monorepo-ocp`. Назначение —
+Плагин Claude Code для любого репозитория. Назначение —
 экономить токены основной сессии: инспекция и рутина выполняются
 форком (`context: fork`) на самой дешёвой модели, которой достаточно
 для задачи, а в основную сессию возвращается только короткий итог —
@@ -9,31 +9,34 @@
 короткими командами и запросами REST, у каждого шага — критерий
 готовности, проверяемый командой.
 
-Проектные навыки `/handoff` и `/sync-parents` остаются в
-`.claude/skills/` монорепозитория; плагин их не повторяет и не заменяет.
+Плагин не знает о проекте: всё проектное (адреса, ветви, каталоги, запреты,
+дополнительные разделы фактов) лежит в `.duty/` в корне проекта и читается
+из `.duty/duty.toml` ([«Конфигурация»](#конфигурация)). Проектные навыки
+(например, `/handoff` и `/sync-parents`) остаются в `.claude/skills/`
+проекта; плагин их не повторяет и не заменяет.
 
 ## Навыки
 
 | Навык | Модель | Агент | Что делает | Меняет |
 |---|---|---|---|---|
 | `/duty:inspect [фокус]` | sonnet | `duty:inspector` | таблица задач: что трогают, с чем пересекаются, какой моделью, можно ли сейчас; перечень уборки; «Неделя в цифрах» | ничего |
-| `/duty:gates [now \| фильтр]` | haiku | `duty:inspector` | открытые pull request'ы пользователя: сборки, ворота Jenkins с этапами, готовность к слиянию, возраст; с `now` — что идёт на узлах Jenkins и чем заняты агенты | ничего |
+| `/duty:gates [now \| фильтр]` | haiku | `duty:inspector` | открытые pull request'ы пользователя: сборки, ворота Jenkins с этапами, готовность к слиянию, возраст; с `now` — что идёт на узлах Jenkins и чем заняты агенты; нужны разделы `[bitbucket]`, `[jenkins]` | ничего |
 | `/duty:branches [all \| репозиторий] [--mine]` | haiku | `duty:inspector` | таблица ветвей в `origin` с предложением по каждой: слить, удалить, оставить, решить | ничего |
 | `/duty:cleanup [apply]` | sonnet | `duty:runner` | кандидаты на уборку с размерами; с `apply` — удаление строго по перечню; файлы контейнеров rootless Docker (uid из `/etc/subuid`) — через `rootlesskit rm -rf` без sudo; кэш сборки Docker — только старше двух суток | только с `apply` |
-| `/duty:after-merge <репозиторий>#<номер>` | sonnet | `duty:runner` | ветвь в origin, тикет RP, задачи `tasks.md`, местные worktree и ветвь после слияния | да |
+| `/duty:after-merge <репозиторий>#<номер>` | sonnet | `duty:runner` | ветвь в origin, тикет, задачи изменений спецификаций, местные worktree и ветвь после слияния; нужен раздел `[bitbucket]` | да |
 | `/duty:dispatch <имя> <модель> [задача]` | главной сессии; агенту — из аргумента | `duty:worker` в своём workspace | вынос крупной задачи в workspace herdr с запиской | каталог задачи, workspace |
-| `/duty:decision <NN-каталог> <тема> :: <решение>` | sonnet | `duty:runner` | запись решения в тематический каталог `docs/decisions/` по форме записи 0066: правка найденной записи или вставка новой сценарием перенумерации, указатель — `--write-index`; без `::` — справка, что по теме уже решено | да, только в режиме записи (коммит записей и указателя) |
+| `/duty:decision <NN-каталог> <тема> :: <решение>` | sonnet | `duty:runner` | запись решения в тематический каталог `docs.decisions` по форме проекта: правка найденной записи или вставка новой командой `docs.decision_insert`, указатель — `docs.decision_index`; без `::` — справка, что по теме уже решено | да, только в режиме записи (коммит записей и указателя) |
 | `/duty:docs-sweep <правило> [--paths …] [--dry]` | sonnet | `duty:runner` | массовая правка документов по правилу: перечень до правок, замена, вычитка, коммит по репозиториям; с `--dry` — перечень | да, кроме `--dry` |
 
 `/duty:gates now` отвечает на вопрос «что сейчас идёт и чем заняты
 агенты»: таблица исполнителей Jenkins (узел, задание и сборка, сколько
 идёт, кто запустил; очередь ожидания — отдельной строкой) и таблица
 станции (сессии Claude Code из `~/.claude/sessions`, агенты `herdr`,
-отметки реестра занятости из `../ocp-dev-stand/busy/` с проверкой
+отметки реестра занятости из каталога `paths.busy` с проверкой
 `kill -0`). `/duty:branches` заменяет вопросы по одной ветви таблицей:
 данные берутся из местных `refs/remotes` без `fetch`, в конце печатается
-дата последнего `fetch`; защищённые `dev`, `dev2`, `master` и рабочая
-`new_ocp` не показываются, чужие ветви получают предложение «решить»
+дата последнего `fetch`; ветви `git.protected` и `git.working`
+не показываются, чужие ветви получают предложение «решить»
 и не предлагаются к удалению. Вся логика обоих режимов — в сценариях,
 навыки на `haiku` только запускают их.
 
@@ -62,7 +65,9 @@ scripts/week-stats.py        «Неделя в цифрах» для /duty:inspe
 hooks/hooks.json             подключение хука SessionStart
 hooks/session-start.sh       при старте: workspace задач, задачи для продолжения, вопросы, реестр, напоминание
 scripts/brief_check.py       проверка записки и приглашения Agent: ворота постановки
-scripts/rules-lint.py        повторы правил и разделы записки; настройка — rules-lint.toml
+scripts/rules-lint.py        повторы правил и разделы записки; набор файлов — файлы плагина, `docs.rules` и `.duty/*.md`
+scripts/duty_config.py       чтение конфигурации: root, get, json, env, check, init
+scripts/dutylib.py           общие помощники сценариев и запуск расширений `.duty/facts.d/`, `.duty/cleanup.d/`
 scripts/tests/test_*.py      проверки сценариев
 tests/probes/                пробы flow: песочница, записки, run-probe.sh
 scripts/cleanup-candidates.py перечень кандидатов на уборку
@@ -77,10 +82,10 @@ hooks/task-guard.py          сторожа сессии агента задач
 hooks/forbid.py              запреты команд Bash агента задачи (туннель, kill по образцу, git, herdr, секреты)
 scripts/jwait.sh, jwait.py   ожидание конца сборки Jenkins: report.md, done
 scripts/decision-number.sh   номер и вставка записи решения в тематический каталог
-reference/access.md          доступы, REST, репозитории, задания Jenkins
+reference/config.md          схема `duty.toml`, слои и поиск корня, расширения `.duty/`
 reference/report.md          форма итога
 reference/brief-template.md  шаблон записки задачи; владелец формы
-reference/worker-rules.md    общие запреты для rules.md задачи
+reference/worker-rules.md    общие запреты плагина для rules.md задачи; проектная часть — `.duty/worker-rules.md`
 ```
 
 Пути внутри плагина в тексте навыков — `${CLAUDE_PLUGIN_ROOT}`, корень
@@ -113,6 +118,11 @@ dispatch, «Дальше»).
 (`HERDR_ENV` не равно 1); сбой herdr даёт строку «herdr недоступен»
 и не прерывает старт.
 
+Если в проекте есть `.duty/duty.toml`, хук проверяет его (`duty_config.py
+check`) и печатает строку предупреждения при находках; нет файла — один раз
+напоминает `duty_config.py init`. Агенту задачи (`DUTY_ROLE=worker`) хук
+отдаёт `.duty/worker-context.md` проекта, если файл есть.
+
 ## Сторожа сессии агента задачи
 
 `hooks/task-guard.py`: ворота постановки действуют во всех сессиях с плагином
@@ -128,12 +138,15 @@ dispatch, «Дальше»).
 | `Stop` | есть `.stopped` без `.done` и нет ожидания: прогона без `done` с живым `cmd.sh` (строка `pid:` в `meta.txt`), ожидания `signals.py wait` этой задачи, открытого вопроса `ask.py` | блокирует конец хода с перечнем подзадач; повторная остановка (`stop_hook_active`) проходит с уведомлением herdr «застой» |
 
 `hooks/forbid.py` (`PreToolUse` для `Bash`, только `DUTY_ROLE=worker`) отвергает
-команды, запрещённые правилами задач: переключение туннеля и сети станции,
-`pkill`/`killall`/`kill $(pgrep …)`, `git add -A/-u`, `git stash`, принудительный
-push и push в `dev`, `dev2`, `master`, `herdr tab create`/`pane run`/`pane send`
-в обход `tab-run.sh`, вывод содержимого `~/.config/axata/*` (чтение в переменные
+команды, запрещённые правилами задач: переключение туннеля и сети станции
+(`forbid.network`), `pkill`/`killall`/`kill $(pgrep …)`, `git add -A/-u`
+(`git.forbid_add_all`), `git stash` (`git.forbid_stash`), принудительный
+push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane send`
+в обход `tab-run.sh` (`forbid.herdr_direct`), вывод содержимого файлов из
+`secrets.dirs` (чтение в переменные
 и правка на месте без вывода разрешены: `reference/worker-rules.md`), печать
-окружения и секретных переменных, пароль литералом в `curl -u` и `sshpass -p`. Команда разбирается по
+окружения и секретных переменных, пароль литералом в `curl -u` и `sshpass -p`,
+а также образцы проекта из `[[forbid.rules]]`. Команда разбирается по
 словам и конвейерам; подстановки, `bash -c`, `eval` и команда после `--`
 у `tab-run.sh` проверяются рекурсивно. Отказ называет запрет и правило, но не
 повторяет команду. Проверки — `scripts/tests/test_forbid.py`.
@@ -153,8 +166,8 @@ push и push в `dev`, `dev2`, `master`, `herdr tab create`/`pane run`/`pane sen
 |---|---|---|
 | `dispatch.sh` | записка `--brief` или собранная из `--goal` с `--done`, `--stop`, `--read`: разделы «Цель», «Критерий готовности» с командой в обратных кавычках, «Условие остановки», «Ссылки» со строкой «Прочитанное при постановке»; раздел из одного прочерка считается пустым; `--resume` записку не проверяет | код 1 с именами разделов до создания каталога задачи и workspace |
 | `task-guard.py pre-tool`, все сессии с плагином | приглашение `Agent` или `Task`: строки или заголовки «Критерий готовности» и «Условие остановки» | отказ с подсказкой; типы `Explore`, `Plan`, `claude-code-guide`, `duty:inspector`, `duty:runner` не проверяются; вызов `Agent` из навыка (slash-команда или `Skill` в текущем ходе по транскрипту сессии) пропускается |
-| `just rules-lint` | повторы предложений между файлами правил (набор, порог и разрешённые фразы — `scripts/rules-lint.toml`) | код 1 и строки `файл:строка` |
-| `just rules-lint brief <файл>` | записка по тем же правилам, что в `dispatch.sh` | код 1 и имена разделов |
+| `rules-lint.py repeats` (в проекте — обёртка, например `just rules-lint`) | повторы предложений между файлами правил (набор — файлы плагина, `docs.rules` проекта и `.duty/*.md`) | код 1 и строки `файл:строка` |
+| `rules-lint.py brief <файл>` | записка по тем же правилам, что в `dispatch.sh` | код 1 и имена разделов |
 
 Итог `rules-lint` печатает раздел «Повторы правил» в `facts.sh`,
 его видит `/duty:inspect`. Пользовательские команды и навыки `/duty:*`
@@ -170,8 +183,8 @@ push и push в `dev`, `dev2`, `master`, `herdr tab create`/`pane run`/`pane sen
 
 Крупная задача уходит из главной сессии в отдельный workspace herdr
 с говорящим именем; там работает своя сессия Claude в роли
-`duty:worker`. Решение и отвергнутые варианты — запись
-`docs/decisions/08-agents-and-docs/0068-duty-workspace-dispatch.md` монорепозитория.
+`duty:worker`. Решение и отвергнутые варианты — записи решений проекта
+(`docs.decisions`), в котором плагин подключён.
 
 **Когда** и какой моделью — разделы «Когда выносить» и «Модель»
 [`skills/dispatch/SKILL.md`](skills/dispatch/SKILL.md).
@@ -181,22 +194,28 @@ push и push в `dev`, `dev2`, `master`, `herdr tab create`/`pane run`/`pane sen
 (цель, сделанное, решения пользователя), а форк этих сведений
 не получает. Запуск — детерминированный сценарий `scripts/dispatch.sh`,
 одна команда с проверкой каждого шага: каталог задачи с `brief.md`
-и `rules.md`; символ workspace — случайный эмодзи из `scripts/symbols.txt`, не занятый
-открытыми задачами; `herdr workspace create --label "<символ> <имя> · <модель>"
+и `rules.md`; символ workspace — из набора `symbols.tasks` конфигурации (вне репозитория —
+`symbols.outside` пользовательского слоя, пустой набор — запасной
+`scripts/symbols.txt`; `dispatch.sh symbol`), не занятый открытыми
+задачами того же каталога результатов (`symbols.main` — постоянный символ
+главной сессии, его ставит хук подписи пользователя, плагин только хранит); `herdr workspace create --label "<символ> <имя> · <модель>"
 --env DUTY_ROLE=worker --env DUTY_TASK=<каталог> --env DUTY_NAME=<имя>
---env DUTY_SYMBOL=<символ> --env DUTY_MODEL=<модель> --no-focus`; служебный блок в `brief.md`
-(workspace, символ, панель, имя агента, имя главной сессии, каталог плагина);
+--env DUTY_SYMBOL=<символ> --env DUTY_MODEL=<модель> --env DUTY_PROJECT=<корень проекта>
+--no-focus`; служебный блок в `brief.md` (workspace, символ, панель, имя агента,
+имя главной сессии, каталог плагина, проект, файл конфигурации);
 `herdr agent start <имя> --kind claude -- --agent duty:worker --model
 <модель> --name <имя> "<приглашение>"` (первое приглашение — позиционным
 аргументом: `herdr agent prompt` на только что запущенном агенте теряет Enter
 длинного текста) и проверка `herdr agent wait`, что агент перешёл в `working`
-или `blocked`; потерянный Enter досылается один раз. Хуки `SessionStart`
-монорепозитория при `DUTY_ROLE=worker` не выдают снимок `todo.local.md`
-и указание `/sync-parents`.
+или `blocked`; потерянный Enter досылается один раз. Проектные хуки
+`SessionStart` при `DUTY_ROLE=worker` не выдают снимок передачи работы
+и указания проектных навыков синхронизации.
 
-**Файлы задачи** — `../ocp-dev-stand/results/<имя>/`, таблица —
+**Файлы задачи** — каталог результатов из конфигурации (`paths.results`,
+`duty_config.py get paths.results`), `<results>/<имя>/`; таблица —
 [`agents/worker.md`](agents/worker.md), «Файлы задачи». `rules.md` собирает
-`dispatch.sh` из `reference/worker-rules.md`, раздел «Передача» в `brief.md`
+`dispatch.sh` из `reference/worker-rules.md` (метка `{{PROJECT_RULES}}`
+заменяется содержимым `.duty/worker-rules.md`, нет файла — «—»), раздел «Передача» в `brief.md`
 дописывает агент при переполнении контекста.
 
 **Долгие команды, подзадачи, ресурсы реестра** — `agents/worker.md`, п. 3, 4, 6.
@@ -214,8 +233,7 @@ push и push в `dev`, `dev2`, `master`, `herdr tab create`/`pane run`/`pane sen
 с записанного шага (`agents/worker.md`, п. 1). Такие задачи показывает
 `dispatch.sh stalled` и хук при старте.
 
-**Ревью** diff задачи — правило монорепозитория
-`.claude/rules/code-review.md`; форма раздела «Замечания ревью» —
+**Ревью** diff задачи — правило проекта (`docs.review`); форма раздела «Замечания ревью» —
 `reference/report.md`, п. 4.
 
 **Итог и закрытие.** Порядок и случай, когда workspace остаётся открытым, —
@@ -236,31 +254,26 @@ bash claude-plugins/duty/scripts/dispatch.sh close <имя>    # агент idle
 workspace herdr (`tab-run.sh`: `herdr tab create`, `herdr pane run`);
 агент ждёт её файла-отметки `done` одним вызовом `wait-done.sh`. Во вкладку идут:
 
-- местный прогон `just dev-stand::pipeline …` (свой `done` рядом
-  с `summary.md` и отметки мест в `../ocp-dev-stand/busy/` пишет сам
-  `pipeline.py`, `docs/stand/pipeline.md` монорепозитория);
-- ожидание сборки Jenkins — `jwait.sh` через `tab-run.sh`;
-- `ci-checks.sh` QMS, `just test-compiled-all`, `just check-release`,
-  `pipeline.py --src`, `run-checks-light.sh`, `run-shards.sh`,
-  `npx playwright test <файл>`, `pytest tests/blackbox`, наборы
-  `e2e/voip-*` — через `tab-run.sh`;
-- замеры (`bench.py`, покрытие) — через `tab-run.sh` с отметкой `station`
-  в реестре занятости;
-- сборки стендов (`just stands::build`, `codegen/run.sh`,
-  `checks/run-all.sh`) и наблюдение дев-контура
-  (`ssh … docker events --filter event=die`).
+- местный прогон конвейера проекта (сценарий, который сам пишет свой `done`
+  и отметки реестра, — по контракту проекта, `.duty/worker-context.md`);
+- ожидание сборки Jenkins — `jwait.sh` через `tab-run.sh` (нужен раздел
+  `[jenkins]`);
+- наборы тестов, проверки, сборки образов и стендов — через `tab-run.sh`;
+- замеры — через `tab-run.sh` с отметкой нужного ресурса в реестре
+  занятости (`busy.resources`);
+- наблюдение удалённых процессов (`wait-remote.sh`).
 
 Размышляющие подзадачи — инструмент Agent внутри агента workspace,
 не вкладки.
 
 ```sh
 # Новая вкладка в каталоге --cwd (по умолчанию текущий), итог — в $DUTY_TASK/runs/<имя>/.
-"${CLAUDE_PLUGIN_ROOT}/scripts/tab-run.sh" checks --cwd "$PWD" -- just test-compiled-all
+"${CLAUDE_PLUGIN_ROOT}/scripts/tab-run.sh" checks --cwd "$PWD" -- <команда проверки проекта>
 # Строка для bash — одним аргументом: кавычки уходят в cmd.sh, а не в терминал.
 "${CLAUDE_PLUGIN_ROOT}/scripts/tab-run.sh" grep-log -- 'grep -c "FAILED" out.txt | tee n.txt'
 
 # Ожидание сборки Jenkins (номер или last) — тоже во вкладке.
-"${CLAUDE_PLUGIN_ROOT}/scripts/tab-run.sh" pr-2581 -- "${CLAUDE_PLUGIN_ROOT}/scripts/jwait.sh" dev2/qms/PR-2581 last
+"${CLAUDE_PLUGIN_ROOT}/scripts/tab-run.sh" pr-2581 -- "${CLAUDE_PLUGIN_ROOT}/scripts/jwait.sh" <задание> last
 
 # У агента: одним вызовом дождаться done, код — в выводе и коде выхода.
 "${CLAUDE_PLUGIN_ROOT}/scripts/wait-done.sh" "$DUTY_TASK/runs/checks" --timeout-s 590
@@ -269,7 +282,7 @@ workspace herdr (`tab-run.sh`: `herdr tab create`, `herdr pane run`);
 | Сценарий | Каталог итога | Файлы |
 |---|---|---|
 | `tab-run.sh <имя> [--cwd <каталог>] -- <команда…>` (ответ JSON: `tab_id`, `pane_id`, `run_dir`, `log`) | `runs/<имя>/` каталога задачи (`$DUTY_TASK`, без него — текущий каталог); каталог должен быть новым, иначе отказ с кодом 2 | `cmd.sh` (команда: один аргумент — строка для bash, несколько — команда с экранированными аргументами), `out.log` (stdout и stderr вместе, они же на экране вкладки), `meta.txt` (каталог, `started_ms`, `finished_ms`, код), `done` с кодом команды; при `HERDR_ENV=1` — уведомление `herdr notification show` (звук `done`, при ненулевом коде `request`) и строка `DUTY-DONE <имя> rc=<код>`; в ответ — JSON с `tab_id`, `pane_id`, `run_dir` |
-| `jwait.sh <задание> <номер\|last> [--out <каталог>]` | `--out`; иначе `$DUTY_TASK/runs/jenkins-<задание>-<номер>/`; без `DUTY_TASK` — `../ocp-dev-stand/results/wait/<задание>-<номер>/` (`last` заменяется номером; `/` в имени задания — `-`) | `console.log` (журнал сборки), `report.md` (итог, длительность, этапы `wfapi/describe`, шаги упавших этапов с хвостом журнала, хвост журнала сборки), `done`: 0 — SUCCESS, 1 — другой итог, 2 — ожидание не удалось |
+| `jwait.sh <задание> <номер\|last> [--out <каталог>]` | `--out`; иначе `$DUTY_TASK/runs/jenkins-<задание>-<номер>/`; без `DUTY_TASK` — `<results>/wait/<задание>-<номер>/` (`last` заменяется номером; `/` в имени задания — `-`) | `console.log` (журнал сборки), `report.md` (итог, длительность, этапы `wfapi/describe`, шаги упавших этапов с хвостом журнала, хвост журнала сборки), `done`: 0 — SUCCESS, 1 — другой итог, 2 — ожидание не удалось |
 | `wait-done.sh <каталог> [--timeout-s <с>] [--log <файл> --stall-s <с>]` | — | ничего не пишет; печатает `done rc=<код> <каталог>` и выходит с кодом из `done`, 124 — истёк срок, 125 — журнал `--log` не рос дольше `--stall-s` (строка `stall <секунд> <каталог>`), 2 — ошибка вызова или каталога нет (его создаёт `tab-run.sh` до возврата) |
 
 Отметка `done` появляется переименованием и последней, поэтому её
@@ -278,11 +291,10 @@ workspace herdr (`tab-run.sh`: `herdr tab create`, `herdr pane run`);
 Ожидание везде по событиям: `wait-done.sh` — `inotifywait` (пакет
 `inotify-tools`, на станции есть; наблюдение ставится до проверки, есть
 ли `done`); `jwait.sh` — поток журнала команды Jenkins CLI
-`console <задание> <номер> -f` по WebSocket, конец сборки — кадр EXIT
-(запись 0049 монорепозитория). Внешний nginx `jen.service-desk.site`
-WebSocket не пропускает, поэтому CLI идёт прямо на контроллер
-`JENKINS_CLI_URL` (по умолчанию `http://10.200.100.8:8080/`; переменная
-окружения или строка в `jenkins-credentials.env`), REST — на `JENKINS_URL`.
+`console <задание> <номер> -f` по WebSocket, конец сборки — кадр EXIT. Внешний прокси перед Jenkins может
+не пропускать WebSocket, поэтому CLI идёт прямо на контроллер
+(`jenkins.cli_url`; переменная окружения `JENKINS_CLI_URL` или строка в
+файле `jenkins.env_file`), REST — на `JENKINS_URL`.
 Обрыв соединения при идущей сборке — переподключение (не больше пяти
 подряд), тишина дольше 90 с (три интервала ping контроллера) считается
 обрывом. Сборок `jwait.sh` не запускает.
@@ -290,7 +302,7 @@ WebSocket не пропускает, поэтому CLI идёт прямо на
 `--timeout-s` у `wait-done.sh` — предел ожидания, а не такт опроса: вызов
 из Bash агента ограничен 10 минутами, поэтому агент ставит `--timeout-s 590`,
 таймаут вызова 600000 мс и по строке `timeout` (код 124) запускает ожидание
-снова, пока не истёк общий срок из строки раздела «Ожидания» его `state.md`
+снова, до конца общего срока из строки раздела «Ожидания» его `state.md`
 (`- <что ждём>: pid <PID> <comm>, с <UTC ЧЧ:ММ>, срок <N> мин`, срок —
 2× от замера операции). Сторож прогресса — `--log <файл> --stall-s <секунды>`
 (журнал в каталоге прогона, путь `log` печатает `tab-run.sh`): журнал не рос
@@ -328,8 +340,8 @@ python3 -I claude-plugins/duty/scripts/runs-web.py [--results <каталог>] 
 # адрес по умолчанию: http://127.0.0.1:8765/ ; --port 0 — свободный порт
 ```
 
-Каталог результатов — `--results`, `$DUTY_RESULTS_DIR` или
-`~/work/telecom/axata/ocp-dev-stand/results`; прогоны ищутся в
+Каталог результатов — `--results`, `$DUTY_RESULTS_DIR` или `paths.results`
+конфигурации; прогоны ищутся в
 `<каталог>/<задача>/runs/<имя>/`. Главная страница при каждом запросе
 выполняет `dispatch.sh list`, `busy.py list`, `signals.py list --waits`
 и показывает их вывод, ниже — перечень прогонов: задача, имя, вид,
@@ -345,7 +357,7 @@ python3 -I claude-plugins/duty/scripts/runs-web.py [--results <каталог>] 
 
 ## Вопросы
 
-Решение — запись 0068 монорепозитория; порядок агента —
+Порядок агента —
 `agents/worker.md`, п. 5; порядок главной сессии — `skills/dispatch/SKILL.md`,
 «Дальше». Здесь — устройство `ask.py`.
 
@@ -366,7 +378,7 @@ ask.py wait <NN> --timeout-s N
 - `answer` дописывает в `## Ответ` текст, ссылку и время и даёт сигнал
   `answer-<задача>-<NN>`; на отвеченный вопрос второй ответ не пишется (код 2).
 - `list` — таблица вопросов всех задач в каталоге результатов
-  (`--results`, `DUTY_RESULTS_DIR` или `~/work/telecom/axata/ocp-dev-stand/results`):
+  (`--results`, `DUTY_RESULTS_DIR` или `paths.results`):
   символ, задача, номер, суть, необратимо, рекомендуемый вариант,
   отвечен ли, файл.
 - `wait` ждёт сигнал `answer-<DUTY_NAME>-<NN>` через `signals.py wait`
@@ -383,36 +395,36 @@ ask.py wait <NN> --timeout-s N
 
 | Показатель | Источник |
 |---|---|
-| Время жизни набора | pull request'ы `QM/release-sets` в Bitbucket: от создания до слияния; отклонённые и открытые — отдельно |
-| Занятость Jenkins | REST Jenkins: объединение отрезков сборок всех заданий, кроме `z__fake-*` |
+| Время жизни набора | pull request'ы репозитория `bitbucket.sets_repo` в Bitbucket: от создания до слияния; отклонённые и открытые — отдельно; без ключа показатель не считается |
+| Занятость Jenkins | REST Jenkins: объединение отрезков сборок всех заданий, кроме заданий `jenkins.fake_job` |
 | Случайные падения | падение, после которого то же задание на той же ревизии прошло; классы — по сообщениям упавших этапов `wfapi/describe` |
 | Вопросов агентов в день | `ask.py`: вопросы, заданные за период |
-| Новых записей решений | `git log --diff-filter=A` по `docs/decisions/` монорепозитория |
+| Новых записей решений | `git log --diff-filter=A` по каталогу `docs.decisions` |
 | Ревью | `~/.claude/stats/review-rounds.tsv`: ревью, находок, воспроизведено ломающих, исправлено |
 | Доля моделей в коммитах | строка `Co-Authored-By: Claude <модель>` коммитов периода во всех репозиториях |
-| Коммиты в код и тесты | основной класс путей коммита: код, тесты, документация, конвейер, правила, указатели |
+| Коммиты в код и тесты | основной класс путей коммита: код, тесты, документация, конвейер, правила, указатели; классы путей — `[stats]` |
 
-Токены — только из файлов `~/.config/axata/`; ответ 401 или 403
+Токены — только из файлов, названных в разделах `[bitbucket]`, `[jenkins]`, `[jira]`; ответ 401 или 403
 Bitbucket останавливает обращения к нему без повтора, недоступный
 источник даёт строку «не получено» с причиной. Проверка:
 `python3 -I scripts/tests/test_week_stats.py`.
 
 ## Номера записей решений
 
-Записи решений монорепозитория лежат в тематических каталогах
-`docs/decisions/<NN>-<тема>/`; нумерация сквозная и повествовательная:
-номер — место записи в порядке каталогов, новая запись вставляется
-в середину со сдвигом последующих. Порядок — запись 0066
-и `docs/decisions/README.md` монорепозитория.
+Записи решений проекта лежат в тематических каталогах `docs.decisions`
+(`<NN>-<тема>/`); нумерация сквозная и повествовательная: номер — место
+записи в порядке каталогов, новая запись вставляется в середину со сдвигом
+последующих. Порядок и форма — правила проекта (вводный абзац указателя
+каталога). Навык работает, только если задан `docs.decisions`.
 
 ```sh
 decision-number.sh <каталог записей>                                   # номер записи, вставленной последней в каталог
 decision-number.sh <каталог записей> --insert <файл> [--after <номер>]  # вставка и указатель
 ```
 
-Вставку выполняет `scripts/renumber-decisions.py insert` монорепозитория
-(`--catalog <NN> --last` или `--after <номер>`), затем указатель
-порождается `--write-index`. Две вставки в одном рабочем дереве
+Вставку выполняет команда `docs.decision_insert` проекта (с ключами
+`--catalog <NN> --last` или `--after <номер>`), затем указатель порождается
+командой `docs.decision_index`. Две вставки в одном рабочем дереве
 не идут одновременно: замок `decision-insert.lock` в каталоге git этого
 дерева, обоснование и условие снятия — у замка в сценарии; ожидание —
 событием (`inotifywait`); замок, не снятый за 30 с, сценарий считает
@@ -421,48 +433,92 @@ decision-number.sh <каталог записей> --insert <файл> [--after 
 сводятся при слиянии перенумерацией. Проверка:
 `python3 -I scripts/tests/test_decision_number.py`.
 
-## Подключение
+## Подключение к проекту
 
-Плагин — сабмодуль `claude-plugins/duty` монорепозитория
-(`QM/duty` в Bitbucket). Каталог `.claude-plugin/marketplace.json`
-в корне монорепозитория объявляет marketplace `ocp` с плагином `duty`
-(источник `./claude-plugins/duty`), `.claude/settings.json` —
-`extraKnownMarketplaces.ocp` (источник `directory`, путь `.`)
-и `enabledPlugins["duty@ocp"]`. Интерактивная сессия при первом
-запуске предлагает доверить marketplace и установить плагин;
-для `claude -p` и скриптов установка выполняется один раз:
+Плагин не привязан к проекту; проектное лежит в `.duty/` в корне проекта.
+
+**Через marketplace проекта.** Если проект хранит плагин как сабмодуль
+(например, `claude-plugins/duty`), каталог `.claude-plugin/marketplace.json`
+в корне проекта объявляет marketplace с плагином `duty` (источник
+`./claude-plugins/duty`), `.claude/settings.json` — `extraKnownMarketplaces`
+(источник `directory`, путь `.`) и `enabledPlugins["duty@<marketplace>"]`.
+Интерактивная сессия при первом запуске предлагает доверить marketplace и
+установить плагин; для `claude -p` и скриптов установка выполняется один раз:
 
 ```sh
-claude plugin install duty@ocp --scope project
+claude plugin install duty@<marketplace> --scope project
 ```
 
 Плагин читается прямо из каталога сабмодуля (`claude plugin list`
 показывает `Read from: …/claude-plugins/duty`), правки действуют
 со следующего запуска сессии без переустановки.
 
+**Общий случай.** Плагин ставится в любой репозиторий из своего marketplace
+(`claude plugin marketplace add <источник>`, затем `claude plugin install
+duty@<marketplace>`). Дальше:
+
+1. `python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/duty_config.py" init` создаёт
+   `.duty/duty.toml` с `schema = 1`, именем проекта и закомментированными
+   ключами с пояснениями; файл уже есть — отказ.
+2. Ключи заполняются по `reference/config.md`; `duty_config.py check`
+   проверяет схему.
+3. Проектные дополнения кладутся в `.duty/` (`worker-rules.md`,
+   `worker-context.md`, `access.md`, `facts.d/`, `cleanup.d/`).
+
+**Общий режим без файла.** Нет `.duty/duty.toml` — плагин работает со
+значениями по умолчанию: результаты, реестр занятости и сигналы лежат в
+`~/.local/state/duty/<имя проекта>/`, защищённые ветви — `main`, `master`
+и ветвь `origin/HEAD`; навыки, которым нужен раздел конфигурации
+(`gates`, `after-merge`, Jenkins в `inspect`), печатают одну строку об
+отсутствии раздела и заканчивают, а хук `SessionStart` один раз
+напоминает `duty_config.py init`.
+
+**Пользовательский слой** — `~/.config/duty/config.toml`: значения по
+умолчанию для всех проектов (каталог состояния `paths.state`, набор
+символов для workspace вне репозиториев `symbols.outside`, запреты станции).
+Порядок слоёв — `reference/config.md`.
+
+## Конфигурация
+
+Схема `.duty/duty.toml` (разделы `[project]`, `[paths]`, `[git]`,
+`[secrets]`, `[forbid]`, `[bitbucket]`, `[jenkins]`, `[jira]`, `[docs]`,
+`[[busy.resources]]`, `[cleanup]`, `[stats]`, `[symbols]`), слои значений,
+порядок поиска корня проекта, переменные окружения и расширения `.duty/` —
+в [`reference/config.md`](reference/config.md). Чтение — единый модуль
+`scripts/duty_config.py`:
+
+```sh
+duty_config.py root                  # корень проекта
+duty_config.py get paths.results     # значение ключа (путь — абсолютный)
+duty_config.py json                  # вся слитая конфигурация
+duty_config.py check                 # проверка схемы
+duty_config.py init                  # создать .duty/duty.toml
+```
+
+Сценарии плагина берут значения только оттуда; путей и имён проекта в них
+нет. Переменные `DUTY_RESULTS_DIR`, `DUTY_BUSY_DIR`, `DUTY_SIGNALS_DIR`,
+`DUTY_SYMBOLS_FILE` перекрывают соответствующие значения поверх всех слоёв.
+
 ## Реестр занятости
 
-Правило и реестр замков — `docs/isolation.md` монорепозитория, решение —
-запись 0069. Реестр занятости помечает ресурсы, которые данными
-не разделяются, файлом в `~/work/telecom/axata/ocp-dev-stand/busy/`
-(переменная `DUTY_BUSY_DIR` меняет каталог). Отметки советующие:
-принудительной блокировки нет, их читает тот, кто спрашивает.
+Правило изоляции данными и реестр замков проекта — правила проекта
+(`docs.rules`). Реестр занятости помечает ресурсы, которые данными
+не разделяются, файлом в каталоге `paths.busy` (переменная `DUTY_BUSY_DIR`
+меняет каталог). Отметки советующие: принудительной блокировки нет, их
+читает тот, кто спрашивает.
 
-| Имя | Почему иначе нельзя | Условие снятия |
-|---|---|---|
-| `station` | замер производительности на станции искажается любой соседней нагрузкой | замеры переезжают на выделенный узел |
-| `studio-<домен>` | у домена студии Oktell один слушатель событий и одна очередь по набранному номеру; два прогона на одном домене путают вызовы | домен на каждого исполнителя (`docs/studio/` монорепозитория) |
-| `dev-stand-<N>` | экземпляр стенда с его базой и портами принадлежит одному прогону; прогоны разделяются экземплярами, отметка называет владельца, очереди на экземпляр нет | экземпляр создаётся и удаляется самим прогоном, владелец виден по процессу |
-
-Других имён нет: стенд целиком, дерево `docs/`, узлы Jenkins и очередь
-pull request'ов реестром не занимаются — их разделяют экземпляры, ветви
-и сам Jenkins.
+Перечень ресурсов принадлежит проекту: таблицы `[[busy.resources]]` в
+`.duty/duty.toml`, у каждой `name`, `why` (почему иначе нельзя) и `until`
+(условие снятия). Ресурс вне перечня реестром не занимается; плагин сам
+ресурсов не вводит. Имя ресурса — по образцу `^[a-z0-9][a-z0-9_-]*$`;
+ресурсы с номером экземпляра проект называет с суффиксом
+(`<ресурс>-<N>`).
 
 Файл `<ресурс>.json` создаётся атомарно (`O_CREAT|O_EXCL`), снимается
 удалением держателем; время — целые миллисекунды Unix UTC:
 
 ```json
-{"resource": "dev-stand-1", "holder": "<workspace или сессия>",
+{"resource": "stand-1", "holder": "<workspace или сессия>",
  "task": "<путь к записке или описание>", "pid": 12345,
  "since_ms": 1792900000000, "note": "<что идёт>"}
 ```
@@ -504,20 +560,20 @@ Jenkins или Bitbucket либо пересылкой через главную
 защёлка «событие произошло», а не блокировка с живым держателем, поэтому
 он остаётся в каталоге, пока его не снимут (`clear`).
 
-Каталог — `~/work/telecom/axata/ocp-dev-stand/signals/` (`DUTY_SIGNALS_DIR`
+Каталог — `paths.signals` конфигурации (`DUTY_SIGNALS_DIR`
 меняет; создаётся по необходимости). Сигнал — файл `<имя>.json`, время —
 целые миллисекунды Unix UTC; запись атомарна (временный файл с точкой
 в имени и `os.replace`), недописанный файл ожидающий не видит:
 
 ```json
-{"name": "pr-merged-qms-2584", "text": "слит в dev2", "from": "qms-py314-dev2",
+{"name": "pr-merged-api-2584", "text": "слит в целевую ветвь", "from": "api-refactor",
  "task": "<каталог задачи>", "at_ms": 1792900000000}
 ```
 
 `from` — ключ `--from`, иначе `DUTY_NAME`, иначе `DUTY_HOLDER`, иначе `?`;
 `task` — `DUTY_TASK`. Имя — `^[a-z0-9][a-z0-9_-]*$`, не длиннее
-100 знаков (имя задачи из `dispatch.sh` годится); точек нет; недопустимое имя — код 2. Примеры: `pr-merged-qms-2584`,
-`task-done-qms-py314-dev2`, `stand-free`.
+100 знаков (имя задачи из `dispatch.sh` годится); точек нет; недопустимое имя — код 2. Примеры: `pr-merged-api-2584`,
+`task-done-api-refactor`, `stand-free`.
 
 ```sh
 signals.py signal <имя> [текст] [--from <кто>] [--keep]   # --keep: существующий не менять
@@ -554,25 +610,29 @@ inotify-tools`) или оборвалось наблюдение, 124 — ист
 
 ## Раскладка
 
-Корень монорепозитория — `${CLAUDE_PROJECT_DIR}`, каталог `ocp-dev-stand` —
-рядом с ним (`../ocp-dev-stand`); пути ниже отсчитываются от корня.
-Проекты Bitbucket и родители сабмодулей — [`reference/access.md`](reference/access.md).
+Корень проекта — `${CLAUDE_PROJECT_DIR}` (у агента задачи — `DUTY_PROJECT`),
+остальные пути — из конфигурации (`paths.*`); относительные пути отсчитываются
+от корня. Признаки ветвей — ключи `[git]`.
 
-**Ветви.** Рабочие ветви, родители и защищённые ветви — раздел «Ветви»
-`AGENTS.md` монорепозитория; слияние родителя в `new_ocp` — проектный
-навык `/sync-parents`, плагин его не выполняет. Навыки плагина
+**Ветви.** Рабочие ветви, родители и защищённые ветви проекта — его правила
+(`docs.rules`); слияние родителя в рабочую ветвь — проектный навык, плагин его
+не выполняет. Родитель сабмодуля — ключ `git.parent_key` файла `.gitmodules`
+(по умолчанию `parent`), иначе `git.default_parent`. Навыки плагина
 дополнительно не удаляют:
 
 | Ветвь | Признак |
 |---|---|
-| `backup/*`, `saved/*`, `dev`, `dev2`, `master`, `new_ocp`, `dev-local` | имя |
-| именные ветви разработчиков | имя не начинается с `dev2-RP-`, `bugfix/RP-`, `chore/`, `feature/`, автор последнего коммита — не пользователь (`git log -1 --format=%an <ветвь>`) |
+| сохранённые копии, защищённые и рабочие ветви | имя из `git.keep_prefixes`, `git.protected`, `git.working` |
+| именные ветви разработчиков | при `git.named_dev_branches`: имя не начинается с префикса из `git.task_prefixes`, не содержит «/» и автор последнего коммита — не пользователь (`git log -1 --format=%an <ветвь>`) |
 | ветви, выписанные в любую worktree | `git worktree list --porcelain` сабмодуля, в том числе деревья исполнителей |
 | ветви под `--exclude` навыка `/duty:cleanup` | шаблон в аргументе |
 
+Свои ветви задач — имена с префиксом из `git.task_prefixes`; ключ тикета в
+имени — образец `jira.ticket`.
+
 Слитой считается ветвь, вершину которой содержит `origin/<родитель>`
 (`git merge-base --is-ancestor`); `git branch -d` проверяет слитость
-в HEAD сабмодуля (`new_ocp`) и здесь не годится, удаляет `branch -D`
+в HEAD сабмодуля и здесь не годится, удаляет `branch -D`
 сразу после проверки. История `origin` не переписывается: без
 `push --force`, без `rebase` отправленных ветвей.
 
@@ -580,21 +640,21 @@ inotify-tools`) или оборвалось наблюдение, 124 — ист
 
 | Где | Что | Кто убирает |
 |---|---|---|
-| `../ocp-dev-stand/src/{qms,ui,tests,jssip-phone}` | основные деревья местного стенда (detached HEAD) | только вместе со стендом, вручную |
-| `../ocp-dev-stand/src/<репозиторий>-wt/<коммит>` | деревья ревизий экземпляров стенда | `just dev-stand::instances-prune` |
-| `../ocp-dev-stand/src/<репозиторий>-wt/<имя>` | worktree исполнителей на ветвях задач | `git -C <сабмодуль> worktree remove <путь>`, когда ветвь слита или удалена и дерево чистое |
-| `/tmp/claude-1000/<проект>/<сеанс>/scratchpad/…` | scratchpad сеансов, в нём бывают worktree | после конца сеанса, если внутри нет грязных деревьев и невыгруженных коммитов; живой сеанс — `~/.claude/sessions/<pid>.json` с живым `pid` |
+| деревья из `cleanup.keep_trees` | основные деревья местного стенда проекта | уборка их не трогает; только вместе со стендом, вручную |
+| деревья, названные строками `.duty/cleanup.d/` | деревья ревизий стенда и worktree исполнителей | команда в колонке «Команда» строки |
+| worktree исполнителей на ветвях задач | worktree сабмодуля | `git -C <сабмодуль> worktree remove <путь>`, когда ветвь слита или удалена и дерево чистое |
+| `/tmp/claude-<uid>/<проект>/<сеанс>/scratchpad/…` | scratchpad сеансов, в нём бывают worktree | после конца сеанса, если внутри нет грязных деревьев и невыгруженных коммитов; живой сеанс — `~/.claude/sessions/<pid>.json` с живым `pid` |
 
 Чужое — то, что нельзя трогать: worktree с грязным деревом,
 незакоммиченные правки в любом дереве, scratchpad живого сеанса, каталоги
 с процессом внутри (`/proc/<pid>/cwd`), экземпляры стенда других
-прогонов (`instances-down` — только свои номера, не `all`).
+прогонов (массовое снятие стендов запрещает `[[forbid.rules]]` проекта),
+проекты compose из `cleanup.docker_keep_projects`.
 
 **Результаты и временные файлы.** Отчёты, видео, трассы прогонов —
-`../ocp-dev-stand/results/`; видео и трассы прошедших тестов
+каталог `paths.results`; видео и трассы прошедших тестов
 не хранятся (признак провала — `error-context.md` или `test-failed-*.png`
-в том же каталоге). `/tmp` — раздел «Субагенты в одном репозитории» `AGENTS.md`
-монорепозитория. Файлы, созданные root
+в том же каталоге). `/tmp` — правила проекта (`docs.rules`). Файлы, созданные root
 в контейнерах, удаляются только с повышением привилегий по общим
 правилам пользователя (`~/.claude/CLAUDE.md`, «Повышение привилегий»).
 
@@ -607,46 +667,50 @@ inotify-tools`) или оборвалось наблюдение, 124 — ист
 
 ## Доступы
 
-Токены не хранятся в плагине: сценарии читают
-`~/.config/axata/bitbucket-http-token`, `~/.config/axata/jenkins-credentials.env`
-и `~/.config/axata/jira-pat` в момент вызова
-([`reference/access.md`](reference/access.md)). Ответ 401 или 403
+Токены не хранятся в плагине: сценарии читают файлы, названные в разделах
+`[bitbucket]` (`token_file`), `[jenkins]` (`env_file`) и `[jira]`
+(`token_file`), в момент вызова; каталоги секретов, вывод которых запрещён,
+перечислены в `secrets.dirs`. Доступы проекта, адреса и готовые команды —
+`.duty/access.md` проекта, если файл есть. Ответ 401 или 403
 от Bitbucket останавливает работу без повтора.
 
 ## Проверка
 
-Из корня монорепозитория:
+Из корня проекта (`<плагин>` — каталог плагина):
 
 ```sh
-claude plugin list | grep -A4 duty@ocp                # установлен и включён
-claude --plugin-dir claude-plugins/duty plugin details duty   # инвентарь и токены
-python3 -I claude-plugins/duty/scripts/gates.py        # таблица pull request'ов
-python3 -I claude-plugins/duty/scripts/gates.py now    # узлы Jenkins, агенты, занятость
-python3 -I claude-plugins/duty/scripts/branches.py all --mine   # ветви origin
-python3 -I claude-plugins/duty/scripts/cleanup-candidates.py "$PWD"   # сухой перечень
-python3 -I claude-plugins/duty/scripts/ask.py list --open             # очередь вопросов
-python3 -I claude-plugins/duty/scripts/week-stats.py --offline        # неделя в цифрах без сети
-for t in claude-plugins/duty/scripts/tests/test_*.py; do python3 -I "$t"; done
-claude-plugins/duty/scripts/jwait.sh dev2/qms/PR-2581 last   # завершённая сборка: done 0
+claude plugin list | grep -A4 duty                    # установлен и включён
+claude --plugin-dir <плагин> plugin details duty      # инвентарь и токены
+python3 -I <плагин>/scripts/duty_config.py check      # схема .duty/duty.toml
+python3 -I <плагин>/scripts/gates.py                  # таблица pull request'ов ([bitbucket])
+python3 -I <плагин>/scripts/gates.py now              # узлы Jenkins, агенты, занятость
+python3 -I <плагин>/scripts/branches.py all --mine    # ветви origin
+python3 -I <плагин>/scripts/cleanup-candidates.py "$PWD"   # сухой перечень
+python3 -I <плагин>/scripts/ask.py list --open        # очередь вопросов
+python3 -I <плагин>/scripts/week-stats.py --offline   # неделя в цифрах без сети
+for t in <плагин>/scripts/tests/test_*.py; do python3 -I "$t"; done
+python3 -I <плагин>/scripts/rules-lint.py repeats --root "$PWD"   # повторы правил: ноль находок
+bash -n <плагин>/scripts/dispatch.sh                  # разбор сценария выноса
+bash <плагин>/scripts/dispatch.sh list                # перечень workspace задач
+bash <плагин>/scripts/dispatch.sh stalled             # задачи для продолжения
 claude -p '/duty:gates' --model haiku --output-format json < /dev/null
-just rules-lint                                       # повторы правил: ноль находок
-bash -n claude-plugins/duty/scripts/dispatch.sh       # разбор сценария выноса
-bash claude-plugins/duty/scripts/dispatch.sh list     # перечень workspace задач
-bash claude-plugins/duty/scripts/dispatch.sh stalled  # задачи для продолжения
 ```
 
+Проверка завершённой сборки Jenkins (нужен раздел `[jenkins]`):
+`<плагин>/scripts/jwait.sh <задание> last` — `done` с кодом 0.
+
 Пробный вынос (в herdr; workspace закрывает сам агент, каталог задачи
-удаляется после проверки):
+удаляется после проверки; `<results>` — `paths.results`):
 
 ```sh
-bash claude-plugins/duty/scripts/dispatch.sh dispatch-probe haiku \
+bash <плагин>/scripts/dispatch.sh dispatch-probe haiku \
   --goal 'Напиши в $DUTY_TASK/report.md слово «готово» и заверши задачу.' \
   --done '`cat $DUTY_TASK/report.md` печатает «готово»' \
   --stop 'файл не записывается — отчёт главной сессии' \
   --read 'README плагина, раздел «Проверка»'
-cat ../ocp-dev-stand/results/dispatch-probe/report.md && rm -r ../ocp-dev-stand/results/dispatch-probe
+cat <results>/dispatch-probe/report.md && rm -r <results>/dispatch-probe
 ```
 
 В выводе последней команды `modelUsage` содержит только
-`claude-haiku-*`, `result` — одна таблица; `git status` монорепозитория
+`claude-haiku-*`, `result` — одна таблица; `git status` проекта
 и сабмодулей до и после совпадает.

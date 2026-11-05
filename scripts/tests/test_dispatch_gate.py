@@ -69,6 +69,7 @@ class DispatchGateTest(unittest.TestCase):
             HERDR_ENV="1",
             DUTY_SIGNALS_DIR=str(base / "signals"),
             DUTY_RESULTS_DIR=str(self.results),
+            DUTY_CONFIG_USER=str(base / "no-user-config.toml"),
             FAKE_HERDR_LOG=str(self.log),
             PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         )

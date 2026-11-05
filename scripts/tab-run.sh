@@ -33,7 +33,8 @@
 # прогона даёт done с кодом 129, строка «pid:» в meta.txt — признак живого
 # прогона для хука Stop (hooks/task-guard.py).
 #
-# Переменные DUTY_TASK, DUTY_NAME, DUTY_ROLE, DUTY_SYMBOL и DUTY_MODEL вызывающего (если заданы)
+# Переменные DUTY_TASK, DUTY_NAME, DUTY_ROLE, DUTY_SYMBOL, DUTY_MODEL и DUTY_PROJECT
+# (корень проекта: по нему команда находит конфигурацию .duty/) вызывающего (если заданы)
 # экспортируются в начале cmd.sh и передаются herdr tab create --env: workspace
 # create задаёт окружение только корневой панели, новая вкладка его не
 # наследует, и команда (например, jwait.sh) иначе пишет итог в путь по
@@ -85,7 +86,7 @@ cwd=$(realpath "$cwd")
 {
     printf '#!/usr/bin/env bash\n'
     printf '# Прогон %s от tab-run.sh; идёт в текущем каталоге вкладки (%s).\n' "$name" "$cwd"
-    for var in DUTY_TASK DUTY_NAME DUTY_ROLE DUTY_SYMBOL DUTY_MODEL; do
+    for var in DUTY_TASK DUTY_NAME DUTY_ROLE DUTY_SYMBOL DUTY_MODEL DUTY_PROJECT; do
         [ -z "${!var:-}" ] || printf 'export %s=%q\n' "$var" "${!var}"
     done
     printf 'run_dir=%q\n' "$run_dir"
@@ -131,7 +132,7 @@ FINISH
 bash -n "$run_dir/cmd.sh" || die "команда не разбирается bash: $run_dir/cmd.sh"
 
 env_args=()
-for var in DUTY_TASK DUTY_NAME DUTY_ROLE DUTY_SYMBOL DUTY_MODEL; do
+for var in DUTY_TASK DUTY_NAME DUTY_ROLE DUTY_SYMBOL DUTY_MODEL DUTY_PROJECT; do
     [ -z "${!var:-}" ] || env_args+=(--env "$var=${!var}")
 done
 # Подпись вкладки команды — «▸ <имя прогона>», без символа workspace, имени

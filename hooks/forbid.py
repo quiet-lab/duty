@@ -2,8 +2,10 @@
 """Запреты агента задачи в виде хука PreToolUse для `Bash`.
 
 Правила, которые раньше жили только текстом (`reference/worker-rules.md`,
-`agents/worker.md`, `CLAUDE.md` монорепозитория), здесь отвергаются
-механизмом. Команда разбирается по словам и конвейерам, а не по подстрокам:
+`agents/worker.md`, правила проекта), здесь отвергаются механизмом.
+Перечни (защищённые ветви, каталоги секретов, свои правила) берутся из
+конфигурации проекта (`scripts/duty_config.py`, `.duty/duty.toml`); без неё
+действуют встроенные значения по умолчанию. Команда разбирается по словам и конвейерам, а не по подстрокам:
 запрещённое слово внутри строкового литерала (сообщение коммита, аргумент
 `grep`) команду не отвергает. Подстановки `$(…)`, обратные кавычки,
 `bash -c`, `eval` и команда после `--` у `tab-run.sh` проверяются рекурсивно.
@@ -12,23 +14,26 @@
 
 - `network` — переключение туннеля и сети станции;
 - `kill` — завершение процессов по образцу;
-- `git` — `git add -A/-u`, `git stash`, принудительный push, push в `dev`,
-  `dev2`, `master`;
+- `git` — `git add -A/-u`, `git stash`, принудительный push, push в защищённые
+  ветви (`git.protected`);
 - `herdr` — вкладки и ввод в панели в обход `scripts/tab-run.sh`;
-- `secret` — вывод содержимого `~/.config/axata/*`, печать окружения и секретов,
-  пароль литералом в `curl -u` и `sshpass -p`.
+- `secret` — вывод содержимого каталогов секретов (`secrets.dirs`), печать
+  окружения и секретов, пароль литералом в `curl -u` и `sshpass -p`;
+- `rule` — свои правила проекта (`[[forbid.rules]]`).
 
 Причина отказа называет запрет и правило, но не повторяет команду: в ней
 может быть секрет. Вне `DUTY_ROLE=worker` хук молчит; сбой разбора пропускает
 команду (код 0, запись в stderr), чтобы не ломать сессию.
 """
 
+import importlib.util
 import itertools
 import json
 import os
 import re
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
 MAX_DEPTH = 4
 
@@ -36,7 +41,7 @@ DENY = {
     "network": (
         "Запрещено переключать туннель и сеть станции (nmcli, awg, wg, openvpn, "
         "amn-*, resolvectl, ip link set up/down, systemctl awg-quick@…): "
-        "правило rules.md задач «туннель и сеть станции не переключать»; "
+        "правила проекта (.duty/worker-rules.md) и ~/.claude/CLAUDE.md; "
         "переключает сам пользователь. Состояние сети читай через ip addr show."
     ),
     "kill": (
@@ -46,25 +51,28 @@ DENY = {
         "Вместо этого: kill <PID>."
     ),
     "git-add": (
-        "Запрещено git add -A/--all/-u/--update: CLAUDE.md монорепозитория, "
-        "«Субагенты в одном репозитории» — в индекс только свои файлы по путям. "
+        "Запрещено git add -A/--all/-u/--update: правила проекта "
+        "(.duty/worker-rules.md) и ~/.claude/CLAUDE.md — в индекс только свои "
+        "файлы по путям. "
         "Вместо этого: git add <путь> …"
     ),
     "git-stash": (
         "Запрещено git stash: стек общий для всех worktree "
-        "(CLAUDE.md монорепозитория, «Субагенты в одном репозитории»). "
+        "(правила проекта (.duty/worker-rules.md) и ~/.claude/CLAUDE.md). "
         "Вместо этого: коммит WIP в своей ветви или копия в каталоге задачи."
     ),
     "git-force": (
         "Запрещён принудительный push (--force, -f, --force-with-lease, "
         "refspec с «+»): история origin не переписывается "
-        "(CLAUDE.md монорепозитория, «Ветви»). Отправленная ветвь "
+        "(правила проекта (.duty/worker-rules.md) и ~/.claude/CLAUDE.md). "
+        "Отправленная ветвь "
         "правится новыми коммитами."
     ),
     "git-protected": (
-        "Запрещён push в защищённые ветви dev, dev2, master: CLAUDE.md "
-        "монорепозитория, «Ветви» — слияние и перенос только по решению "
-        "пользователя. Вместо этого: git push origin <своя ветвь>."
+        "Запрещён push в защищённые ветви {protected}: правила проекта "
+        "(.duty/worker-rules.md) и ~/.claude/CLAUDE.md — слияние и перенос "
+        "только по решению пользователя. "
+        "Вместо этого: git push origin <своя ветвь>."
     ),
     "herdr": (
         "Запрещено создавать вкладки и писать в панели herdr напрямую "
@@ -73,12 +81,13 @@ DENY = {
         "Вместо этого: bash <плагин>/scripts/tab-run.sh <имя> -- <команда>."
     ),
     "secret-file": (
-        "Запрещён вывод содержимого файлов ~/.config/axata/* (cat, less, "
+        "Запрещён вывод содержимого файлов каталогов секретов (secrets.dirs: "
+        "{secrets}) (cat, less, "
         "head, tail, grep без -c/-l/-q, sed без -i, awk, cut, tr, od, base64, "
-        "cp и tee вне ~/.config/axata/, python3 с print или sys.stdout): "
+        "cp и tee вне этих каталогов, python3 с print или sys.stdout): "
         "rules.md задач «пароли и токены в вывод не попадают». Разрешено "
         "читать в переменные и править на месте без вывода значений: "
-        "set -a; . ~/.config/axata/<файл>; set +a, python3 -I без печати, "
+        "set -a; . <каталог секретов>/<файл>; set +a, python3 -I без печати, "
         "sed -i, grep -c/-l/-q, test -f, ls -l, stat, cmp."
     ),
     "secret-env": (
@@ -97,11 +106,10 @@ DENY = {
         "Запрещён пароль литералом в команде (curl -u логин:пароль, "
         "sshpass -p пароль): rules.md задач «пароли и токены только из "
         "файлов через set -a и stdin». Вместо этого: set -a; . "
-        '~/.config/axata/<файл>; set +a и -u "$ЛОГИН:$ПАРОЛЬ", sshpass -e или -f.'
+        '<каталог секретов>/<файл>; set +a и -u "$ЛОГИН:$ПАРОЛЬ", sshpass -e или -f.'
     ),
 }
 
-PROTECTED = {"dev", "dev2", "master"}
 NETWORK_COMMANDS = {
     "nmcli",
     "awg",
@@ -157,7 +165,6 @@ PIPE_PRINTERS = {
     "awk",
     "tr",
 }
-SECRET_DIR_RE = re.compile(r"(\.config|XDG_CONFIG_HOME\}?)/axata(/|$)")
 PYTHON_RE = re.compile(r"python[0-9.]*")
 PYTHON_PRINT_RE = re.compile(r"\bprint\b|sys\.std(out|err)")
 GREP_QUIET_LONG = {
@@ -186,6 +193,117 @@ WRAPPERS = {
     "builtin": set(),
 }
 XARGS_VALUE_FLAGS = {"-n", "-P", "-I", "-d", "-L", "-s", "-E", "-a", "-l"}
+
+
+PLUGIN = Path(__file__).resolve().parents[1]
+RULE_NOTE = "правило проекта (.duty/duty.toml, [[forbid.rules]])"
+HOME_FORMS = ("~", "$HOME", "${HOME}")
+
+
+def secret_patterns(raw: str) -> list["re.Pattern[str]"]:
+    """Образцы пути каталога секретов: `~/.config/<имя>` ловится как `.config/<имя>`
+    и `XDG_CONFIG_HOME}/<имя>`, иной каталог — по полному пути и форме с `$HOME`."""
+    text = raw.rstrip("/")
+    if not text:
+        return []
+    m = re.fullmatch(r"~/\.config/([^/]+)", text)
+    if m:
+        name = re.escape(m.group(1))
+        return [re.compile(rf"(\.config|XDG_CONFIG_HOME\}}?)/{name}(/|$)")]
+    full = os.path.expanduser(text)
+    home = os.path.expanduser("~")
+    guard = r"(?<![A-Za-z0-9_.\-/])"
+    out = [re.compile(guard + re.escape(full) + r"(/|$)")]
+    if full == home or full.startswith(home + "/"):
+        rel = re.escape(full[len(home) :])
+        forms = "|".join(re.escape(f) for f in HOME_FORMS)
+        out.append(re.compile(rf"(^|[^A-Za-z0-9_])({forms}){rel}(/|$)"))
+    return out
+
+
+@dataclass
+class Settings:
+    """Перечни запретов из конфигурации проекта (по умолчанию — встроенные)."""
+
+    protected: set[str] = field(default_factory=lambda: {"main", "master"})
+    forbid_add_all: bool = True
+    forbid_stash: bool = True
+    network: bool = True
+    herdr: bool = True
+    secret_dirs: list[str] = field(default_factory=list)
+    secret_res: list["re.Pattern[str]"] = field(default_factory=list)
+    rules: list[tuple[tuple[str, ...], str]] = field(default_factory=list)
+
+
+def settings_from_config(cfg: object) -> Settings:
+    """Settings из `duty_config.Config`; значения по умолчанию задаёт сам модуль."""
+    get = cfg.get  # type: ignore[attr-defined]
+    dirs = [d for d in get("secrets.dirs", []) if isinstance(d, str) and d]
+    rules = []
+    for rule in get("forbid.rules", []):
+        words = tuple(w for w in rule.get("words", []) if isinstance(w, str))
+        if words:
+            rules.append((words, str(rule.get("reason", ""))))
+    return Settings(
+        protected=set(get("git.protected", ["main", "master"])),
+        forbid_add_all=bool(get("git.forbid_add_all", True)),
+        forbid_stash=bool(get("git.forbid_stash", True)),
+        network=bool(get("forbid.network", True)),
+        herdr=bool(get("forbid.herdr_direct", True)),
+        secret_dirs=dirs,
+        secret_res=[p for d in dirs for p in secret_patterns(d)],
+        rules=rules,
+    )
+
+
+class ConfigUnreadable(Exception):
+    """Конфигурация не читается: хук закрывается, а не открывается."""
+
+
+def load_settings(cwd: str | None = None) -> Settings:
+    """Конфигурация загружается один раз на вызов хука.
+
+    Ошибка TOML — ConfigUnreadable (вызов отвергается); прочий сбой загрузки —
+    значения по умолчанию. Значения неверного типа заменены умолчаниями, их
+    перечень печатается в stderr один раз.
+    """
+    try:
+        path = PLUGIN / "scripts" / "duty_config.py"
+        spec = importlib.util.spec_from_file_location("duty_config", path)
+        if spec is None or spec.loader is None:
+            raise ImportError(str(path))
+        module = importlib.util.module_from_spec(spec)
+        sys.modules.setdefault("duty_config", module)
+        spec.loader.exec_module(module)
+        cfg = module.load(root=None, cwd=cwd or os.getcwd())
+        if cfg.findings:
+            print(
+                "forbid.py: значения конфигурации неверного типа заменены "
+                "умолчаниями:\n" + "\n".join(cfg.findings),
+                file=sys.stderr,
+            )
+        return settings_from_config(cfg)
+    except Exception as error:
+        if type(error).__name__ == "ConfigError":
+            raise ConfigUnreadable(str(error)) from error
+        print(
+            f"forbid.py: конфигурация не загружена, значения по умолчанию: {error!r}",
+            file=sys.stderr,
+        )
+        return Settings()
+
+
+def deny_text(key: str, cfg: Settings) -> str:
+    """Текст отказа: подстановка актуальных перечней из конфигурации."""
+    if key.startswith("rule-"):
+        reason = cfg.rules[int(key[5:])][1]
+        return f"Запрещено: {reason} — {RULE_NOTE}."
+    secrets = ", ".join(cfg.secret_dirs) or "—"
+    return (
+        DENY[key]
+        .replace("{protected}", ", ".join(sorted(cfg.protected)))
+        .replace("{secrets}", secrets)
+    )
 
 
 @dataclass
@@ -498,11 +616,13 @@ def push_destination(spec: str) -> str:
     return dest.removeprefix("refs/heads/")
 
 
-def check_git(args: list[Word]) -> str | None:
+def check_git(args: list[Word], cfg: Settings) -> str | None:
     sub, rest = git_subcommand([a.text for a in args])
     if sub == "stash":
-        return "git-stash"
+        return "git-stash" if cfg.forbid_stash else None
     if sub == "add":
+        if not cfg.forbid_add_all:
+            return None
         for a in rest:
             if a in {"--all", "--update"}:
                 return "git-add"
@@ -525,7 +645,7 @@ def check_git(args: list[Word]) -> str | None:
     refspecs = positional[1:]
     if any(r.startswith("+") for r in refspecs):
         return "git-force"
-    if any(push_destination(r) in PROTECTED for r in refspecs):
+    if any(push_destination(r) in cfg.protected for r in refspecs):
         return "git-protected"
     return None
 
@@ -537,8 +657,26 @@ def check_herdr(texts: list[str]) -> str | None:
     return None
 
 
-def has_secret_dir(words: list[Word]) -> bool:
-    return any(SECRET_DIR_RE.search(w.text) for w in words)
+def has_secret_dir(words: list[Word], cfg: Settings) -> bool:
+    return any(p.search(w.text) for w in words for p in cfg.secret_res)
+
+
+def in_secret_dir(text: str, cfg: Settings) -> bool:
+    return any(p.search(text) for p in cfg.secret_res)
+
+
+def check_rules(name: str, texts: list[str], cfg: Settings) -> str | None:
+    """Свои правила проекта: слова идут подряд среди имени команды и аргументов.
+
+    Слово совпадает с аргументом целиком или с последним звеном `модуль::рецепт`
+    (рецепт just в модуле: `dev-stand::instances-down`)."""
+    line = [name] + [t.rsplit("::", 1)[-1] for t in texts]
+    for index, (words, _) in enumerate(cfg.rules):
+        size = len(words)
+        for start in range(len(line) - size + 1):
+            if tuple(line[start : start + size]) == words:
+                return f"rule-{index}"
+    return None
 
 
 def prints_nothing(name: str, texts: list[str]) -> bool:
@@ -564,21 +702,23 @@ def check_secrets(
     next_name: str | None,
     redirect_to_file: bool,
     stdin: list[str] | None = None,
+    cfg: Settings | None = None,
 ) -> str | None:
+    cfg = cfg or Settings()
     texts = [a.text for a in args]
     operands = [t for t in texts if not t.startswith("-")]
     redir_words = [w for op, w in redirs if op in {"<", "<<<"}]
     if (
         name in READERS
-        and has_secret_dir(args + redir_words)
+        and has_secret_dir(args + redir_words, cfg)
         and not prints_nothing(name, texts)
     ):
         return "secret-file"
-    if name == "tee" and has_secret_dir(redir_words):
+    if name == "tee" and has_secret_dir(redir_words, cfg):
         return "secret-file"
     if PYTHON_RE.fullmatch(name):  # путь в переменной не виден: не блокируем
-        code = [t for t in texts if SECRET_DIR_RE.search(t)] + [
-            s for s in (stdin or []) if SECRET_DIR_RE.search(s)
+        code = [t for t in texts if in_secret_dir(t, cfg)] + [
+            s for s in (stdin or []) if in_secret_dir(s, cfg)
         ]
         if (any(re.fullmatch(r"-[A-Za-z]*c", t) for t in texts) or stdin) and any(
             PYTHON_PRINT_RE.search(c) for c in code
@@ -586,8 +726,8 @@ def check_secrets(
             return "secret-file"
     if (
         name == "cp"
-        and has_secret_dir(args)
-        and (not operands or not SECRET_DIR_RE.search(operands[-1]))
+        and has_secret_dir(args, cfg)
+        and (not operands or not in_secret_dir(operands[-1], cfg))
     ):
         return "secret-file"
     if (
@@ -662,15 +802,16 @@ def shell_quote(text: str) -> str:
     return "'" + text.replace("'", "'\\''") + "'"
 
 
-def check(src: str, depth: int = 0) -> str | None:
-    """Ключ из DENY, если команда запрещена, иначе None."""
+def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
+    """Ключ из DENY (или `rule-N`), если команда запрещена, иначе None."""
+    cfg = cfg or Settings()
     if depth > MAX_DEPTH:
         return None
     commands = parse(src)
     for index, cmd in enumerate(commands):
         for word in cmd.words + [w for _, w in cmd.redirs]:
             for inner in word.subs:
-                found = check(inner, depth + 1)
+                found = check(inner, cfg, depth + 1)
                 if found:
                     return found
         name, args, empty_env = resolve(cmd.words)
@@ -690,10 +831,11 @@ def check(src: str, depth: int = 0) -> str | None:
             for op, w in cmd.redirs
         )
         found = (
-            check_network(name, texts)
+            (check_network(name, texts) if cfg.network else None)
             or check_kill(name, args)
-            or (check_git(args) if name == "git" else None)
-            or (check_herdr(texts) if name == "herdr" else None)
+            or (check_git(args, cfg) if name == "git" else None)
+            or (check_herdr(texts) if name == "herdr" and cfg.herdr else None)
+            or check_rules(name, texts, cfg)
             or check_secrets(
                 name,
                 args,
@@ -702,6 +844,7 @@ def check(src: str, depth: int = 0) -> str | None:
                 next_name,
                 redirect_to_file,
                 cmd.stdin,
+                cfg,
             )
         )
         if found:
@@ -710,7 +853,7 @@ def check(src: str, depth: int = 0) -> str | None:
         if name in {"bash", "sh", "zsh", "dash"}:  # heredoc и here-string — их ввод
             inner_texts += cmd.stdin + [w.text for op, w in cmd.redirs if op == "<<<"]
         for inner in inner_texts:
-            found = check(inner, depth + 1)
+            found = check(inner, cfg, depth + 1)
             if found:
                 return found
     return None
@@ -727,7 +870,28 @@ def main() -> int:
         command = tool_input.get("command") if isinstance(tool_input, dict) else None
         if not isinstance(command, str):
             return 0
-        found = check(command)
+        try:
+            cfg = load_settings(
+                data.get("cwd") if isinstance(data.get("cwd"), str) else None
+            )
+        except ConfigUnreadable as error:
+            print(
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": (
+                                f"конфигурация duty не читается: {error}; "
+                                "исправьте и повторите"
+                            ),
+                        }
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        found = check(command, cfg)
         if found:
             print(
                 json.dumps(
@@ -735,7 +899,7 @@ def main() -> int:
                         "hookSpecificOutput": {
                             "hookEventName": "PreToolUse",
                             "permissionDecision": "deny",
-                            "permissionDecisionReason": DENY[found],
+                            "permissionDecisionReason": deny_text(found, cfg),
                         }
                     },
                     ensure_ascii=False,

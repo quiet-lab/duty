@@ -14,8 +14,9 @@
 # Записка и правила рендерятся в <песочница>/.render/: {{SANDBOX}} —
 # каталог песочницы, {{PLUGIN}} — каталог плагина. С --dry сценарий только
 # рендерит и печатает команду dispatch.sh, не запуская её.
-# Песочница по умолчанию — ../ocp-dev-stand/results/duty-tests/sandbox от
-# корня монорепозитория (CLAUDE_PROJECT_DIR, иначе надпроект сабмодуля).
+# Песочница по умолчанию — paths.sandbox, каталог результатов — paths.results
+# из конфигурации проекта; корень проекта — CLAUDE_PROJECT_DIR, иначе надпроект
+# сабмодуля (reference/config.md).
 
 set -euo pipefail
 
@@ -45,13 +46,13 @@ if [ -z "$sandbox" ] || [ -z "$root" ]; then
         [ -n "$root" ] || root=$(git -C "$plugin" rev-parse --show-superproject-working-tree 2> /dev/null || true)
         [ -n "$root" ] || root=$(git -C "$plugin" rev-parse --show-toplevel)
     fi
-    [ -n "$sandbox" ] || sandbox="$root/../ocp-dev-stand/results/duty-tests/sandbox"
 fi
+cfg() { python3 -I "$plugin/scripts/duty_config.py" --root "$root" get "$1"; }
+[ -n "$sandbox" ] || sandbox=$(cfg paths.sandbox)
 [ -d "$sandbox" ] || die "песочницы $sandbox нет: make-sandbox.sh $sandbox"
 sandbox=$(realpath "$sandbox")
 root=$(realpath "$root")
-res="$root/../ocp-dev-stand/results"
-res=$(realpath -m "$res")
+res=$(realpath -m "$(cfg paths.results)")
 
 # Номер -> имя задачи и модель.
 case $num in

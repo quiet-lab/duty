@@ -23,14 +23,29 @@ assert spec and spec.loader
 rw = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rw)
 
-NEED_INOTIFY = unittest.skipUnless(shutil.which("inotifywait"), "нет inotifywait: тест живого слежения пропущен")
+NEED_INOTIFY = unittest.skipUnless(
+    shutil.which("inotifywait"), "нет inotifywait: тест живого слежения пропущен"
+)
 
 
-def make_run(results: Path, task: str, name: str, *, meta: str | None = None, cmd: str | None = None,
-             log: str | None = None, done: str | None = None) -> Path:
+def make_run(
+    results: Path,
+    task: str,
+    name: str,
+    *,
+    meta: str | None = None,
+    cmd: str | None = None,
+    log: str | None = None,
+    done: str | None = None,
+) -> Path:
     d = results / task / "runs" / name
     d.mkdir(parents=True)
-    for fname, text in (("meta.txt", meta), ("cmd.sh", cmd), ("out.log", log), ("done", done)):
+    for fname, text in (
+        ("meta.txt", meta),
+        ("cmd.sh", cmd),
+        ("out.log", log),
+        ("done", done),
+    ):
         if text is not None:
             (d / fname).write_text(text, encoding="utf-8")
     return d
@@ -50,8 +65,19 @@ rc=${PIPESTATUS[0]}
 
 class ParseTest(unittest.TestCase):
     def test_meta(self) -> None:
-        meta = rw.parse_meta("cwd: /a b\nstarted_ms: 5\nkind: tests\nмусор\nfinished_ms: 9\ncode: 0\n")
-        self.assertEqual(meta, {"cwd": "/a b", "started_ms": "5", "kind": "tests", "finished_ms": "9", "code": "0"})
+        meta = rw.parse_meta(
+            "cwd: /a b\nstarted_ms: 5\nkind: tests\nмусор\nfinished_ms: 9\ncode: 0\n"
+        )
+        self.assertEqual(
+            meta,
+            {
+                "cwd": "/a b",
+                "started_ms": "5",
+                "kind": "tests",
+                "finished_ms": "9",
+                "code": "0",
+            },
+        )
 
     def test_meta_value_with_colon(self) -> None:
         self.assertEqual(rw.parse_meta("cwd: C:/x\n")["cwd"], "C:/x")
@@ -63,7 +89,9 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(rw.parse_cmd("echo 1\n"), "")
 
     def test_sse_frame(self) -> None:
-        self.assertEqual(rw.sse_frame("log", "a\nb\n"), b"event: log\ndata: a\ndata: b\ndata: \n\n")
+        self.assertEqual(
+            rw.sse_frame("log", "a\nb\n"), b"event: log\ndata: a\ndata: b\ndata: \n\n"
+        )
         self.assertEqual(rw.sse_frame("done", "0"), b"event: done\ndata: 0\n\n")
 
     def test_safe_names(self) -> None:
@@ -83,14 +111,31 @@ class ListTest(unittest.TestCase):
         self.results = Path(self.tmp.name)
 
     def test_list_and_states(self) -> None:
-        make_run(self.results, "a", "old", meta="cwd: /\nstarted_ms: 10\nkind: build\nfinished_ms: 20\ncode: 1\n",
-                 cmd=CMD_SH, log="x", done="1\n")
-        make_run(self.results, "b", "live", meta="cwd: /\nstarted_ms: 30\n", cmd=CMD_SH, log="y")
+        make_run(
+            self.results,
+            "a",
+            "old",
+            meta="cwd: /\nstarted_ms: 10\nkind: build\nfinished_ms: 20\ncode: 1\n",
+            cmd=CMD_SH,
+            log="x",
+            done="1\n",
+        )
+        make_run(
+            self.results,
+            "b",
+            "live",
+            meta="cwd: /\nstarted_ms: 30\n",
+            cmd=CMD_SH,
+            log="y",
+        )
         make_run(self.results, "b", "fresh", cmd=CMD_SH)
         runs = rw.list_runs(self.results)
         self.assertEqual([r["name"] for r in runs][:2], ["live", "old"])
         by = {r["name"]: r for r in runs}
-        self.assertEqual((by["old"]["state"], by["old"]["code"], by["old"]["kind"]), ("done", 1, "build"))
+        self.assertEqual(
+            (by["old"]["state"], by["old"]["code"], by["old"]["kind"]),
+            ("done", 1, "build"),
+        )
         self.assertEqual((by["live"]["state"], by["live"]["kind"]), ("running", ""))
         self.assertEqual(by["fresh"]["state"], "pending")
         self.assertEqual(by["old"]["command"], "echo one\necho two | cat")
@@ -105,8 +150,13 @@ class ListTest(unittest.TestCase):
         self.assertEqual(rw.list_runs(self.results), [])
 
     def test_render_escapes(self) -> None:
-        make_run(self.results, "a", "r", meta="started_ms: 1\nkind: tests\n",
-                 cmd="{\necho '<b>x</b>'\n} 2>&1 | tee \"$run_dir/out.log\"\n")
+        make_run(
+            self.results,
+            "a",
+            "r",
+            meta="started_ms: 1\nkind: tests\n",
+            cmd="{\necho '<b>x</b>'\n} 2>&1 | tee \"$run_dir/out.log\"\n",
+        )
         body = rw.render_index(self.results, [("s", "<i>")]).decode()
         self.assertIn("&lt;b&gt;x&lt;/b&gt;", body)
         self.assertIn("&lt;i&gt;", body)
@@ -125,13 +175,21 @@ class FollowTest(unittest.TestCase):
         d = make_run(self.results, "t", "r", log="привет\nмир\n", done="3\n")
         frames: list[bytes] = []
         rw.follow_log(d, frames.append)
-        self.assertEqual(frames, [rw.sse_frame("log", "привет\nмир\n"), rw.sse_frame("done", "3")])
+        self.assertEqual(
+            frames, [rw.sse_frame("log", "привет\nмир\n"), rw.sse_frame("done", "3")]
+        )
 
     def test_big_log_is_tailed(self) -> None:
-        d = make_run(self.results, "t", "r", log="x" * (rw.TAIL_BYTES + 10) + "\n", done="0\n")
+        d = make_run(
+            self.results, "t", "r", log="x" * (rw.TAIL_BYTES + 10) + "\n", done="0\n"
+        )
         frames: list[bytes] = []
         rw.follow_log(d, frames.append)
-        self.assertTrue(frames[0].startswith(b"event: log\ndata: [\xd0\xbf\xd1\x80\xd0\xbe\xd0\xbf\xd1\x83\xd1\x89"))
+        self.assertTrue(
+            frames[0].startswith(
+                b"event: log\ndata: [\xd0\xbf\xd1\x80\xd0\xbe\xd0\xbf\xd1\x83\xd1\x89"
+            )
+        )
 
     def test_append_then_done(self) -> None:
         d = make_run(self.results, "t", "r", log="first\n")
@@ -204,7 +262,15 @@ class HttpTest(unittest.TestCase):
             conn.close()
 
     def test_pages(self) -> None:
-        make_run(self.results, "t", "r", meta="started_ms: 1\nkind: wait\n", cmd=CMD_SH, log="out\n", done="0\n")
+        make_run(
+            self.results,
+            "t",
+            "r",
+            meta="started_ms: 1\nkind: wait\n",
+            cmd=CMD_SH,
+            log="out\n",
+            done="0\n",
+        )
         status, body = self.get("/")
         self.assertEqual(status, 200)
         self.assertIn("/run?task=t&amp;name=r", body)
@@ -229,7 +295,9 @@ class HttpTest(unittest.TestCase):
         make_run(self.results, "t", "r", log="hello\n", done="0\n")
         status, body = self.get("/stream?task=t&name=r")
         self.assertEqual(status, 200)
-        self.assertEqual(body, "event: log\ndata: hello\ndata: \n\nevent: done\ndata: 0\n\n")
+        self.assertEqual(
+            body, "event: log\ndata: hello\ndata: \n\nevent: done\ndata: 0\n\n"
+        )
 
 
 class TabRunKindTest(unittest.TestCase):
@@ -243,16 +311,28 @@ class TabRunKindTest(unittest.TestCase):
         bin_dir.mkdir()
         fake = bin_dir / "herdr"
         fake.write_text(
-            '#!/usr/bin/env bash\n'
+            "#!/usr/bin/env bash\n"
             'case "$1 $2" in\n'
             '  "tab create") echo \'{"result":{"tab":{"tab_id":"t1"},"root_pane":{"pane_id":"p1"}}}\' ;;\n'
-            'esac\n')
+            "esac\n"
+        )
         fake.chmod(0o755)
         task = root / "task"
         task.mkdir()
-        env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HERDR_ENV": "1", "HERDR_WORKSPACE_ID": "w", "DUTY_TASK": str(task)}
-        proc = subprocess.run(["bash", str(TAB_RUN), "r1", *extra, "--", "echo", "hi"],
-                              env=env, capture_output=True, text=True, cwd=root)
+        env = {
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "HERDR_ENV": "1",
+            "HERDR_WORKSPACE_ID": "w",
+            "DUTY_TASK": str(task),
+        }
+        proc = subprocess.run(
+            ["bash", str(TAB_RUN), "r1", *extra, "--", "echo", "hi"],
+            env=env,
+            capture_output=True,
+            text=True,
+            cwd=root,
+            check=False,
+        )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return task / "runs" / "r1"
 
@@ -262,8 +342,11 @@ class TabRunKindTest(unittest.TestCase):
         meta_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, meta_dir)
         # Выполняем только строки cmd.sh, пишущие meta.txt: сама команда во вкладке не нужна.
-        script = "\n".join(l for l in (run_dir / "cmd.sh").read_text().splitlines()
-                           if l.startswith(("run_dir=", "printf \"cwd", "printf \"kind")))
+        script = "\n".join(
+            l
+            for l in (run_dir / "cmd.sh").read_text().splitlines()
+            if l.startswith(("run_dir=", 'printf "cwd', 'printf "kind'))
+        )
         subprocess.run(["bash", "-c", script], check=True, cwd=meta_dir)
         meta = rw.parse_meta((run_dir / "meta.txt").read_text())
         self.assertEqual(meta["kind"], "tests")

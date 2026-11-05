@@ -4,15 +4,18 @@
 исполнители Jenkins с очередью ожидания и агенты, сессии и отметки занятости
 на станции.
 
-Только чтение. Токены читаются из файлов ~/.config/axata/ и никуда не выводятся.
+Только чтение. Адреса и файлы доступа берутся из `.duty/duty.toml`
+(`reference/config.md`: `[bitbucket]`, `[jenkins]`, `[paths]`), токены читаются
+из файлов и никуда не выводятся; без `[bitbucket]` скрипт сообщает об этом
+одной строкой. Ключ `--root <корень проекта>` задаёт корень.
 Ответ 401 или 403 от Bitbucket останавливает работу без повторов: четыре
 неверных входа блокируют учётную запись до ввода CAPTCHA.
 """
 
 import base64
+import importlib.util
 import json
 import os
-import ssl
 import subprocess
 import sys
 import time
@@ -20,11 +23,24 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-BB = "https://git.service-desk.site"
-CFG = Path.home() / ".config" / "axata"
-# Jenkins отдаёт сертификат внутреннего центра, поэтому проверка выключена,
-# как и в curl -k из docs/rollout.md.
-INSECURE = ssl._create_unverified_context()
+# Каталог скрипта убран из sys.path ключом -I, поэтому модули подключаются по пути.
+_spec = importlib.util.spec_from_file_location(
+    "dutylib", Path(__file__).with_name("dutylib.py")
+)
+dutylib = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(dutylib)
+duty_config = dutylib.duty_config
+config = dutylib.config
+NotConfigured = dutylib.NotConfigured
+access_file = dutylib.access_file
+
+
+def ssl_context():
+    return dutylib.ssl_context(config())
+
+
+def missing_section(section: str, what: str) -> str:
+    return f"в .duty/duty.toml нет раздела [{section}]: {what} не проверено"
 
 
 class BitbucketDenied(Exception):
@@ -32,8 +48,15 @@ class BitbucketDenied(Exception):
 
 
 def bb(path: str) -> dict:
-    token = (CFG / "bitbucket-http-token").read_text().strip()
-    req = urllib.request.Request(BB + path, headers={"Authorization": f"Bearer {token}"})
+    cfg = config()
+    url = cfg.get("bitbucket.url", "")
+    if not isinstance(url, str) or not url.strip():
+        raise NotConfigured("[bitbucket]: url не задан — pull request'ы не проверено")
+    token = access_file("bitbucket", "token_file", "pull request'ы").read_text().strip()
+    req = urllib.request.Request(
+        url.rstrip("/") + path,
+        headers={"Authorization": f"Bearer {token}"},
+    )
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.load(r)
@@ -45,7 +68,7 @@ def bb(path: str) -> dict:
 
 def jenkins_env() -> dict[str, str]:
     env = {}
-    for line in (CFG / "jenkins-credentials.env").read_text().splitlines():
+    for line in access_file("jenkins", "env_file", "Jenkins").read_text().splitlines():
         if "=" in line and not line.lstrip().startswith("#"):
             k, v = line.split("=", 1)
             env[k.strip()] = v.strip().strip('"')
@@ -53,22 +76,27 @@ def jenkins_env() -> dict[str, str]:
 
 
 def jenkins(url: str, env: dict[str, str]) -> dict | None:
-    auth = base64.b64encode(f"{env['JENKINS_USER']}:{env['JENKINS_TOKEN']}".encode()).decode()
+    auth = base64.b64encode(
+        f"{env['JENKINS_USER']}:{env['JENKINS_TOKEN']}".encode()
+    ).decode()
     req = urllib.request.Request(url, headers={"Authorization": f"Basic {auth}"})
     try:
-        with urllib.request.urlopen(req, timeout=20, context=INSECURE) as r:
+        with urllib.request.urlopen(req, timeout=20, context=ssl_context()) as r:
             return json.load(r)
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
         return None
 
 
 def is_feed(status: dict) -> bool:
-    """Статус «Лента сборок PR-…» (ключ `<префикс>pr-feed/<задание>-<номер>`).
+    """Статус задания-ленты: ключ или имя содержит подстроку `jenkins.feed_markers`.
 
     Лента показывает ход всех этапов и не решает о слиянии; со статусами ворот
-    её смешивать нельзя: она новее и перекрыла бы итог ворот.
+    её смешивать нельзя: она новее и перекрыла бы итог ворот. Пустой список
+    маркеров — лент нет.
     """
-    return "pr-feed/" in (status.get("key") or "") or (status.get("name") or "").startswith("Лента сборок PR-")
+    markers = config().get("jenkins.feed_markers", [])
+    text = f"{status.get('key') or ''}\n{status.get('name') or ''}"
+    return any(m and m in text for m in markers)
 
 
 def gate_summary(statuses: list[dict], env: dict[str, str]) -> tuple[str, str]:
@@ -79,7 +107,7 @@ def gate_summary(statuses: list[dict], env: dict[str, str]) -> tuple[str, str]:
     # Последняя по времени сборка — та, что решает о слиянии.
     last = max(statuses, key=lambda s: s.get("dateAdded", 0))
     url = last.get("url", "").removesuffix("display/redirect")
-    if not url.startswith("http"):
+    if not url.startswith("http") or not env:
         return builds, "—"
     d = jenkins(url.rstrip("/") + "/wfapi/describe", env)
     if d is None:
@@ -116,28 +144,41 @@ def run_info(url: str, base: str, env: dict[str, str]) -> tuple[str, str]:
     tree = "fullDisplayName,actions[causes[shortDescription,userId]]"
     d = jenkins(url.rstrip("/") + f"/api/json?tree={tree}", env) or {}
     causes = [c for a in d.get("actions", []) for c in a.get("causes", [])]
-    who = "; ".join(dict.fromkeys(c.get("userId") or c.get("shortDescription", "?") for c in causes)) or "?"
+    who = (
+        "; ".join(
+            dict.fromkeys(
+                c.get("userId") or c.get("shortDescription", "?") for c in causes
+            )
+        )
+        or "?"
+    )
     return d.get("fullDisplayName", ""), who
 
 
 def jenkins_now(env: dict[str, str], now_ms: int) -> int:
-    base = env.get("JENKINS_URL", "https://jen.service-desk.site/")
-    comp = jenkins_get(
+    base = env.get("JENKINS_URL", "")
+    comp = base and jenkins_get(
         base,
         "/computer/api/json?tree=computer[displayName,offline,temporarilyOffline,offlineCauseReason,"
         f"numExecutors,executors[{EXEC_TREE}],oneOffExecutors[{EXEC_TREE}]]",
         env,
     )
     print("## Исполнители Jenkins\n")
-    if comp is None:
+    if not comp:
         print("Jenkins недоступен (computer/api/json не ответил).")
         return 1
     print("| Узел | Состояние | Задание и сборка | Идёт | Кто запустил |")
     print("|---|---|---|---|---|")
     for c in comp["computer"]:
         name = c["displayName"]
-        busy = [e["currentExecutable"] for e in c["executors"] if e.get("currentExecutable")]
-        flies = [e["currentExecutable"] for e in c["oneOffExecutors"] if e.get("currentExecutable")]
+        busy = [
+            e["currentExecutable"] for e in c["executors"] if e.get("currentExecutable")
+        ]
+        flies = [
+            e["currentExecutable"]
+            for e in c["oneOffExecutors"]
+            if e.get("currentExecutable")
+        ]
         if c["offline"]:
             why = c.get("offlineCauseReason") or "причина не названа"
             print(f"| {cell(name)} | не в сети: {cell(why)} | — | — | — |")
@@ -151,12 +192,18 @@ def jenkins_now(env: dict[str, str], now_ms: int) -> int:
         state = f"занят ({len(busy)}/{total})"
         for ex, tag in [(b, "") for b in busy] + [(f, " (оркестрация)") for f in flies]:
             url = ex.get("url", "")
-            full, who = run_info(url, base, env) if url.startswith("http") else ("", "?")
+            full, who = (
+                run_info(url, base, env) if url.startswith("http") else ("", "?")
+            )
             title = full or ex.get("fullDisplayName") or "?"
             ts = ex.get("timestamp")
             took = human(now_ms - ts) if ts else "?"
-            print(f"| {cell(name)} | {state if not tag else 'оркестрация'} | [{cell(title)}]({url}) | {took} | {cell(who)} |")
-    q = jenkins_get(base, "/queue/api/json?tree=items[inQueueSince,why,task[name]]", env)
+            print(
+                f"| {cell(name)} | {state if not tag else 'оркестрация'} | [{cell(title)}]({url}) | {took} | {cell(who)} |"
+            )
+    q = jenkins_get(
+        base, "/queue/api/json?tree=items[inQueueSince,why,task[name]]", env
+    )
     if q is None:
         print("| Очередь ожидания | недоступна | — | — | — |")
     elif not q["items"]:
@@ -166,7 +213,9 @@ def jenkins_now(env: dict[str, str], now_ms: int) -> int:
             f"{i['task']['name']} ({human(now_ms - i['inQueueSince'])}: {cell(i.get('why', ''))})"
             for i in q["items"]
         ]
-        print(f"| Очередь ожидания | {len(parts)} в очереди | {cell('; '.join(parts))} | — | — |")
+        print(
+            f"| Очередь ожидания | {len(parts)} в очереди | {cell('; '.join(parts))} | — | — |"
+        )
     return 0
 
 
@@ -185,12 +234,18 @@ def station_now(now_ms: int) -> None:
     print("| Вид | Имя | Каталог | Статус | Идёт |")
     print("|---|---|---|---|---|")
     home = str(Path.home())
-    short = lambda p: cell(str(p).replace(home, "~"))  # noqa: E731
+    short = lambda p: cell(str(p).replace(home, "~"))
     herdr: dict[str, dict] = {}
     herdr_note = ""
     if os.environ.get("HERDR_ENV") == "1":
         try:
-            r = subprocess.run(["herdr", "agent", "list"], capture_output=True, text=True, timeout=15)
+            r = subprocess.run(
+                ["herdr", "agent", "list"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
             for a in json.loads(r.stdout)["result"]["agents"]:
                 herdr[a.get("agent_session", {}).get("value", a["pane_id"])] = a
         except (OSError, subprocess.SubprocessError, ValueError, KeyError):
@@ -212,16 +267,18 @@ def station_now(now_ms: int) -> None:
         name = d.get("name") or (h or {}).get("terminal_title_stripped") or sid
         status = (h or {}).get("agent_status") or d.get("status", "?")
         took = human(now_ms - d["startedAt"]) if d.get("startedAt") else "?"
-        print(f"| {kind} | {cell(name)} | {short(d.get('cwd', '?'))} | {cell(status)} | {took} |")
+        print(
+            f"| {kind} | {cell(name)} | {short(d.get('cwd', '?'))} | {cell(status)} | {took} |"
+        )
     for sid, a in herdr.items():
         if sid in seen:
             continue
         name = a.get("name") or a.get("terminal_title_stripped") or a["pane_id"]
-        print(f"| агент herdr {a['workspace_id']} | {cell(name)} | {short(a.get('cwd', '?'))} | {cell(a.get('agent_status'))} | ? |")
-    busy_dir = Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()).resolve().parent / "ocp-dev-stand" / "busy"
-    if not busy_dir.is_dir():
-        busy_dir = Path.home() / "work/telecom/axata/ocp-dev-stand/busy"
-    for f in sorted(busy_dir.glob("*.json")) if busy_dir.is_dir() else []:
+        print(
+            f"| агент herdr {a['workspace_id']} | {cell(name)} | {short(a.get('cwd', '?'))} | {cell(a.get('agent_status'))} | ? |"
+        )
+    busy_dir = config().path("paths.busy")
+    for f in sorted(busy_dir.glob("*.json")) if busy_dir and busy_dir.is_dir() else []:
         try:
             d = json.loads(f.read_text())
         except (OSError, ValueError):
@@ -229,28 +286,62 @@ def station_now(now_ms: int) -> None:
         alive = pid_alive(d.get("pid"))
         state = "держится" if alive else "устарела (процесс не жив)"
         took = human(now_ms - d["since_ms"]) if d.get("since_ms") else "?"
-        print(f"| занятость | {cell(d.get('resource', f.stem))}: {cell(d.get('holder'))} | {cell(d.get('note') or '')} | {state} | {took} |")
+        print(
+            f"| занятость | {cell(d.get('resource', f.stem))}: {cell(d.get('holder'))} | {cell(d.get('note') or '')} | {state} | {took} |"
+        )
     if herdr_note:
         print(f"\nНе проверено: {herdr_note}.")
     elif os.environ.get("HERDR_ENV") != "1":
-        print("\nНе проверено: herdr (HERDR_ENV не 1), показаны только сессии Claude Code.")
+        print(
+            "\nНе проверено: herdr (HERDR_ENV не 1), показаны только сессии Claude Code."
+        )
 
 
 def now_main() -> int:
     now_ms = int(time.time() * 1000)
-    rc = jenkins_now(jenkins_env(), now_ms)
+    has_jenkins = config().has("jenkins")
+    rc = 0
+    if has_jenkins:
+        try:
+            rc = jenkins_now(jenkins_env(), now_ms)
+        except NotConfigured as e:
+            print(e)
     station_now(now_ms)
+    if not has_jenkins:
+        print("\n" + missing_section("jenkins", "исполнители Jenkins") + ".")
     return rc
 
 
 def main() -> int:
-    if sys.argv[1:2] == ["now"]:
-        return now_main()
-    env = jenkins_env()
+    argv = sys.argv[1:]
+    root = None
+    if "--root" in argv:
+        i = argv.index("--root")
+        root = argv[i + 1] if i + 1 < len(argv) else None
+        del argv[i : i + 2]
     try:
-        prs = bb("/rest/api/1.0/dashboard/pull-requests?state=OPEN&role=AUTHOR&limit=100")["values"]
+        config(root)
+    except duty_config.ConfigError as e:
+        print(f"ошибка конфигурации: {e}", file=sys.stderr)
+        return 2
+    if argv[:1] == ["now"]:
+        return now_main()
+    if not config().has("bitbucket"):
+        print(missing_section("bitbucket", "pull request'ы"))
+        return 0
+    try:
+        env = jenkins_env() if config().has("jenkins") else {}
+    except NotConfigured as e:
+        print(e)
+        env = {}
+    try:
+        prs = bb(
+            "/rest/api/1.0/dashboard/pull-requests?state=OPEN&role=AUTHOR&limit=100"
+        )["values"]
         now = time.time()
-        print("| Репозиторий | PR | Ветвь → цель | Сборки коммита | Ворота Jenkins (итог; этапы) | Слияние | Возраст, ч |")
+        print(
+            "| Репозиторий | PR | Ветвь → цель | Сборки коммита | Ворота Jenkins (итог; этапы) | Слияние | Возраст, ч |"
+        )
         print("|---|---|---|---|---|---|---|")
         for p in sorted(prs, key=lambda p: p["createdDate"]):
             repo = p["toRef"]["repository"]
@@ -258,13 +349,18 @@ def main() -> int:
             sha = p["fromRef"]["latestCommit"]
             statuses = bb(f"/rest/build-status/1.0/commits/{sha}")["values"]
             builds, gate = gate_summary(statuses, env)
-            m = bb(f"/rest/api/1.0/projects/{key}/repos/{slug}/pull-requests/{p['id']}/merge")
+            m = bb(
+                f"/rest/api/1.0/projects/{key}/repos/{slug}/pull-requests/{p['id']}/merge"
+            )
             if m.get("canMerge"):
                 merge = "можно"
             elif m.get("conflicted"):
                 merge = "конфликт"
             else:
-                merge = "; ".join(v["summaryMessage"] for v in m.get("vetoes", [])) or "нельзя"
+                merge = (
+                    "; ".join(v["summaryMessage"] for v in m.get("vetoes", []))
+                    or "нельзя"
+                )
             link = p["links"]["self"][0]["href"]
             age = round((now - p["createdDate"] / 1000) / 3600, 1)
             print(
@@ -272,8 +368,13 @@ def main() -> int:
                 f"{p['toRef']['displayId']} | {builds} | {gate} | {merge} | {age} |"
             )
         print(f"\nВсего открытых: {len(prs)}")
+    except NotConfigured as e:
+        print(e)
+        return 0
     except BitbucketDenied as e:
-        print(f"ОСТАНОВКА: {e}. Повторять нельзя: четыре неверных входа блокируют учётную запись.")
+        print(
+            f"ОСТАНОВКА: {e}. Повторять нельзя: четыре неверных входа блокируют учётную запись."
+        )
         return 2
     return 0
 

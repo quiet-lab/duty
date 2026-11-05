@@ -1,6 +1,7 @@
 """Проверки «Недели в цифрах»: `python3 -I scripts/tests/test_week_stats.py`."""
 
 import importlib.util
+import os
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,35 @@ spec = importlib.util.spec_from_file_location("week_stats", SCRIPTS / "week-stat
 assert spec and spec.loader
 ws = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ws)
+
+CONFIG = """schema = 1
+
+[project]
+name = "t"
+
+[docs]
+decisions = "docs/decisions"
+
+[stats]
+test_repos = ["tests-repo"]
+rules_paths = [".claude/", "plugins/"]
+pipeline_paths = ["deploy/", "scripts/"]
+"""
+_tmp = tempfile.TemporaryDirectory()
+
+
+def setUpModule() -> None:
+    """Проект с `.duty/duty.toml`; пользовательский слой указывает на несуществующий файл."""
+    root = Path(_tmp.name) / "proj"
+    (root / ".duty").mkdir(parents=True)
+    (root / ".duty" / "duty.toml").write_text(CONFIG, encoding="utf-8")
+    os.environ["DUTY_CONFIG_USER"] = str(Path(_tmp.name) / "нет.toml")
+    ws.gates.config(str(root))
+
+
+def tearDownModule() -> None:
+    _tmp.cleanup()
+
 
 H = ws.HOUR_MS
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
@@ -73,12 +103,10 @@ class WeekStatsTest(unittest.TestCase):
     def test_classify_path(self) -> None:
         self.assertEqual(ws.classify_path(".", "apps.python/qms/x.py"), "код")
         self.assertEqual(ws.classify_path(".", "apps.python/tests/test_x.py"), "тесты")
-        self.assertEqual(ws.classify_path("legacy/tests", "helpers/a.ts"), "тесты")
+        self.assertEqual(ws.classify_path("tests-repo", "helpers/a.ts"), "тесты")
         self.assertEqual(ws.classify_path(".", "docs/README.md"), "документация")
         self.assertEqual(ws.classify_path(".", "scripts/x.py"), "конвейер")
-        self.assertEqual(
-            ws.classify_path("claude-plugins/duty", "scripts/x.py"), "правила"
-        )
+        self.assertEqual(ws.classify_path("plugins/duty", "scripts/x.py"), "правила")
 
     def test_git_stats_and_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

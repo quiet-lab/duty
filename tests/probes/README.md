@@ -17,8 +17,8 @@
 - `marker/` — каталог файлов-отметок (пробы 2 и 3);
 - `venv/` — окружение с pytest (в системном `python3` его нет).
 
-Песочница по умолчанию — `../ocp-dev-stand/results/duty-tests/sandbox`
-от корня монорепозитория. Каталог уже есть и не пуст — сценарий
+Песочница по умолчанию — `paths.sandbox` конфигурации
+(`duty_config.py get paths.sandbox`). Каталог уже есть и не пуст — сценарий
 отказывает; `--reset` возвращает существующую песочницу к исходному
 состоянию (см. «Уборка»).
 
@@ -35,7 +35,7 @@ tests/probes/run-probe.sh <номер> [--sandbox <каталог>] [--main <и�
 `dispatch.sh`. Порядок запуска: 3, 2, 6, 1, 7, 5, 4.
 
 В таблице `$SB` — песочница, `$TASK` — каталог задачи
-`../ocp-dev-stand/results/<имя>/`, `$DISPATCH` — `dispatch.sh` плагина.
+`<results>/<имя>/` (`paths.results`), `$DISPATCH` — `dispatch.sh` плагина.
 
 | № | Имя задачи | Модель | Что проверяет | Ожидаемый исход | Проверка главной сессией |
 |---|---|---|---|---|---|
@@ -45,7 +45,7 @@ tests/probes/run-probe.sh <номер> [--sandbox <каталог>] [--main <и�
 | 6б | `overflow-handoff` (продолжение) | haiku | продолжение с записанного шага | `second-step.txt` со строкой «второй шаг выполнен», workspace закрыт | `herdr agent prompt overflow-handoff "<текст>"` (текст — `briefs/overflow-handoff.resume.txt`; печатает `run-probe.sh 6b`); `cat $TASK/second-step.txt` |
 | 1 | `ask-user` | haiku | вопрос файлом и сигналом (`ask.py new`), уведомление herdr, ожидание ответа на необратимом шаге (`ask.py wait`) | файл `questions/01-readme.md` с шапкой, сигнал `question-ask-user-01`, коммит по варианту из ответа | `ask.py list --open`; `ask.py answer ask-user 01 '<вариант 2>' --ref 'ответ пользователя'`; `git -C $TASK/work log --oneline -2` |
 | 7 | `neighbours` | — | `/duty:cleanup`, `/duty:gates now` при открытом workspace пробы 6 | workspace виден в занятости, не закрыт | команды в `briefs/neighbours.md`; `$DISPATCH list` |
-| 5 | `jwait-probe` | haiku | `jwait.sh` во вкладке | номер сборки, результат, длительность; либо «сборок в ходу нет» | `cat $TASK/runs/jenkins/done`; `cat $TASK/runs/jenkins/meta.txt`; `head $TASK/report.md` |
+| 5 | `jwait-probe` | haiku | `jwait.sh` во вкладке (требует раздел `[jenkins]`) | номер сборки, результат, длительность; либо «сборок в ходу нет» | `cat $TASK/runs/jenkins/done`; `cat $TASK/runs/jenkins/meta.txt`; `head $TASK/report.md` |
 | 4 | `opus-subagents` | opus | субагент sonnet с явной моделью, таблица в отчёте | тесты зелёные, ветвь в `origin.git` | `git -C $SB/origin.git branch` (есть `probe/fix-pricing`); `cat $TASK/runs/tests2/done`; `grep -i sonnet $TASK/report.md` |
 | 8 | `push-wake` | haiku | толчок `done` в простаивающую и работающую сессию, отказ фона в субагенте, `SubagentStop`, блокировка `Stop`, агент отсутствует | все сценарии PASS, вкладки закрыты | `tests/probes/push-wake/run.sh <каталог> setup\|A\|B\|C\|D\|E\|F\|teardown`: сценарий сам печатает PASS или FAIL |
 
@@ -56,7 +56,7 @@ tests/probes/run-probe.sh <номер> [--sandbox <каталог>] [--main <и�
 ## Уборка после проб
 
 1. Закрыть оставшиеся workspace: `dispatch.sh close <имя>`.
-2. Удалить каталоги задач проб в `../ocp-dev-stand/results/`: `tab-running`,
+2. Удалить каталоги задач проб в каталоге результатов (`paths.results`): `tab-running`,
    `rules-midway`, `overflow-handoff`, `ask-user`, `jwait-probe`,
    `opus-subagents`.
 3. Вернуть песочницу к исходному состоянию: `make-sandbox.sh <каталог>

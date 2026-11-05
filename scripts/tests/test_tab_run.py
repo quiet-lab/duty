@@ -167,13 +167,21 @@ class TabRunTest(unittest.TestCase):
         """Второй сигнал во время записи итога не должен оставить прогон без done."""
         flag = self.root / "finishing"
         real_date = shutil.which("date")
-        double = Path(self.env["PATH"].split(os.pathsep)[0]) / "date"
+        # Двойник date — только в PATH вкладки: wait-done.sh тоже зовёт date
+        # и при уже созданном флаге получил бы SIGTERM от двойника (гонка
+        # между вкладкой и ожидающим).
+        double_dir = self.root / "date-double"
+        double_dir.mkdir()
+        double = double_dir / "date"
         double.write_text(
             f'#!/usr/bin/env bash\n[ ! -e "{flag}" ] || kill -TERM "$PPID"\n'
             f'exec "{real_date}" "$@"\n'
         )
         double.chmod(0o755)
-        run_dir = self.tab_run("r1", f'touch "{flag}"')
+        tab_env = {**self.env, "PATH": f"{double_dir}{os.pathsep}{self.env['PATH']}"}
+        r = self.run_script(TAB_RUN, "r1", "--", f'touch "{flag}"', env=tab_env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        run_dir = Path(json.loads(r.stdout)["run_dir"])
         waited = self.run_script(WAIT_DONE, str(run_dir), "--timeout-s", str(LIMIT_S))
         self.assertEqual(waited.stdout.strip(), f"done rc=0 {run_dir}")
 

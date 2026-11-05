@@ -14,6 +14,7 @@
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -22,7 +23,18 @@ import sys
 import time
 from pathlib import Path
 
-DEFAULT_RESULTS = "~/work/telecom/axata/ocp-dev-stand/results"
+# Каталог скрипта убран из sys.path ключом -I, поэтому модуль подключается по пути.
+_spec = importlib.util.spec_from_file_location(
+    "dutylib", Path(__file__).with_name("dutylib.py")
+)
+dutylib = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(dutylib)
+duty_config = dutylib.duty_config
+
+
+config_path = dutylib.config_path
+
+
 SIGNALS = Path(__file__).resolve().parent / "signals.py"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 FILE_RE = re.compile(r"^(\d{2})-([a-z0-9-]+)\.md$")
@@ -44,8 +56,9 @@ FIELDS = {
 
 
 def results_dir(explicit: str | None = None) -> Path:
-    raw = explicit or os.environ.get("DUTY_RESULTS_DIR") or DEFAULT_RESULTS
-    return Path(os.path.expanduser(raw))
+    if explicit:
+        return Path(os.path.expanduser(explicit))
+    return config_path("paths.results")
 
 
 def now_ms() -> int:
@@ -303,8 +316,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument(
         "--results",
-        help="каталог результатов; по умолчанию DUTY_RESULTS_DIR или "
-        + DEFAULT_RESULTS,
+        help="каталог результатов; по умолчанию paths.results конфигурации проекта",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
     n = sub.add_parser(
@@ -339,8 +351,10 @@ def build_parser() -> argparse.ArgumentParser:
     w = sub.add_parser("wait", help="ждать ответа на свой вопрос по сигналу")
     w.add_argument("nn")
     w.add_argument(
-        "--timeout-s", type=int, required=True,
-        help="срок ожидания ответа, с (обязателен): оценка главной сессии, не меньше 2× ожидаемого"
+        "--timeout-s",
+        type=int,
+        required=True,
+        help="срок ожидания ответа, с (обязателен): оценка главной сессии, не меньше 2× ожидаемого",
     )
     return p
 

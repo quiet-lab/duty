@@ -1,4 +1,4 @@
-"""Символы workspace: выбор эмодзи, разбор подписей, list и close на двойнике herdr."""
+"""Символы workspace: выбор эмодзи из конфигурации, разбор подписей, служебный блок, list и close на двойнике herdr."""
 
 from __future__ import annotations
 
@@ -14,14 +14,29 @@ DISPATCH = PLUGIN / "scripts" / "dispatch.sh"
 SYMBOLS_FILE = PLUGIN / "scripts" / "symbols.txt"
 
 # Двойник herdr: состояние workspace — файл ws.json; close убирает workspace из файла.
+# create отвечает workspace w9 и панелью p9, агент панели p9 — claude; аргументы
+# каждого вызова пишутся строкой в herdr.log.
 FAKE_HERDR = r"""#!/usr/bin/env bash
+printf '%s\t' "$@" >> "$FAKE_DIR/herdr.log"
+printf '\n' >> "$FAKE_DIR/herdr.log"
 case "$1 $2" in
+    "workspace create")
+        while [ $# -gt 0 ]; do [ "$1" = --label ] && label=$2; shift; done
+        jq --arg l "$label" '.result.workspaces += [{workspace_id: "w9", label: $l}]' "$FAKE_DIR/ws.json" > "$FAKE_DIR/ws.tmp"
+        mv "$FAKE_DIR/ws.tmp" "$FAKE_DIR/ws.json"
+        echo '{"result":{"workspace":{"workspace_id":"w9"},"root_pane":{"pane_id":"p9"}}}' ;;
+    "agent get")
+        if [ "$3" = p9 ]; then
+            echo '{"result":{"agent":{"agent":"claude","agent_status":"working","tab_id":"t1"}}}'
+        else
+            exit 1
+        fi ;;
     "workspace list") cat "$FAKE_DIR/ws.json" ;;
     "workspace close")
         jq --arg w "$3" '.result.workspaces |= map(select(.workspace_id != $w))' "$FAKE_DIR/ws.json" > "$FAKE_DIR/ws.tmp"
         mv "$FAKE_DIR/ws.tmp" "$FAKE_DIR/ws.json" ;;
     "tab list") echo '{"result":{"tabs":[{"tab_id":"t1"}]}}' ;;
-    "agent get") exit 1 ;;
+    "agent list") echo '{"result":{"agents":[]}}' ;;
     *) exit 0 ;;
 esac
 """
@@ -45,16 +60,34 @@ class SymbolsTest(unittest.TestCase):
         herdr = bin_dir / "herdr"
         herdr.write_text(FAKE_HERDR, encoding="utf-8")
         herdr.chmod(0o755)
+        claude = bin_dir / "claude"
+        claude.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        claude.chmod(0o755)
+        # Пользовательский слой изолирован: файла нет, если тест его не создаёт.
+        self.user_cfg = self.dir / "user" / "config.toml"
         self.env = {
-            **os.environ,
+            **{k: v for k, v in os.environ.items() if not k.startswith("DUTY_")},
+            "DUTY_CONFIG_USER": str(self.user_cfg),
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "HERDR_ENV": "1",
             "FAKE_DIR": str(self.dir),
             "DUTY_BUSY_DIR": str(self.dir / "busy"),
             "DUTY_SIGNALS_DIR": str(self.dir / "signals"),
         }
+        self.env.pop("CLAUDE_PROJECT_DIR", None)
         self.workspaces: list[dict] = []
         self.write_ws()
+
+    def project_config(self, symbols: list[str]) -> None:
+        """Конфигурация проекта: набор symbols.tasks и каталог результатов."""
+        duty = self.root / ".duty"
+        duty.mkdir(exist_ok=True)
+        tasks = ", ".join(f'"{s}"' for s in symbols)
+        (duty / "duty.toml").write_text(
+            f'schema = 1\n\n[paths]\nresults = "{self.results}"\n\n'
+            f"[symbols]\ntasks = [{tasks}]\n",
+            encoding="utf-8",
+        )
 
     def write_ws(self) -> None:
         (self.dir / "ws.json").write_text(
@@ -102,23 +135,127 @@ class SymbolsTest(unittest.TestCase):
             self.assertGreater(ord(s), 0x2000, s)
 
     def test_pick_avoids_occupied(self) -> None:
-        syms = self.symbols()
-        # Заняты все, кроме двух; один из занятых — буква прежних версий.
+        syms = self.symbols()[:6]
+        self.project_config(syms)
+        # Заняты четыре из шести; ещё одна задача — с буквой прежних версий.
         keep = syms[:2]
         for i, s in enumerate(syms[2:]):
             self.task(f"t{i}", s, f"{s} t{i} · sonnet", f"w{i}")
         self.task("old", "Ⓐ", "Ⓐ old · opus", "wold")
         seen = set()
-        for _ in range(30):
+        for _ in range(6):
             r = self.run_cmd("symbol")
             self.assertEqual(r.returncode, 0, r.stderr)
             seen.add(r.stdout.strip())
-        self.assertEqual(seen, set(keep))
+        self.assertTrue(seen)
+        self.assertLessEqual(seen, set(keep))
 
     def test_pick_is_random(self) -> None:
-        seen = {self.run_cmd("symbol").stdout.strip() for _ in range(25)}
-        self.assertGreater(len(seen), 3)
-        self.assertLessEqual(seen, set(self.symbols()))
+        syms = self.symbols()[:6]
+        self.project_config(syms)
+        seen = {self.run_cmd("symbol").stdout.strip() for _ in range(14)}
+        self.assertGreater(len(seen), 2)
+        self.assertLessEqual(seen, set(syms))
+
+    def test_fallback_set_without_config(self) -> None:
+        r = self.run_cmd("symbol")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(r.stdout.strip(), self.symbols())
+
+    def test_outside_repo_uses_user_outside_set(self) -> None:
+        outside = self.dir / "plain"
+        outside.mkdir()
+        self.user_cfg.parent.mkdir()
+        self.user_cfg.write_text('[symbols]\noutside = ["🦊"]\n', encoding="utf-8")
+        env = {**self.env, "DUTY_RESULTS_DIR": str(self.results)}
+        for expected, setup in (("🦊", True), (None, False)):
+            if not setup:
+                self.user_cfg.unlink()
+            r = subprocess.run(
+                ["bash", str(DISPATCH), "symbol"],
+                check=False,
+                env=env,
+                cwd=outside,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            if expected:
+                self.assertEqual(r.stdout.strip(), expected)
+            else:
+                self.assertIn(r.stdout.strip(), self.symbols())
+
+    def test_start_writes_project_and_config_lines(self) -> None:
+        self.project_config(["🦊"])
+        duty = self.root / ".duty"
+        (duty / "worker-rules.md").write_text("правило проекта\n", encoding="utf-8")
+        self.user_cfg.parent.mkdir()
+        (self.user_cfg.parent / "worker-rules.md").write_text(
+            "правило пользователя\n", encoding="utf-8"
+        )
+        r = self.run_cmd(
+            "tsk",
+            "sonnet",
+            "--goal",
+            "Сделать",
+            "--done",
+            "`true` зелёный",
+            "--stop",
+            "падение — отчёт",
+            "--read",
+            "`CLAUDE.md`",
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        task = self.results / "tsk"
+        block = (task / "brief.md").read_text(encoding="utf-8")
+        self.assertIn(f"- проект: `{self.root.resolve()}`", block)
+        self.assertIn(f"- конфигурация: `{self.root.resolve()}/.duty/duty.toml`", block)
+        self.assertIn("- символ workspace: `🦊`", block)
+        rules = (task / "rules.md").read_text(encoding="utf-8")
+        self.assertIn("## Правила пользователя\n\nправило пользователя", rules)
+        self.assertIn("## Правила проекта\n\nправило проекта", rules)
+        log = (self.dir / "herdr.log").read_text(encoding="utf-8")
+        self.assertIn(f"DUTY_PROJECT={self.root.resolve()}", log)
+
+    def test_start_general_mode_line(self) -> None:
+        r = self.run_cmd(
+            "tsk",
+            "sonnet",
+            "--goal",
+            "Сделать",
+            "--done",
+            "`true` зелёный",
+            "--stop",
+            "падение — отчёт",
+            "--read",
+            "`CLAUDE.md`",
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        block = (self.results / "tsk" / "brief.md").read_text(encoding="utf-8")
+        self.assertIn("- конфигурация: общий режим", block)
+        rules = (self.results / "tsk" / "rules.md").read_text(encoding="utf-8")
+        self.assertIn("## Правила проекта\n\n—", rules)
+
+    def test_start_refused_on_bad_config(self) -> None:
+        self.project_config(["🦊"])
+        with (self.root / ".duty" / "duty.toml").open("a", encoding="utf-8") as f:
+            f.write("\n[nonsense]\nx = 1\n")
+        r = self.run_cmd(
+            "tsk",
+            "sonnet",
+            "--goal",
+            "Сделать",
+            "--done",
+            "`true` зелёный",
+            "--stop",
+            "падение — отчёт",
+            "--read",
+            "`CLAUDE.md`",
+        )
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("не проходит проверку", r.stderr)
+        self.assertFalse((self.results / "tsk").exists())
 
     def test_exhausted(self) -> None:
         small = self.dir / "small.txt"

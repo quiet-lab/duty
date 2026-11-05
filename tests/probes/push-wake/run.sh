@@ -36,8 +36,8 @@ state=$dir/state.env
 [ -n "${HERDR_WORKSPACE_ID:-}" ] || die 'HERDR_WORKSPACE_ID не задан'
 ws=$HERDR_WORKSPACE_ID
 AGENT=push-probe
-# Каталог запуска агента — доверенный корень монорепозитория (как в dispatch.sh): в каталоге пробы встал бы диалог доверия.
-repo_root=/home/mne/work/telecom/axata/monorepo-ocp
+# Каталог запуска агента — доверенный корень проекта (как в dispatch.sh): в каталоге пробы встал бы диалог доверия.
+repo_root=$(python3 -I "$plugin/scripts/duty_config.py" --cwd "$plugin" root)
 fails=0
 
 report() { # PASS|FAIL сценарий детали

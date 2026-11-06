@@ -69,15 +69,18 @@ if _args[:1] == ["--live"]:
         sys.exit(2)
     try:
         _results = Path(duty_config.load().get("paths.results")).resolve()
-    except (duty_config.ConfigError, TypeError):
-        _results = None
+    except (duty_config.ConfigError, TypeError) as error:
+        # Без каталога results/ вложенный путь не поднять до каталога задачи:
+        # ответ «не живой» открыл бы удаление идущей задачи.
+        print(f"--live: конфигурация не прочитана: {error}", file=sys.stderr)
+        sys.exit(2)
     _opened = dutylib.open_paths()
     _any = False
     for _p in _args[1:]:
         _top = Path(_p).resolve()
         # Признаки задачи (brief.md, state.md, runs/) лежат в каталоге
         # results/ верхнего уровня: вложенный путь поднимается до него.
-        if _results is not None and _top.is_relative_to(_results) and _top != _results:
+        if _top.is_relative_to(_results) and _top != _results:
             _top = _results / _top.relative_to(_results).parts[0]
         _why = dutylib.live_reason(_top, _opened)
         _any = _any or bool(_why)
@@ -210,7 +213,9 @@ def worktrees(repo: Path) -> list[dict[str, str]]:
 
 
 live = active_sessions()
-CWDS = dutylib.cwd_index()
+# Один обход /proc на перечень: текущие каталоги — для cwd_users,
+# текущие каталоги с открытыми файлами — для live_reason.
+CWDS, OPENED = dutylib.proc_indexes()
 in_live_session = lambda p: any(s in str(p) for s in live)
 
 for repo, parent in submodules():
@@ -463,7 +468,6 @@ for d in sorted(project.glob("*")) if project.is_dir() else []:
     )
 
 STAND = RESULTS.parent
-OPENED = dutylib.open_paths()
 _live_tops: dict[Path, str] = {}
 
 

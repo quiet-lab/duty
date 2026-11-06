@@ -316,6 +316,22 @@ class ExcludeWorktreeTest(unittest.TestCase):
         self.assertNotIn("не живой", r.stdout)
         self.assertEqual(self.live().returncode, 2)
 
+    def test_live_mode_fails_closed_on_config_error(self) -> None:
+        # Без конфигурации вложенный путь не поднять до каталога задачи:
+        # ответ «не живой» открыл бы удаление идущей задачи.
+        task = self.base / "results" / "set-d-e2e"
+        nested = task / "pt-e2e"
+        nested.mkdir(parents=True)
+        (task / "brief.md").write_text("# Задача\n", encoding="utf-8")
+        (task / "state.md").write_text("Шаг: 2 — серия\n", encoding="utf-8")
+        (self.root / ".duty" / "duty.toml").write_text(
+            "schema = 1\n[paths\n", encoding="utf-8"
+        )
+        r = self.live(str(nested))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("не живой", r.stdout)
+        self.assertIn("--live", r.stderr)
+
     def test_live_mode_checks_top_level_results_dir(self) -> None:
         task = self.base / "results" / "set-c-e2e"
         nested = task / "pt-e2e"

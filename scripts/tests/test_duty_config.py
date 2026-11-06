@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import unittest
 from pathlib import Path
@@ -842,6 +843,9 @@ class ShellLaunchTest(Base):
     Без защиты bash исполняет докстринг и строки `import …`, а `import`
     ImageMagick ждёт щелчка мыши по окну: команда не завершается.
     Заглушка `import` в PATH повторяет это ожидание без X-сервера.
+    Срока ожидания у вызова нет: при регрессии тест зависает, и его
+    останавливает внешний предел прогона; длительность вызова печатается
+    в stderr как замер.
     """
 
     def stubs(self, import_body: str, python_body: str | None = None) -> Path:
@@ -867,14 +871,16 @@ class ShellLaunchTest(Base):
             stderr=subprocess.PIPE,
             text=True,
             env={**self.env, "PATH": path},
-            start_new_session=True,
         )
-        try:
-            out, err = proc.communicate(timeout=30)
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, 9)
-            proc.communicate()
-            self.fail(f"{shell} {script.name} {' '.join(args)}: не завершился за 30 с")
+        # Срока ожидания нет: при регрессии (bash исполняет `import`) вызов
+        # не завершается, и его ловит внешний предел прогона целиком.
+        started = time.monotonic()
+        out, err = proc.communicate()
+        print(
+            f"замер: {shell} {script.name} {' '.join(args)}:"
+            f" {time.monotonic() - started:.3f} с",
+            file=sys.stderr,
+        )
         return proc.returncode, out, err
 
     def test_bash_get_does_not_wait_for_import(self) -> None:

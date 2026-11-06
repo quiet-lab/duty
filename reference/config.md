@@ -96,7 +96,7 @@
 |---|---|---|---|
 | `schema` | целое | — (обязателен) | `duty_config.py check` |
 | `project.name` | строка | имя каталога корня | каталог состояния общего режима и `init` (`duty_config.py`); сценарии плагина имя не читают |
-| `paths.results` | строка | `<state>/<name>/results` | `dispatch.sh`, `ask.py`, `runs-web.py`, `cleanup-candidates.py`, `jwait.py` |
+| `paths.results` | строка | `<state>/<name>/results` | `dispatch.sh`, `runs-web.py`, `cleanup-candidates.py`, `jwait.py` |
 | `paths.busy` | строка | `<state>/<name>/busy` | `busy.py`, `gates.py`, `facts.sh` и хук `SessionStart` (через `busy.py list`) |
 | `paths.signals` | строка | `<state>/<name>/signals` | `signals.py` (его вызывают хуки `SessionStart` и `task-guard.py`) |
 | `paths.sandbox` | строка | `<results>/duty-tests/sandbox` | пробы `tests/probes/` |

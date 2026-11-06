@@ -3,8 +3,7 @@
 " 2>/dev/null; exec python3 -I "$0" "$@" # файл, переданный оболочке (bash файл.py), запускается python3
 
 Показатели: время жизни набора (pull request'ы репозитория наборов
-`bitbucket.sets_repo` от создания до слияния), занятость Jenkins и доля случайных падений, вопросов агентов
-в день, новых записей решений, воспроизведённых ломающих находок ревью,
+`bitbucket.sets_repo` от создания до слияния), занятость Jenkins и доля случайных падений, новых записей решений, воспроизведённых ломающих находок ревью,
 доля моделей в коммитах и доля коммитов в код и тесты. Период — `--days`
 суток до текущего момента (по умолчанию 7). Порогов и действий нет: только
 числа.
@@ -31,7 +30,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import ask
 import gates
 
 HOUR_MS = 3_600_000
@@ -359,17 +357,7 @@ def new_records(root: Path, since_ms: int) -> int:
     return sum(1 for line in log.splitlines() if rx.search(line))
 
 
-# --- Вопросы и ревью ---------------------------------------------------------
-
-
-def questions_per_day(results: Path, since_ms: int, days: int) -> str:
-    rows = [r for r in ask.collect(results) if r["created_ms"] >= since_ms]
-    if not rows:
-        return "0"
-    answered = sum(1 for r in rows if r["answered"])
-    return f"{len(rows) / days:.1f} (всего {len(rows)}, отвечено {answered})".replace(
-        ".", ",", 1
-    )
+# --- Ревью ---------------------------------------------------------
 
 
 def review_stats(path: Path, since_ms: int) -> str:
@@ -455,10 +443,6 @@ def collect(args: argparse.Namespace) -> list[tuple[str, str]]:
                 rows.append(
                     ("Занятость Jenkins", f"не получено: {type(e).__name__}: {e}"[:200])
                 )
-    guarded(
-        "Вопросов агентов в день",
-        lambda: questions_per_day(ask.results_dir(args.results), since, args.days),
-    )
     if cfg.get("docs.decisions", ""):
         guarded("Новых записей решений", lambda: str(new_records(root, since)))
     else:
@@ -492,10 +476,6 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--root",
         help="корень проекта; по умолчанию его находит duty_config.py",
-    )
-    p.add_argument(
-        "--results",
-        help="каталог результатов задач (вопросы); по умолчанию как у ask.py",
     )
     p.add_argument(
         "--review-stats", default=str(REVIEW_STATS), help="файл статистики ревью"

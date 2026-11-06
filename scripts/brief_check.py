@@ -4,9 +4,10 @@
 Единственный код проверки: его вызывают `scripts/rules-lint.py` (а через него
 и `dispatch.sh`) и хук `hooks/task-guard.py`. Зависимость одна: `duty_config` (каталог результатов).
 
-- `check_brief` — файл записки `brief.md` по шаблону `reference/brief-template.md`;
+- `check_brief` — файл записки `brief.md` по шаблону `reference/brief-template.md`
+  (обязательные разделы, среди них «Приоритеты»);
 - `check_prompt` — приглашение `Agent`: строки «Критерий готовности»,
-  «Условие остановки» и «Справка»;
+  «Условие остановки», «Приоритеты» и «Справка»;
 - `check_question` — текст вопроса `AskUserQuestion`: фраза «По документам:».
 
 Строка «Справка: <путь>» называет файл итога `/duty:recall` в `<paths.results>/recall/`
@@ -20,13 +21,20 @@ import re
 import time
 from pathlib import Path
 
-SECTIONS = ("Цель", "Критерий готовности", "Условие остановки", "Ссылки")
+SECTIONS = (
+    "Цель",
+    "Критерий готовности",
+    "Условие остановки",
+    "Приоритеты",
+    "Ссылки",
+)
 READ_NAME = "Прочитанное при постановке"
 DONE_NAME = "Критерий готовности"
 STOP_NAME = "Условие остановки"
+PRIORITIES_NAME = "Приоритеты"
 LINKS_READ_VIOLATION = f"Ссылки / {READ_NAME}"
 DONE_COMMAND_VIOLATION = f"{DONE_NAME} (не названа команда)"
-PROMPT_NAMES = (DONE_NAME, STOP_NAME)
+PROMPT_NAMES = (DONE_NAME, STOP_NAME, PRIORITIES_NAME)
 RECALL_NAME = "Справка"
 LINKS_RECALL_VIOLATION = f"Ссылки / {RECALL_NAME}"
 RECALL_MAX_AGE_S = 24 * 60 * 60
@@ -299,8 +307,9 @@ def check_prompt(
     now: float | None = None,
     fresh: bool = True,
 ) -> list[str]:
-    """Недостающие в приглашении строки: «Критерий готовности», «Условие остановки», «Справка».
+    """Недостающие в приглашении строки: «Критерий готовности», «Условие остановки», «Приоритеты», «Справка».
 
+    «Приоритеты» — порядок предпочтений на развилках или «развилок нет — <причина>»; заполнитель не годится.
     `fresh=False` — у файла справки не проверяется возраст (приглашение `Agent` долгой задачи).
     """
     lines = text.splitlines()

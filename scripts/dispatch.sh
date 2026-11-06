@@ -4,7 +4,8 @@
 # Использование:
 #   dispatch.sh <имя> <модель> --brief <файл> [--rules <файл>] ...
 #   dispatch.sh <имя> <модель> --goal <цель> --done '<критерий готовности с командой>'
-#               --stop '<условие остановки>' --read '<прочитанное при постановке>'
+#               --stop '<условие остановки>'
+#               --priorities '<порядок предпочтений на развилках | развилок нет — причина>' --read '<прочитанное при постановке>'
 #               --recall '<путь итога /duty:recall | не нужна — причина>' ...
 #   dispatch.sh <имя> <модель> --resume ...
 #   (общие ключи: [--rules <файл>] [--main <имя сессии>] [--root <каталог>]
@@ -33,7 +34,7 @@
 # сам по тому же правилу (scripts/rule-color.py) и шлёт токеном color.
 # symbols.main — постоянный символ
 # главной сессии, задачам не выдаётся; по нему главная сессия и пользователь узнают задачу
-# в подписях herdr и в шапке вопроса (ask.py). Метка workspace и вкладки —
+# в подписях herdr. Метка workspace и вкладки —
 # «<символ> <имя> · <модель>»; имя агента herdr и сессии Claude — <имя>.
 # Агент получает окружение DUTY_ROLE=worker, DUTY_TASK, DUTY_NAME,
 # DUTY_SYMBOL, DUTY_MODEL и DUTY_PROJECT (корень проекта, если он есть). list и close находят workspace по id из
@@ -46,9 +47,9 @@
 # reference/brief-template.md) проверяется до создания каталога задачи и до
 # обращений к herdr (scripts/rules-lint.py brief): обязательны разделы «Цель»,
 # «Критерий готовности» (с командой в обратных кавычках), «Условие остановки»,
-# «Ссылки» с подразделом «Прочитанное при постановке» и строкой «Справка».
+# «Приоритеты», «Ссылки» с подразделом «Прочитанное при постановке» и строкой «Справка».
 # Нарушение — отказ с кодом 1 и именами разделов. --goal требует --done,
-# --stop, --read и --recall; без
+# --stop, --priorities, --read и --recall; без
 # --brief, --goal и --resume запуск отклоняется. --resume записку не проверяет.
 #
 # --resume — продолжение задачи в прежнем каталоге: brief.md, rules.md
@@ -563,6 +564,7 @@ render_brief() {
     template=${template//'{{GOAL}}'/"$goal"}
     template=${template//'{{DONE}}'/"$done_cond"}
     template=${template//'{{STOP}}'/"$stop_cond"}
+    template=${template//'{{PRIORITIES}}'/"$priorities_cond"}
     template=${template//'{{RECALL}}'/"$recall_cond"}
     printf '%s\n' "${template//'{{READ}}'/"$read_cond"}"
 }
@@ -571,21 +573,22 @@ render_brief() {
 gate_brief() {
     local out
     if [ -n "$resume" ]; then
-        [ -z "$done_cond$stop_cond$read_cond$recall_cond" ] || die '--done, --stop, --read и --recall не нужны с --resume'
+        [ -z "$done_cond$stop_cond$priorities_cond$read_cond$recall_cond" ] || die '--done, --stop, --priorities, --read и --recall не нужны с --resume'
         return
     fi
     if [ -z "$brief_file" ] && [ -z "$goal" ]; then
-        [ -z "$done_cond$stop_cond$read_cond$recall_cond" ] || die '--done, --stop, --read и --recall задаются вместе с --goal'
-        die 'нужна записка: --brief <файл>, либо --goal с --done, --stop, --read и --recall (reference/brief-template.md), либо --resume'
+        [ -z "$done_cond$stop_cond$priorities_cond$read_cond$recall_cond" ] || die '--done, --stop, --priorities, --read и --recall задаются вместе с --goal'
+        die 'нужна записка: --brief <файл>, либо --goal с --done, --stop, --priorities, --read и --recall (reference/brief-template.md), либо --resume'
     fi
     if [ -n "$brief_file" ]; then
-        [ -z "$done_cond$stop_cond$read_cond$recall_cond" ] || die '--done, --stop, --read и --recall задаются вместе с --goal'
+        [ -z "$done_cond$stop_cond$priorities_cond$read_cond$recall_cond" ] || die '--done, --stop, --priorities, --read и --recall задаются вместе с --goal'
         out=$(python3 -I "$plugin_root/scripts/rules-lint.py" brief "$brief_file" ${root:+--root "$root"}) \
             || die "записка $brief_file не проходит ворота (reference/brief-template.md):"$'\n'"$out"
         return
     fi
     [ -n "$done_cond" ] || die '--goal требует --done <критерий готовности с командой в обратных кавычках>'
     [ -n "$stop_cond" ] || die '--goal требует --stop <условие остановки>'
+    [ -n "$priorities_cond" ] || die "--goal требует --priorities <порядок предпочтений на развилках | 'развилок нет — причина'>"
     [ -n "$read_cond" ] || die '--goal требует --read <прочитанное при постановке>'
     [ -n "$recall_cond" ] || die "--goal требует --recall <путь итога /duty:recall не старше суток | 'не нужна — причина'>"
     out=$(render_brief | python3 -I "$plugin_root/scripts/rules-lint.py" brief - ${root:+--root "$root"}) \
@@ -919,13 +922,14 @@ case $1 in
     *) [ $# -ge 2 ] || die 'нужны <имя> и <модель>'; positional=("$1" "$2"); shift 2 ;;
 esac
 
-brief_file='' goal='' done_cond='' stop_cond='' read_cond='' recall_cond='' rules_file='' main='' root='' results='' plugin_dir='' resume=''
+brief_file='' goal='' done_cond='' stop_cond='' priorities_cond='' read_cond='' recall_cond='' rules_file='' main='' root='' results='' plugin_dir='' resume=''
 while [ $# -gt 0 ]; do
     case $1 in
         --brief) brief_file=${2:?}; shift 2 ;;
         --goal) goal=${2:?}; shift 2 ;;
         --done) done_cond=${2:?}; shift 2 ;;
         --stop) stop_cond=${2:?}; shift 2 ;;
+        --priorities) priorities_cond=${2:?}; shift 2 ;;
         --read) read_cond=${2:?}; shift 2 ;;
         --recall) recall_cond=${2:?}; shift 2 ;;
         --rules) rules_file=${2:?}; shift 2 ;;

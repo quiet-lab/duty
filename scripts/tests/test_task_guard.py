@@ -15,8 +15,7 @@ from pathlib import Path
 PLUGIN = Path(__file__).resolve().parents[2]
 HOOK = PLUGIN / "hooks" / "task-guard.py"
 SIGNALS = PLUGIN / "scripts" / "signals.py"
-ASK = PLUGIN / "scripts" / "ask.py"
-# Замер на станции (32 ядра), 5 прогонов: хук stop с опросом signals.py и ask.py
+# Замер на станции (32 ядра), 5 прогонов: хук stop с опросом signals.py
 # и отправкой через push-agent.sh — 0,25-0,4 с, самая долгая операция теста;
 # узел Jenkins медленнее на ядро в 4,5 раза: 1,8 с, с двойным запасом 3,6 с,
 # округлено до 4 с. Предел — предохранитель от зависания, а не время ожидания.
@@ -39,6 +38,7 @@ BRIEF = """# Задача probe
 GATE_LINES = (
     "Критерий готовности: `pytest -q` зелёный\n"
     "Условие остановки: падение теста — отчёт\n"
+    "Приоритеты: развилок нет — линейная задача\n"
     "Справка: не нужна — проба\n"
 )
 
@@ -375,39 +375,6 @@ class GuardTest(unittest.TestCase):
         r = self.hook("stop", {})
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
 
-    def test_stop_open_question_is_wait(self) -> None:
-        self.write_stopped("a1")
-        ask = subprocess.run(
-            [
-                sys.executable,
-                "-I",
-                str(ASK),
-                "new",
-                "x",
-                "--title",
-                "Вопрос",
-                "--step",
-                "1",
-                "--depends",
-                "шаг",
-                "--option",
-                "а",
-                "--option",
-                "б",
-                "--recommended",
-                "1",
-            ],
-            env=self.env,
-            capture_output=True,
-            text=True,
-            timeout=LIMIT_S,
-            check=False,
-        )
-        self.assertEqual(ask.returncode, 0, ask.stderr)
-        self.assertTrue((self.task / "questions" / "01-x.md").exists())
-        r = self.hook("stop", {})
-        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
-
     # --- ворота постановки: Agent/Task во всех сессиях ---
 
     def plain_env(self) -> dict:
@@ -466,8 +433,27 @@ class GuardTest(unittest.TestCase):
         os.utime(path, (stamp, stamp))
         return path
 
+    def test_gate_requires_priorities_line(self) -> None:
+        base = (
+            "Критерий готовности: `pytest -q` зелёный\nУсловие остановки: падение\n"
+            "Справка: не нужна — проба\n"
+        )
+        for env in (self.plain_env(), self.env):
+            self.assert_denied(self.agent_call(base + "Сделай.", env), "Приоритеты")
+            self.assert_denied(
+                self.agent_call(base + "Приоритеты: <порядок>\n", env), "Приоритеты"
+            )
+            self.assert_not_denied(
+                self.agent_call(
+                    base + "Приоритеты: развилок нет — линейная задача\n", env
+                )
+            )
+
     def test_gate_requires_recall_line(self) -> None:
-        base = "Критерий готовности: `pytest -q` зелёный\nУсловие остановки: падение\n"
+        base = (
+            "Критерий готовности: `pytest -q` зелёный\nУсловие остановки: падение\n"
+            "Приоритеты: развилок нет — линейная задача\n"
+        )
         for env in (self.plain_env(), self.env):
             self.assert_denied(self.agent_call(base + "Сделай.", env), "Справка")
             self.assert_denied(
@@ -478,7 +464,10 @@ class GuardTest(unittest.TestCase):
             )
 
     def test_gate_recall_file_freshness(self) -> None:
-        base = "Критерий готовности: `pytest -q` зелёный\nУсловие остановки: падение\n"
+        base = (
+            "Критерий готовности: `pytest -q` зелёный\nУсловие остановки: падение\n"
+            "Приоритеты: развилок нет — линейная задача\n"
+        )
         path = self.recall_file(3600)
         for env in (self.plain_env(), self.env):
             self.assert_not_denied(self.agent_call(f"{base}Справка: {path}\n", env))
@@ -572,7 +561,7 @@ class GuardTest(unittest.TestCase):
         )
 
     def test_gate_headings_pass(self) -> None:
-        prompt = "## Критерий готовности\n\n`pytest -q` зелёный\n\n## Условие остановки\n\nпадение\n\nСправка: не нужна — проба\n"
+        prompt = "## Критерий готовности\n\n`pytest -q` зелёный\n\n## Условие остановки\n\nпадение\n\n## Приоритеты\n\nразвилок нет — линейная задача\n\nСправка: не нужна — проба\n"
         self.assert_not_denied(self.agent_call(prompt, self.plain_env()))
 
     def test_gate_empty_values_denied(self) -> None:

@@ -27,6 +27,10 @@ FULL = """# Задача x
 
 Падение теста, не починенное за один подход.
 
+## Приоритеты
+
+Правка одного репозитория важнее общей оснастки.
+
 ## Ссылки
 
 - Правила задачи — `rules.md`.
@@ -43,11 +47,12 @@ FULL = """# Задача x
 """
 
 
-RECALL_OK = "\nСправка: не нужна — проба\n"
+PRIORITIES_OK = "Приоритеты: развилок нет — линейная задача"
+RECALL_OK = f"\n{PRIORITIES_OK}\nСправка: не нужна — проба\n"
 
 
 def check_prompt(text: str) -> list[str]:
-    """Приглашение с годной строкой «Справка»: проверяются остальные строки."""
+    """Приглашение с годными строками «Приоритеты» и «Справка»: проверяются остальные."""
     return brief_check.check_prompt(text + RECALL_OK)
 
 
@@ -59,6 +64,15 @@ def without(text: str, name: str) -> str:
 class CheckBriefTest(unittest.TestCase):
     def test_full_brief_passes(self) -> None:
         self.assertEqual(brief_check.check_brief(FULL), [])
+
+    def test_brief_without_priorities_rejected(self) -> None:
+        self.assertEqual(
+            brief_check.check_brief(without(FULL, "Приоритеты")), ["Приоритеты"]
+        )
+        empty = FULL.replace(
+            "Правка одного репозитория важнее общей оснастки.", "{{PRIORITIES}}"
+        )
+        self.assertEqual(brief_check.check_brief(empty), ["Приоритеты"])
 
     def test_missing_section_named(self) -> None:
         for name in brief_check.SECTIONS:
@@ -139,7 +153,11 @@ class CheckBriefTest(unittest.TestCase):
 
 ## Условие остановки
 
-- Два правила противоречат друг другу — вопрос главной сессии.
+- Два правила противоречат друг другу — вопрос пользователю.
+
+## Приоритеты
+
+- Развилок нет — линейная задача.
 
 ## Раздел для субагентов
 
@@ -404,8 +422,19 @@ class RecallLineTest(unittest.TestCase):
             brief_check.check_brief(self.brief(f"- Справка: {self.file}")), []
         )
 
+    def test_prompt_priorities_line(self) -> None:
+        base = "Критерий готовности: `x` зелёный\nУсловие остановки: падение\nСправка: не нужна — проба\n"
+        got = lambda extra: brief_check.check_prompt(base + extra)
+        self.assertEqual(got(""), ["Приоритеты"])
+        self.assertEqual(got("Приоритеты: развилок нет — линейная задача\n"), [])
+        self.assertEqual(
+            got("Приоритеты: не менять схему данных; один репозиторий\n"), []
+        )
+        self.assertEqual(got("Приоритеты: <порядок предпочтений>\n"), ["Приоритеты"])
+        self.assertEqual(got("Приоритеты: —\n"), ["Приоритеты"])
+
     def test_prompt_recall_line(self) -> None:
-        base = "Критерий готовности: `x` зелёный\nУсловие остановки: падение\n"
+        base = f"Критерий готовности: `x` зелёный\nУсловие остановки: падение\n{PRIORITIES_OK}\n"
         got = lambda extra: brief_check.check_prompt(
             base + extra, root=self.root, now=self.NOW
         )

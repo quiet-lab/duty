@@ -6,10 +6,10 @@
 #   run-probe.sh <номер> [--sandbox <каталог>] [--main <имя сессии>]
 #                [--root <каталог>] [--dry]
 #
-# Номера: 1 ask-user, 2 rules-midway, 3 tab-running, 4 opus-subagents,
+# Номера: 2 rules-midway, 3 tab-running, 4 opus-subagents,
 # 5 jwait-probe, 6 overflow-handoff, 7 neighbours (только команды),
 # 6b — приглашение для продолжения пробы 6 (только текст).
-# Порядок запуска: 3, 2, 6, 1, 7, 5, 4.
+# Порядок запуска: 3, 2, 6, 7, 5, 4.
 #
 # Записка и правила рендерятся в <песочница>/.render/: {{SANDBOX}} —
 # каталог песочницы, {{PLUGIN}} — каталог плагина. С --dry сценарий только
@@ -56,7 +56,6 @@ res=$(realpath -m "$(cfg paths.results)")
 
 # Номер -> имя задачи и модель.
 case $num in
-    1) name=ask-user model=haiku ;;
     2) name=rules-midway model=haiku ;;
     3) name=tab-running model=haiku ;;
     4) name=opus-subagents model=opus ;;
@@ -104,12 +103,6 @@ herdr agent prompt overflow-handoff "$(cat "$here/briefs/overflow-handoff.resume
 cat $task/second-step.txt
 CMD
             printf 'Ожидается: second-step.txt со строкой «второй шаг выполнен», workspace закрыт.\n' ;;
-        1) cat <<CMD
-python3 -I $here/../../scripts/ask.py list --open    # вопрос ask-user 01
-python3 -I $here/../../scripts/ask.py answer ask-user 01 'вариант 2: таблица модулей' --ref 'ответ пользователя'
-git -C $task/work log --oneline -2
-CMD
-            printf 'Ожидается: файл вопроса с шапкой, сигнал question-ask-user-01, ожидание до ответа, коммит по варианту 2.\n' ;;
         7) mkdir -p "$sandbox/.render"
             render "$here/briefs/neighbours.md" "$sandbox/.render/neighbours.md"
             cat "$sandbox/.render/neighbours.md"

@@ -84,9 +84,6 @@ cat /proc/loadavg; nproc; free -g | head -2; df -h /tmp | tail -1
 section 'Занятость'
 python3 -I "$plugin/scripts/busy.py" list | head -30
 
-section 'Вопросы агентов без ответа'
-python3 -I "$plugin/scripts/ask.py" list --open | head -20
-
 # Проектные разделы (очередь работы, спецификации, отложенные вопросы) выдают
 # расширения .duty/facts.d/*: stdout как есть, сбой — строкой об ошибке.
 python3 -I - "$plugin/scripts" "$root" <<'PY'

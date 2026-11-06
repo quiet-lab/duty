@@ -161,8 +161,6 @@ class WeekStatsTest(unittest.TestCase):
                     "--root",
                     tmp,
                     "--offline",
-                    "--results",
-                    tmp,
                     "--review-stats",
                     str(Path(tmp) / "нет.tsv"),
                 ],
@@ -171,7 +169,6 @@ class WeekStatsTest(unittest.TestCase):
                 check=True,
             )
         self.assertIn("| Время жизни набора | не считалось (--offline) |", done.stdout)
-        self.assertIn("| Вопросов агентов в день | 0 |", done.stdout)
         self.assertIn("| Ревью | не получено: нет", done.stdout)
         self.assertIn("| Доля моделей в коммитах | коммитов нет |", done.stdout)
 

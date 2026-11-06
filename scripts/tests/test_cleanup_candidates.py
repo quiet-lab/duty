@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "cleanup-candidates.py"
+DISPATCH = Path(__file__).resolve().parents[1] / "dispatch.sh"
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "t",
     "GIT_AUTHOR_EMAIL": "t@t",
@@ -246,16 +247,68 @@ class ExcludeWorktreeTest(unittest.TestCase):
         (task / "state.md").write_text("Шаг: завершено\n", encoding="utf-8")
         self.assertIn("удалить: тест прошёл", self.video_row(self.candidates(), video))
 
+    def stalled(self) -> str:
+        """Вывод `dispatch.sh stalled` по каталогу результатов с двойником herdr."""
+        bin_dir = self.base / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        herdr = bin_dir / "herdr"
+        herdr.write_text(
+            "#!/usr/bin/env bash\n"
+            'case "$1 $2" in\n'
+            '    "workspace list") echo \'{"result":{"workspaces":[]}}\' ;;\n'
+            "    *) echo '{\"result\":{}}' ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        herdr.chmod(0o755)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("DUTY_")}
+        env.update(
+            DUTY_CONFIG_USER=str(self.base / "no-user-config.toml"),
+            PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        )
+        r = subprocess.run(
+            [
+                "bash",
+                str(DISPATCH),
+                "stalled",
+                "--root",
+                str(self.root),
+                "--results",
+                str(self.base / "results"),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout
+
     def test_finished_task_markers_match_dispatch_stalled(self) -> None:
-        # Те же признаки, что у dispatch.sh stalled: «завершено» или «остановлена»
-        # в строке «Шаг:» без учёта регистра; задача без state.md — не идущая.
+        # Один признак у уборки и у dispatch.sh stalled (dutylib.task_finished):
+        # завершённую задачу уборка убирает, а stalled не предлагает продолжить;
+        # незавершённую — наоборот. Задача без state.md — не идущая.
         video = self.passed_video("task-c")
         task = video.parents[2]
         (task / "brief.md").write_text("# Задача\n", encoding="utf-8")
-        for step in ("Шаг: остановлена", "Шаг: Завершено", "Шаг: 9 — завершено"):
+        for step, finished in (
+            ("Шаг: остановлена", True),
+            ("Шаг: Завершено", True),
+            ("Шаг: 9 — завершено", True),
+            ("**Шаг:** Завершено.", True),
+            ("Шаг: 5 — ревью завершено, идёт слияние", False),
+            ("Шаг: 3 — не завершено", False),
+            ("Шаг: передача", False),
+        ):
             (task / "state.md").write_text(f"{step}\n", encoding="utf-8")
             row = self.video_row(self.candidates(), video)
-            self.assertIn("удалить: тест прошёл", row, step)
+            in_stalled = f"`{task}`" in self.stalled()
+            if finished:
+                self.assertIn("удалить: тест прошёл", row, step)
+                self.assertFalse(in_stalled, step)
+            else:
+                self.assertIn("оставлено: прогон идёт", row, step)
+                self.assertTrue(in_stalled, step)
         (task / "state.md").unlink()
         self.assertIn("удалить: тест прошёл", self.video_row(self.candidates(), video))
 

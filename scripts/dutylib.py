@@ -19,6 +19,7 @@ import re
 import signal
 import ssl
 import subprocess
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
@@ -221,11 +222,27 @@ def proc_indexes() -> tuple[dict[Path, Path], dict[Path, Path]]:
     return _with_ancestors(cwds), _with_ancestors([*cwds, *files])
 
 
-# Признаки конца задачи — те же, что у `dispatch.sh stalled`: «завершено» или
-# «остановлена» в строке «Шаг:» либо в начале строки (после заголовка «# …»).
-_TASK_FINISHED = re.compile(
-    r"^(Шаг:.*|(# .*)?)(завершено|остановлена)", re.IGNORECASE | re.MULTILINE
+# Строка шага state.md: «Шаг: …» или «**Шаг:** …» (как `task_step` в dispatch.sh).
+_STEP_LINE = re.compile(r"^(?:\*\*)?Шаг(?:\*\*)?:(?:\*\*)?(.*)$", re.MULTILINE)
+# Значение шага завершённой задачи: необязательный номер с тире, затем слово
+# целиком, без учёта регистра, с допустимой точкой в конце.
+_STEP_FINISHED = re.compile(
+    r"(?:\d+\s*[—–-]\s*)?(?:завершено|остановлена)\.?", re.IGNORECASE
 )
+
+
+def task_finished(state: str) -> bool:
+    """Завершена ли задача по тексту её state.md — единственный признак плагина.
+
+    Берётся первая строка «Шаг:»; её значение без пробелов по краям, без
+    префикса «<номер> —», равно «завершено» или «остановлена». «передача» —
+    не завершение: такую задачу продолжают. Зовут `live_reason` и
+    `dispatch.sh stalled` (подкоманда `task-finished`).
+    """
+    match = _STEP_LINE.search(state)
+    return bool(match and _STEP_FINISHED.fullmatch(match.group(1).strip()))
+
+
 _PID_LINE = re.compile(r"^pid: (\d+)$", re.MULTILINE)
 
 
@@ -249,8 +266,7 @@ def live_reason(top: Path, opened: dict[Path, Path] | None = None) -> str:
     Признаки: процесс с текущим каталогом или открытым файлом внутри
     (серия стенда пишет журнал, итог `summary.json` появляется только
     в конце); прогон tab-run.sh в `runs/*` без `done` с живым PID;
-    задача (`brief.md`) со `state.md`, где шаг не «завершено» и не
-    «остановлена» (признаки `dispatch.sh stalled`).
+    задача (`brief.md`) со `state.md`, где шаг не завершён (`task_finished`).
     """
     index = open_paths() if opened is None else opened
     if top in index:
@@ -263,7 +279,7 @@ def live_reason(top: Path, opened: dict[Path, Path] | None = None) -> str:
             state = (top / "state.md").read_text(encoding="utf-8")
         except OSError:
             return ""  # без state.md задача не идёт — как у dispatch.sh stalled
-        if not _TASK_FINISHED.search(state):
+        if not task_finished(state):
             return "задача не завершена (state.md без «завершено» или «остановлена» в шаге)"
     return ""
 
@@ -354,3 +370,19 @@ def run_extensions(
         else:
             results.append((entry.name, out, None))
     return results
+
+
+def _main(argv: list[str]) -> int:
+    """`dutylib.py task-finished <state.md>`: код 0 — задача завершена, 1 — нет или файла нет."""
+    if len(argv) != 2 or argv[0] != "task-finished":
+        print("использование: dutylib.py task-finished <state.md>", file=sys.stderr)
+        return 2
+    try:
+        state = Path(argv[1]).read_text(encoding="utf-8")
+    except OSError:
+        return 1
+    return 0 if task_finished(state) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv[1:]))

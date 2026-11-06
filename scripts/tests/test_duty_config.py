@@ -814,6 +814,25 @@ class HelpersTest(Base):
         self.assertEqual(dutylib.active_sessions(self.home), {"live"})
 
 
+class HelpHasNoShimTest(unittest.TestCase):
+    def test_help_has_no_launch_shim(self) -> None:
+        scripts = Path(__file__).resolve().parent.parent
+        for path in sorted(scripts.glob("*.py")):
+            if path.name in ("cleanup-candidates.py", "dutylib.py"):
+                continue
+            text = path.read_text(encoding="utf-8")
+            if "exec python3 -I" not in text or "argparse" not in text:
+                continue
+            with self.subTest(script=path.name):
+                proc = subprocess.run(
+                    ["python3", "-I", str(path), "--help"],
+                    capture_output=True,
+                    text=True,
+                    stdin=subprocess.DEVNULL,
+                )
+                self.assertNotIn("exec python3", proc.stdout + proc.stderr)
+
+
 class ShellLaunchTest(Base):
     """Сценарий, переданный оболочке (`bash duty_config.py get …`), не выполняет строки Python.
 

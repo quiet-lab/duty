@@ -312,6 +312,15 @@ class RecallLineTest(unittest.TestCase):
         self.touch(23 * 3600)
         self.assertEqual(self.check(f"- Справка: {self.file}"), [])
 
+    def test_future_file(self) -> None:
+        self.touch(-3600)
+        self.assertEqual(
+            self.check(f"- Справка: {self.file}"),
+            ["Ссылки / Справка (время в будущем)"],
+        )
+        self.touch(-60)
+        self.assertEqual(self.check(f"- Справка: {self.file}"), [])
+
     def test_missing_file(self) -> None:
         for value in (str(self.root / "нет.md"), "results/нет.md", "results"):
             with self.subTest(value=value):
@@ -382,7 +391,8 @@ class CheckQuestionTest(unittest.TestCase):
             ("Что делать? По документам:", False),
             ("Что делать? По документам: <что найдено>", False),
             ("Что делать? По документам: —", False),
-            ("по документам: решено", False),
+            ("по документам: решено", True),
+            ("ПО ДОКУМЕНТАМ: —", False),
         ):
             with self.subTest(text=text):
                 self.assertEqual(brief_check.check_question(text), ok)

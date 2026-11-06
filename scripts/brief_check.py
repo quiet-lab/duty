@@ -30,6 +30,7 @@ PROMPT_NAMES = (DONE_NAME, STOP_NAME)
 RECALL_NAME = "Справка"
 LINKS_RECALL_VIOLATION = f"Ссылки / {RECALL_NAME}"
 RECALL_MAX_AGE_S = 24 * 60 * 60
+RECALL_FUTURE_S = 5 * 60
 NOT_NEEDED_RE = re.compile(
     r"^не\s+нужна\b\s*(?:[—–-]+\s*(.*))?$", re.IGNORECASE | re.DOTALL
 )
@@ -198,7 +199,7 @@ def recall_state(
     root: str | os.PathLike[str] | None,
     now: float | None,
 ) -> str | None:
-    """Состояние строки «Справка»: None — годна; иначе суффикс нарушения ('', ' (файла нет)', ' (старше суток)')."""
+    """Состояние строки «Справка»: None — годна; иначе суффикс нарушения ('', ' (файла нет)', ' (старше суток)', ' (время в будущем)')."""
     value = next((v for v in values if not is_placeholder(v)), None)
     if value is None:
         return ""
@@ -217,6 +218,8 @@ def recall_state(
         age = (time.time() if now is None else now) - path.stat().st_mtime
     except OSError:
         return " (файла нет)"
+    if age < -RECALL_FUTURE_S:
+        return " (время в будущем)"
     return " (старше суток)" if age > RECALL_MAX_AGE_S else None
 
 
@@ -280,7 +283,7 @@ def check_prompt(
 
 def check_question(text: str) -> bool:
     """В вопросе есть «По документам:» и за ним предложение (не заполнитель)."""
-    index = text.find(QUESTION_MARK)
-    if index < 0:
+    found = re.search(re.escape(QUESTION_MARK), text, re.IGNORECASE)
+    if found is None:
         return False
-    return not is_placeholder(text[index + len(QUESTION_MARK) :])
+    return not is_placeholder(text[found.end() :])

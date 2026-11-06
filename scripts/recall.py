@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Сбор кандидатов для /duty:recall: что по теме уже записано и сказано.
+" 2>/dev/null; exec python3 -I "$0" "$@" # файл, переданный оболочке (bash файл.py), запускается python3
 
     recall.py [scan] <тема> --keyword <слово> [--keyword …] [--root <корень>]
               [--transcripts <каталог>]
@@ -270,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
         return save(argv[1:])
     if argv and argv[0] == "scan":
         argv = argv[1:]
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("topic", help="тема")
     parser.add_argument("--keyword", action="append", default=[], help="ключевое слово")
     parser.add_argument("--root", help="корень проекта")

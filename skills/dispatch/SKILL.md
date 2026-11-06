@@ -130,7 +130,7 @@ allowed-tools: Bash, Read, Write
    если оно не совпадает с именем её агента herdr. Корень
    проекта — `${CLAUDE_PROJECT_DIR}` (у агента задачи — `DUTY_PROJECT`),
    каталог задачи — `<results>/<имя>/`, где `<results>` — каталог результатов
-   из конфигурации (`duty_config.py get paths.results`).
+   из конфигурации (`python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/duty_config.py" get paths.results`).
 
    Готово, когда сценарий вышел с кодом 0 и напечатал `workspace=`,
    `symbol=`, `pane=`, `status=working`, `status=blocked` или `status=idle`
@@ -148,8 +148,8 @@ allowed-tools: Bash, Read, Write
   дописывает в раздел «Переданные» файла `rules.md` задачи; агент
   перечитывает его перед каждым внешним действием.
 - Вопросы агентов приходят сигналом `question-<задача>-<NN>` и видны
-  в очереди `ask.py list --open` (её печатает хук при старте). Главная
-  сессия отвечает `ask.py answer <задача> <NN> '<ответ>' --ref '<ссылка>'`
+  в очереди `python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/ask.py" list --open` (её печатает хук при старте). Главная
+  сессия отвечает `python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/ask.py" answer <задача> <NN> '<ответ>' --ref '<ссылка>'`
   только со ссылкой на запись решения, спецификацию или прежний ответ
   пользователя. Ответа в них нет — передаёт вопрос пользователю по одному
   через `AskUserQuestion` с шапкой «<символ> <задача> · <модель>: цель,
@@ -159,7 +159,7 @@ allowed-tools: Bash, Read, Write
   `/duty:decision`; ответ, меняющий правила задачи, — ещё и в
   «Переданные» её `rules.md`. Порядок агента — `agents/worker.md`, п. 5.
 - Просроченные ожидания (`⚠ просрочено +N мин` в `dispatch.sh list`,
-  `signals.py list --waits`, `busy.py list`; хук печатает их при старте):
+  `python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/signals.py" list --waits`, `python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/busy.py" list`; хук печатает их при старте):
   задача ждёт дольше срока своей строки «Ожидания». Агент сам шлёт
   сообщение с шапкой (`agents/worker.md`, п. 8а); если его нет —
   спросить агента (`SendMessage`), не продлевать молча. Причина — зависшая
@@ -192,14 +192,14 @@ allowed-tools: Bash, Read, Write
   означает>», главная сессия дописывает в раздел «Переданные» файла
   `rules.md` задачи-источника, если та открыта, «по окончании дать сигнал
   <имя>», а получив итог источника, сама даёт сигнал
-  (`signals.py signal <имя> '<текст>' --keep`), если источник не дал.
+  (`python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/signals.py" signal <имя> '<текст>' --keep`), если источник не дал.
   `task-done-<имя>` даёт исполнитель, на случай его сбоя — `dispatch.sh
   close` (после передачи не даётся). Сигнал между проектами записка
   называет вместе с проектом («Ждёт: `<сигнал>` (проект `<имя>`)»), а
-  исполнитель ждёт его с `signals.py wait <сигнал> --project <имя>` (имя —
+  исполнитель ждёт его с `python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/signals.py" wait <сигнал> --project <имя>` (имя —
   каталог `~/.local/state/duty/<имя>` или абсолютный путь корня); главная
   сессия сигналы между проектами не дублирует. Открытые ожидания печатает хук
-  при старте (`signals.py list --waits`).
+  при старте (`python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/signals.py" list --waits`).
 
 ## Итог
 

@@ -23,7 +23,7 @@ allowed-tools: Bash, Read, Edit
 Пусто или не разбирается — итог из одной строки об этом.
 
 Токены и адреса — из разделов `[bitbucket]` и `[jira]` конфигурации
-(`duty_config.py get bitbucket.url`), доступы и готовые команды проекта —
+(`python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/duty_config.py" get bitbucket.url`), доступы и готовые команды проекта —
 `.duty/access.md`, если есть; защищённые ветви —
 `${CLAUDE_PLUGIN_ROOT}/README.md`, раздел «Раскладка».
 Корень проекта — `${CLAUDE_PROJECT_DIR}`.

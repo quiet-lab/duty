@@ -1,6 +1,6 @@
 ---
 name: runner
-description: Рутина с правками строго по перечню с соблюдением запретов проекта. Для навыков /duty:cleanup, /duty:after-merge, /duty:decision и /duty:docs-sweep.
+description: Рутина с правками строго по перечню с соблюдением запретов проекта. Для навыков /duty:cleanup, /duty:after-merge, /duty:decision, /duty:docs-sweep и /duty:recall (запись только файла итога).
 model: sonnet
 tools: Bash, Read, Edit, Write, Grep, Glob
 disallowedTools: Agent

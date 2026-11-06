@@ -102,6 +102,7 @@ SCHEMA_KEYS: dict[str, dict[str, Any]] = {
         "sweep_area": LIST,
         "sweep_exclude": LIST,
         "openspec": LIST,
+        "recall": LIST,
         "post_change": ("tables", {"paths": LIST, "note": STR}),
     },
     "busy": {"resources": ("tables", {"name": STR, "why": STR, "until": STR})},
@@ -147,6 +148,7 @@ DEFAULTS: dict[str, Any] = {
         "sweep_area": ["docs/", "*.md"],
         "sweep_exclude": [],
         "openspec": [],
+        "recall": ["docs/"],
         "post_change": [],
     },
     "busy": {"resources": []},
@@ -805,6 +807,7 @@ name = {name}  # имя для подписей, статистики и кат�
 # sweep_area = ["docs/", "*.md"]  # область /duty:docs-sweep
 # sweep_exclude = []            # исключения из области
 # openspec = []                 # корни OpenSpec
+# recall = ["docs/"]            # каталоги и маски документов для /duty:recall
 # [[docs.post_change]]          # напоминание после правки путей
 # paths = ["docs/"]
 # note = "команда или действие"

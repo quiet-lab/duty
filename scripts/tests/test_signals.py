@@ -20,7 +20,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "signals.py"
 LIMIT_S = 2
 
 
-class SignalsTest(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -72,6 +72,8 @@ class SignalsTest(unittest.TestCase):
         self.assertIn("ждёт сигнал", p.stderr.readline())
         return p
 
+
+class SignalsTest(Base):
     def test_signal_before_wait(self) -> None:
         self.assertEqual(
             self.run_cmd("signal", "stand-free", "готово", "--from", "a").returncode, 0
@@ -362,6 +364,69 @@ class SignalsTest(unittest.TestCase):
         self.assertEqual(
             {w["name"]: w["ttl_min"] for w in waits}, {"late": 60, "fresh": 60}
         )
+
+
+class ProjectFlagTest(Base):
+    """--project: сигналы другого проекта; состояние — во временном каталоге."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.state = self.dir / "state"
+        (self.state / "other" / "signals").mkdir(parents=True)
+        (self.state / "mine").mkdir()
+        cfg = self.dir / "user.toml"
+        cfg.write_text(f'[paths]\nstate = "{self.state}"\n', encoding="utf-8")
+        self.env["DUTY_CONFIG_USER"] = str(cfg)
+        self.env["DUTY_SIGNALS_DIR"] = str(self.state / "mine" / "signals")
+        self.other = self.state / "other" / "signals"
+
+    def test_signal_and_wait_by_name(self) -> None:
+        r = self.run_cmd("signal", "x-done", "ok", "--project", "other")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.other / "x-done.json").exists())
+        self.assertFalse((self.state / "mine" / "signals" / "x-done.json").exists())
+        r = self.run_cmd("wait", "x-done", "--project", "other")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("сигнал x-done: ok", r.stdout)
+
+    def test_wait_then_signal_across_projects(self) -> None:
+        p = self.start_wait("y-done", "--holder", "w1", "--project", "other")
+        self.assertEqual(len(list(self.other.glob("y-done.waiting-w1.*"))), 1)
+        self.run_cmd("signal", "y-done", "go", "--project", "other")
+        out, _ = p.communicate(timeout=LIMIT_S)
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("сигнал y-done: go", out)
+
+    def test_by_path(self) -> None:
+        root = self.dir / "repo"
+        root.mkdir()
+        (root / ".duty").mkdir()
+        (root / ".duty" / "duty.toml").write_text(
+            f'schema = 1\n[project]\nname = "other"\n[paths]\nsignals = "{self.other}"\n',
+            encoding="utf-8",
+        )
+        r = self.run_cmd("signal", "z-done", "--project", str(root))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.other / "z-done.json").exists())
+
+    def test_unknown_project(self) -> None:
+        r = self.run_cmd("signal", "x", "--project", "nope")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("неизвестный проект", r.stderr)
+        self.assertIn("other", r.stderr)
+        self.assertIn("mine", r.stderr)
+
+    def test_clear_and_list(self) -> None:
+        self.run_cmd("signal", "c-done", "t", "--project", "other")
+        out = self.run_cmd("list", "--project", "other").stdout
+        self.assertIn("проект: other", out)
+        self.assertIn("| c-done |", out)
+        data = json.loads(self.run_cmd("list", "--json", "--project", "other").stdout)
+        self.assertEqual(data["project"], "other")
+        self.assertNotIn("проект:", self.run_cmd("list").stdout)
+        r = self.run_cmd("clear", "c-done", "--project", "other")
+        self.assertIn("сигнал снят", r.stdout)
+        self.assertFalse((self.other / "c-done.json").exists())
 
 
 if __name__ == "__main__":

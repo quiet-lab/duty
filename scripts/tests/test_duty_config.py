@@ -128,6 +128,21 @@ class LayersTest(Base):
         self.assertEqual(cfg.get("nope.key", "d"), "d")
         self.assertEqual(cfg.name, "proj")
 
+    def test_docs_recall_default_override_and_check(self) -> None:
+        root = self.repo()
+        self.assertEqual(
+            self.cli("get", "docs.recall", cwd=root).stdout.strip(), '["docs/"]'
+        )
+        root2 = self.repo(
+            name="p2",
+            toml='schema = 1\n[docs]\nrecall = ["docs/", "todo.local.md"]\n',
+        )
+        cfg = duty_config.load(cwd=root2)
+        self.assertEqual(cfg.get("docs.recall"), ["docs/", "todo.local.md"])
+        self.assertEqual(self.cli("check", cwd=root2).returncode, 0)
+        root3 = self.repo(name="p3", toml='schema = 1\n[docs]\nrecall = "docs/"\n')
+        self.assertNotEqual(self.cli("check", cwd=root3).returncode, 0)
+
     def test_protected_default_includes_origin_head(self) -> None:
         root = self.repo(toml=None)
         git(root, "commit", "-q", "--allow-empty", "-m", "x")

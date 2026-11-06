@@ -206,7 +206,7 @@ load_symbols() {
 # duty): herdr.fg = "$color" и символ из токена понимает только herdr, у которого
 # report-metadata знает --token (форк duty-*); токен report-metadata любого
 # источника главнее токенов, которые herdr выдаёт сам по [ui.workspace_symbols].
-# Аргументы — workspace, символ, цвет; пустое значение не шлётся (набор не свой —
+# Аргументы — workspace, символ, цвет; пустое значение не шлётся (цвет от herdr и символ herdr —
 # токен оставлен herdr). Поддержка определяется по ответу сервера, а не по версии
 # или справке: токены шлются всегда. Код 2 (команда или флаг неизвестны) — пропуск
 # с пометкой; иной код — ошибка отправки, в предупреждение идёт текст ошибки.
@@ -753,8 +753,11 @@ cmd_start() {
     color=$herdr_color
     if [ -z "$color" ]; then
         color=$(free_color "$workspaces") || color=''
-        [ -n "$color" ] || { herdr workspace close "$ws" > /dev/null 2>&1 || true; die 'цвет workspace не посчитан'; }
-        send_color=$color
+        if [ -n "$color" ]; then
+            send_color=$color
+        else
+            warn 'цвет workspace не посчитан (rule-color.py): задача без цвета'
+        fi
     fi
     report_tokens "$ws" "$send_symbol" "$send_color"
 

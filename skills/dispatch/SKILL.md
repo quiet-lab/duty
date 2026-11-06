@@ -40,10 +40,13 @@ allowed-tools: Bash, Read, Write
 
 - Имя — `[a-z][a-z0-9_-]{0,31}`, говорящее: оно же имя агента herdr и сессии Claude и имя каталога
   задачи; символ workspace (из набора `symbols.tasks` конфигурации, вне репозитория —
-  `symbols.outside`, пустой набор — запасной `scripts/symbols.txt`; не занятый
-  открытыми задачами; `symbols.main` — символ главной сессии, задачам не
-  выдаётся) и цвет заголовка (случайный из палитры `symbols.colors`, не занятый
-  открытыми задачами) выбирает `dispatch.sh`; метка workspace и первой
+  `symbols.outside`; не занятый открытыми workspace; `symbols.main` — символ
+  главной сессии, задачам не выдаётся) и цвет заголовка (случайный из палитры
+  `symbols.colors`, не занятый открытыми workspace) выбирает `dispatch.sh` и
+  сообщает herdr токенами `symbol` и `color`; набора нет — символ и цвет
+  выдаёт herdr дочернему workspace (`[ui.workspace_symbols]` каталога
+  родителя, токены в `herdr workspace get`), herdr не дал — запасные
+  `scripts/symbols.txt` и `scripts/colors.txt`; метка workspace и первой
   вкладки — «<символ> имя · модель», вкладок команд — «▸ имя прогона»
   (подписывает `tab-run.sh`, без символа и модели: панель агентов группирует
   вкладки по workspace); в любой вкладке herdr, где работает агент, указана

@@ -109,8 +109,8 @@
 # («⚠ просрочено +N мин», state-waits.py) и наличие report.md; по нему
 # /duty:cleanup предлагает закрытие.
 #
-# stalled — задачи, которые можно продолжить: state.md есть, в его строке
-# «Шаг:» нет слов «завершено» или «остановлена», живого агента нет (задачи
+# stalled — задачи, которые можно продолжить: state.md есть, шаг в нём
+# не завершён (dutylib.py task-finished), живого агента нет (задачи
 # нет в list или агент вышел), и нет более нового каталога, имя которого
 # начинается с имени задачи (продолжение под новым именем).
 #
@@ -148,6 +148,7 @@ busy="$plugin_root/scripts/busy.py"
 signals="$plugin_root/scripts/signals.py"
 state_waits="$plugin_root/scripts/state-waits.py"
 config_py="$plugin_root/scripts/duty_config.py"
+dutylib="$plugin_root/scripts/dutylib.py"
 
 # duty_config.py с корнем проекта, если он найден.
 cfg() {
@@ -435,8 +436,7 @@ cmd_stalled() {
         name=$(basename "$dir")
         [[ $live != *" $name "* ]] || continue
         step=$(task_step "$dir")
-        case $step in *завершено* | *Завершено* | *остановлена* | *Остановлена*) continue ;; esac
-        grep -qiE '^(# .*)?(завершено|остановлена)' "$dir/state.md" && continue
+        python3 -I "$dutylib" task-finished "$dir/state.md" && continue
         # Продолжение под новым именем (<имя>-2, <имя>2, <имя>-r2) делает
         # прежний каталог прошлым; иные имена с тем же началом (<имя>-ui)
         # — отдельные задачи.

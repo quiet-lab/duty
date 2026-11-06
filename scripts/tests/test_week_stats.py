@@ -108,6 +108,17 @@ class WeekStatsTest(unittest.TestCase):
         self.assertEqual(ws.classify_path(".", "scripts/x.py"), "конвейер")
         self.assertEqual(ws.classify_path("plugins/duty", "scripts/x.py"), "правила")
 
+    def test_git_since_epoch_is_not_now(self) -> None:
+        # `--since=@0` git понимал как «сейчас»: коммит прошлой секунды отсекался.
+        for ms, max_age in ((0, "0"), (1793577600000, "1793577600")):
+            out = subprocess.run(
+                ["git", "rev-parse", f"--since={ws.git_since(ms)}"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            self.assertEqual(out, f"--max-age={max_age}")
+
     def test_git_stats_and_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

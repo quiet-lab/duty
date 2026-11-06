@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -199,7 +200,7 @@ class RulesLintTest(unittest.TestCase):
     def test_brief_subcommand(self) -> None:
         good = (
             "## Цель\n\nЦель задачи.\n\n## Критерий готовности\n\n`true`\n\n"
-            "## Условие остановки\n\nСтоп при падении.\n\n## Ссылки\n\n- Прочитанное при постановке: `CLAUDE.md`\n"
+            "## Условие остановки\n\nСтоп при падении.\n\n## Ссылки\n\n- Прочитанное при постановке: `CLAUDE.md`\n- Справка: не нужна — проба\n"
         )
         path = self.root / "brief.md"
         path.write_text(good, encoding="utf-8")
@@ -213,6 +214,25 @@ class RulesLintTest(unittest.TestCase):
         self.assertIn("Условие остановки", r.stdout)
         r = self.run_lint("brief", "-", stdin=good)
         self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_brief_subcommand_recall(self) -> None:
+        base = (
+            "## Цель\n\nЦель задачи.\n\n## Критерий готовности\n\n`true`\n\n"
+            "## Условие остановки\n\nСтоп при падении.\n\n## Ссылки\n\n- Прочитанное при постановке: `CLAUDE.md`\n"
+        )
+        r = self.run_lint("brief", "-", stdin=base)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Ссылки / Справка", r.stdout)
+        report = self.root / "recall.md"
+        report.write_text("справка\n", encoding="utf-8")
+        text = base + "- Справка: recall.md\n"
+        r = self.run_lint("brief", "-", "--root", str(self.root), stdin=text)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        old = time.time() - 25 * 3600
+        os.utime(report, (old, old))
+        r = self.run_lint("brief", "-", "--root", str(self.root), stdin=text)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("старше суток", r.stdout)
 
 
 if __name__ == "__main__":

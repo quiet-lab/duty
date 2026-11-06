@@ -4,7 +4,8 @@
 # Использование:
 #   dispatch.sh <имя> <модель> --brief <файл> [--rules <файл>] ...
 #   dispatch.sh <имя> <модель> --goal <цель> --done '<критерий готовности с командой>'
-#               --stop '<условие остановки>' --read '<прочитанное при постановке>' ...
+#               --stop '<условие остановки>' --read '<прочитанное при постановке>'
+#               --recall '<путь итога /duty:recall | не нужна — причина>' ...
 #   dispatch.sh <имя> <модель> --resume ...
 #   (общие ключи: [--rules <файл>] [--main <имя сессии>] [--root <каталог>]
 #               [--results <каталог>] [--plugin-dir <каталог>])
@@ -45,8 +46,9 @@
 # reference/brief-template.md) проверяется до создания каталога задачи и до
 # обращений к herdr (scripts/rules-lint.py brief): обязательны разделы «Цель»,
 # «Критерий готовности» (с командой в обратных кавычках), «Условие остановки»,
-# «Ссылки» с подразделом «Прочитанное при постановке». Нарушение — отказ с
-# кодом 1 и именами разделов. --goal требует --done, --stop и --read; без
+# «Ссылки» с подразделом «Прочитанное при постановке» и строкой «Справка».
+# Нарушение — отказ с кодом 1 и именами разделов. --goal требует --done,
+# --stop, --read и --recall; без
 # --brief, --goal и --resume запуск отклоняется. --resume записку не проверяет.
 #
 # --resume — продолжение задачи в прежнем каталоге: brief.md, rules.md
@@ -561,6 +563,7 @@ render_brief() {
     template=${template//'{{GOAL}}'/$goal}
     template=${template//'{{DONE}}'/$done_cond}
     template=${template//'{{STOP}}'/$stop_cond}
+    template=${template//'{{RECALL}}'/$recall_cond}
     printf '%s\n' "${template//'{{READ}}'/$read_cond}"
 }
 
@@ -568,23 +571,24 @@ render_brief() {
 gate_brief() {
     local out
     if [ -n "$resume" ]; then
-        [ -z "$done_cond$stop_cond$read_cond" ] || die '--done, --stop и --read не нужны с --resume'
+        [ -z "$done_cond$stop_cond$read_cond$recall_cond" ] || die '--done, --stop, --read и --recall не нужны с --resume'
         return
     fi
     if [ -z "$brief_file" ] && [ -z "$goal" ]; then
-        [ -z "$done_cond$stop_cond$read_cond" ] || die '--done, --stop и --read задаются вместе с --goal'
-        die 'нужна записка: --brief <файл>, либо --goal с --done, --stop и --read (reference/brief-template.md), либо --resume'
+        [ -z "$done_cond$stop_cond$read_cond$recall_cond" ] || die '--done, --stop, --read и --recall задаются вместе с --goal'
+        die 'нужна записка: --brief <файл>, либо --goal с --done, --stop, --read и --recall (reference/brief-template.md), либо --resume'
     fi
     if [ -n "$brief_file" ]; then
-        [ -z "$done_cond$stop_cond$read_cond" ] || die '--done, --stop и --read задаются вместе с --goal'
-        out=$(python3 -I "$plugin_root/scripts/rules-lint.py" brief "$brief_file") \
+        [ -z "$done_cond$stop_cond$read_cond$recall_cond" ] || die '--done, --stop, --read и --recall задаются вместе с --goal'
+        out=$(python3 -I "$plugin_root/scripts/rules-lint.py" brief "$brief_file" ${root:+--root "$root"}) \
             || die "записка $brief_file не проходит ворота (reference/brief-template.md):"$'\n'"$out"
         return
     fi
     [ -n "$done_cond" ] || die '--goal требует --done <критерий готовности с командой в обратных кавычках>'
     [ -n "$stop_cond" ] || die '--goal требует --stop <условие остановки>'
     [ -n "$read_cond" ] || die '--goal требует --read <прочитанное при постановке>'
-    out=$(render_brief | python3 -I "$plugin_root/scripts/rules-lint.py" brief -) \
+    [ -n "$recall_cond" ] || die "--goal требует --recall <путь итога /duty:recall не старше суток | 'не нужна — причина'>"
+    out=$(render_brief | python3 -I "$plugin_root/scripts/rules-lint.py" brief - ${root:+--root "$root"}) \
         || die "записка из --goal не проходит ворота (reference/brief-template.md):"$'\n'"$out"
 }
 
@@ -915,7 +919,7 @@ case $1 in
     *) [ $# -ge 2 ] || die 'нужны <имя> и <модель>'; positional=("$1" "$2"); shift 2 ;;
 esac
 
-brief_file='' goal='' done_cond='' stop_cond='' read_cond='' rules_file='' main='' root='' results='' plugin_dir='' resume=''
+brief_file='' goal='' done_cond='' stop_cond='' read_cond='' recall_cond='' rules_file='' main='' root='' results='' plugin_dir='' resume=''
 while [ $# -gt 0 ]; do
     case $1 in
         --brief) brief_file=${2:?}; shift 2 ;;
@@ -923,6 +927,7 @@ while [ $# -gt 0 ]; do
         --done) done_cond=${2:?}; shift 2 ;;
         --stop) stop_cond=${2:?}; shift 2 ;;
         --read) read_cond=${2:?}; shift 2 ;;
+        --recall) recall_cond=${2:?}; shift 2 ;;
         --rules) rules_file=${2:?}; shift 2 ;;
         --main) main=${2:?}; shift 2 ;;
         --root) root=${2:?}; shift 2 ;;

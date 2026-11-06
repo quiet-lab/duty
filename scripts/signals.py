@@ -8,7 +8,9 @@
 Требуется `inotifywait` (inotify-tools). Без сторонних библиотек.
 
 Каталог сигналов — `paths.signals` конфигурации проекта (`.duty/duty.toml`,
-перекрытие — `DUTY_SIGNALS_DIR`).
+перекрытие — `DUTY_SIGNALS_DIR`). Ключ `--project <имя|путь>` обращается
+к сигналам другого проекта: имя — каталог `<paths.state>/<имя>`, путь —
+корень репозитория.
 
 Команды: signal, wait, list, clear. Коды выхода: 0 — успех, 2 — неверное
 обращение или сбой наблюдения, 124 — истёк --timeout-s.
@@ -54,8 +56,66 @@ CLOSE_WAIT_S = 1
 FATAL_SIGNALS = (os_signal.SIGTERM, os_signal.SIGINT, os_signal.SIGHUP)
 
 
+# Каталог сигналов и имя проекта, названные флагом --project (resolve_project).
+_PROJECT: dict[str, object] = {}
+
+
+def current_project() -> str:
+    """Имя проекта, чьи сигналы читаются: заданный --project или текущий."""
+    name = _PROJECT.get("name")
+    if isinstance(name, str):
+        return name
+    try:
+        return dutylib.config().name
+    except duty_config.ConfigError as error:
+        raise SystemExit(f"ошибка конфигурации: {error}")
+
+
 def signals_dir() -> Path:
+    override = _PROJECT.get("dir")
+    if isinstance(override, Path):
+        return override
     return config_path("paths.signals")
+
+
+def resolve_project(value: str) -> str | None:
+    """Принимает --project: имя каталога состояния или абсолютный путь корня.
+
+    Возвращает None при успехе, иначе текст ошибки."""
+    try:
+        if value.startswith(("/", "~")):
+            root = Path(value).expanduser()
+            if not root.is_dir():
+                return f"--project: нет каталога {value}"
+            # DUTY_SIGNALS_DIR принадлежит текущему проекту, чужому он не годится.
+            saved = os.environ.pop("DUTY_SIGNALS_DIR", None)
+            try:
+                dutylib.config_cache_clear()
+                cfg = dutylib.config(str(root))
+            finally:
+                if saved is not None:
+                    os.environ["DUTY_SIGNALS_DIR"] = saved
+                dutylib.config_cache_clear()
+            _PROJECT.update(name=cfg.name, dir=cfg.path_of(cfg.get("paths.signals")))
+            return None
+        state = Path(dutylib.config().get("paths.state"))
+    except duty_config.ConfigError as error:
+        return f"ошибка конфигурации: {error}"
+    if (
+        value
+        and "/" not in value
+        and not value.startswith(".")
+        and (state / value).is_dir()
+    ):
+        _PROJECT.update(name=value, dir=state / value / "signals")
+        return None
+    known = (
+        sorted(p.name for p in state.iterdir() if p.is_dir()) if state.is_dir() else []
+    )
+    return (
+        f"--project: неизвестный проект {value!r}; каталоги состояния в {state}: "
+        + (", ".join(known) or "нет")
+    )
 
 
 def now_ms() -> int:
@@ -470,8 +530,12 @@ def cmd_list(args: argparse.Namespace) -> int:
         sigs = []
     if args.json:
         out = {"waits": waits} if args.waits else {"signals": sigs, "waits": waits}
+        if args.project:
+            out["project"] = current_project()
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
+    if args.project:
+        print(f"проект: {current_project()}")
     if not sigs and not waits:
         print("ожиданий нет" if args.waits else "сигналов и ожиданий нет")
         return 0
@@ -508,6 +572,14 @@ def cmd_clear(args: argparse.Namespace) -> int:
     return 0
 
 
+def add_project(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--project",
+        help="проект сигнала: имя каталога состояния (~/.local/state/duty/<имя>) "
+        "или абсолютный путь корня репозитория; по умолчанию текущий проект",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -520,6 +592,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--keep", action="store_true", help="существующий сигнал не перезаписывать"
     )
+    add_project(s)
     s.set_defaults(fn=cmd_signal)
     w = sub.add_parser("wait", help="ждать сигнал по событию")
     w.add_argument("name")
@@ -532,21 +605,29 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument(
         "--holder", help="кто ждёт; по умолчанию DUTY_NAME, DUTY_HOLDER или pid<pid>"
     )
+    add_project(w)
     w.set_defaults(fn=cmd_wait)
     ls = sub.add_parser("list", help="сигналы и ожидания")
     ls.add_argument("--json", action="store_true")
     ls.add_argument(
         "--waits", action="store_true", help="только ожидания, с отметкой «сигнал дан»"
     )
+    add_project(ls)
     ls.set_defaults(fn=cmd_list)
     c = sub.add_parser("clear", help="снять сигнал и устаревшие ожидания")
     c.add_argument("name")
+    add_project(c)
     c.set_defaults(fn=cmd_clear)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.project is not None:
+        error = resolve_project(args.project)
+        if error:
+            print(error, file=sys.stderr)
+            return EXIT_USAGE
     return args.fn(args)
 
 

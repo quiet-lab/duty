@@ -275,8 +275,14 @@ class RecallLineTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(os.path.realpath(self.tmp.name))
-        (self.root / "results").mkdir()
-        self.file = self.root / "results" / "topic-20261106-1200.md"
+        (self.root / "results" / "recall").mkdir(parents=True)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("DUTY_")}
+        env["DUTY_RESULTS_DIR"] = str(self.root / "results")
+        env["DUTY_CONFIG_USER"] = str(self.root / "no-user.toml")
+        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.file = self.root / "results" / "recall" / "topic-20261106-1200.md"
         self.file.write_text("справка\n", encoding="utf-8")
         self.touch(3600)
 
@@ -299,7 +305,7 @@ class RecallLineTest(unittest.TestCase):
         for value in (
             str(self.file),
             f"`{self.file}`",
-            "results/topic-20261106-1200.md",
+            "results/recall/topic-20261106-1200.md",
         ):
             with self.subTest(value=value):
                 self.assertEqual(self.check(f"- Справка: {value}"), [])
@@ -322,18 +328,46 @@ class RecallLineTest(unittest.TestCase):
         self.assertEqual(self.check(f"- Справка: {self.file}"), [])
 
     def test_missing_file(self) -> None:
-        for value in (str(self.root / "нет.md"), "results/нет.md", "results"):
+        for value in (
+            str(self.root / "нет.md"),
+            "results/recall/нет.md",
+            "results/recall",
+        ):
             with self.subTest(value=value):
                 self.assertEqual(
                     self.check(f"- Справка: {value}"),
                     ["Ссылки / Справка (файла нет)"],
                 )
 
-    def test_not_needed_with_reason(self) -> None:
-        for dash in ("—", "–", "-"):
-            with self.subTest(dash=dash):
+    def test_not_recall_file(self) -> None:
+        (self.root / "todo.local.md").write_text("x\n", encoding="utf-8")
+        (self.root / "results" / "other.md").write_text("x\n", encoding="utf-8")
+        (self.root / "results" / "recall" / "t.txt").write_text("x\n", encoding="utf-8")
+        for value in (
+            "todo.local.md",
+            str(self.root / "todo.local.md"),
+            "results/other.md",
+            "results/recall/t.txt",
+        ):
+            with self.subTest(value=value):
+                stamp = self.NOW - 60
+                os.utime(
+                    self.root / value if not value.startswith("/") else value,
+                    (stamp, stamp),
+                )
                 self.assertEqual(
-                    self.check(f"- Справка: не нужна {dash} решения уже сверены"), []
+                    self.check(f"- Справка: {value}"),
+                    ["Ссылки / Справка (не итог /duty:recall)"],
+                )
+
+    def test_not_needed_with_reason(self) -> None:
+        for sep in ("—", "–", "-", ":", ",", ";"):
+            with self.subTest(sep=sep):
+                self.assertEqual(
+                    self.check(f"- Справка: не нужна {sep} решения уже сверены"), []
+                )
+                self.assertEqual(
+                    self.check(f"- Справка: не нужна{sep} решения уже сверены"), []
                 )
 
     def test_not_needed_without_reason(self) -> None:
@@ -345,7 +379,8 @@ class RecallLineTest(unittest.TestCase):
         ):
             with self.subTest(value=value):
                 self.assertEqual(
-                    self.check(f"- Справка: {value}"), ["Ссылки / Справка"]
+                    self.check(f"- Справка: {value}"),
+                    ["Ссылки / Справка (не нужна — без причины)"],
                 )
 
     def test_relative_path_uses_environment_root(self) -> None:
@@ -356,7 +391,8 @@ class RecallLineTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.assertEqual(
             brief_check.check_brief(
-                self.brief("- Справка: results/topic-20261106-1200.md"), now=self.NOW
+                self.brief("- Справка: results/recall/topic-20261106-1200.md"),
+                now=self.NOW,
             ),
             [],
         )
@@ -377,9 +413,21 @@ class RecallLineTest(unittest.TestCase):
         self.assertEqual(got(f"Справка: {self.file}\n"), [])
         self.assertEqual(got("Справка: results/нет.md\n"), ["Справка (файла нет)"])
         self.assertEqual(got("Справка: не нужна — проба\n"), [])
-        self.assertEqual(got("Справка: не нужна\n"), ["Справка"])
+        self.assertEqual(
+            got("Справка: не нужна\n"), ["Справка (не нужна — без причины)"]
+        )
+        self.assertEqual(got("Справка: CLAUDE.md\n"), ["Справка (файла нет)"])
         self.touch(30 * 3600)
         self.assertEqual(got(f"Справка: {self.file}\n"), ["Справка (старше суток)"])
+        self.assertEqual(
+            brief_check.check_prompt(
+                base + f"Справка: {self.file}\n",
+                root=self.root,
+                now=self.NOW,
+                fresh=False,
+            ),
+            [],
+        )
 
 
 class CheckQuestionTest(unittest.TestCase):

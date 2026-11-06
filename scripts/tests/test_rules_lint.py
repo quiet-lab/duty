@@ -242,9 +242,10 @@ class RulesLintTest(unittest.TestCase):
         r = self.run_lint("brief", "-", stdin=base)
         self.assertEqual(r.returncode, 1)
         self.assertIn("Ссылки / Справка", r.stdout)
-        report = self.root / "recall.md"
-        report.write_text("справка\n", encoding="utf-8")
-        text = base + "- Справка: recall.md\n"
+        self.write(".duty/duty.toml", 'schema = 1\n[paths]\nresults = "res"\n')
+        report = self.root / "res" / "recall" / "t-20261106-1200.md"
+        self.write("res/recall/t-20261106-1200.md", "справка\n")
+        text = base + "- Справка: res/recall/t-20261106-1200.md\n"
         r = self.run_lint("brief", "-", "--root", str(self.root), stdin=text)
         self.assertEqual(r.returncode, 0, r.stdout)
         old = time.time() - 25 * 3600

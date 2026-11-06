@@ -411,7 +411,10 @@ class GuardTest(unittest.TestCase):
     # --- ворота постановки: Agent/Task во всех сессиях ---
 
     def plain_env(self) -> dict:
-        return {k: v for k, v in self.env.items() if not k.startswith("DUTY_")}
+        keep = ("DUTY_RESULTS_DIR",)
+        return {
+            k: v for k, v in self.env.items() if not k.startswith("DUTY_") or k in keep
+        }
 
     def agent_call(
         self, prompt: str, env: dict | None, tool: str = "Agent", **extra: str
@@ -456,7 +459,8 @@ class GuardTest(unittest.TestCase):
             self.assert_not_denied(self.agent_call(GATE_LINES + "Сделай.", env))
 
     def recall_file(self, age_s: float) -> Path:
-        path = self.root / "recall.md"
+        path = self.results / "recall" / "topic-20261106-1200.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("справка\n", encoding="utf-8")
         stamp = time.time() - age_s
         os.utime(path, (stamp, stamp))
@@ -478,9 +482,16 @@ class GuardTest(unittest.TestCase):
         path = self.recall_file(3600)
         for env in (self.plain_env(), self.env):
             self.assert_not_denied(self.agent_call(f"{base}Справка: {path}\n", env))
-        self.recall_file(25 * 3600)
-        r = self.agent_call(f"{base}Справка: {path}\n", self.plain_env())
-        self.assert_denied(r, "Справка")
+        for age in (25 * 3600, 30 * 24 * 3600):
+            self.recall_file(age)
+            for env in (self.plain_env(), self.env):
+                self.assert_not_denied(self.agent_call(f"{base}Справка: {path}\n", env))
+        other = self.root / "recall.md"
+        other.write_text("x\n", encoding="utf-8")
+        for env in (self.plain_env(), self.env):
+            self.assert_denied(
+                self.agent_call(f"{base}Справка: {other}\n", env), "Справка"
+            )
 
     def test_gate_free_types(self) -> None:
         for kind in (

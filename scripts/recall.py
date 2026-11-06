@@ -213,6 +213,14 @@ def transcripts_dir(root: Path, override: str | None) -> Path:
     return projects / re.sub(r"[^A-Za-z0-9-]", "-", str(root))
 
 
+# Служебные записи `type:user`: отчёты субагентов, вывод команд, напоминания.
+SERVICE_RE = re.compile(
+    r"\s*<(?:task-notification|local-command-stdout|local-command-stderr"
+    r"|system-reminder|command-name|command-message|command-args"
+    r"|cross-session-message|bash-input|bash-stdout)\b"
+)
+
+
 def quote(text: str, words: list[str]) -> str:
     flat = " ".join(text.split())
     low = flat.lower()
@@ -240,6 +248,8 @@ def replies(directory: Path, words: list[str]) -> list[tuple[str, str, str]]:
                         continue
                     if not isinstance(obj, dict) or obj.get("type") != "user":
                         continue
+                    if obj.get("isMeta") or obj.get("isSidechain"):
+                        continue
                     message = obj.get("message")
                     content = (
                         message.get("content") if isinstance(message, dict) else None
@@ -248,7 +258,7 @@ def replies(directory: Path, words: list[str]) -> list[tuple[str, str, str]]:
                         continue
                     if len(content) > MAX_REPLY_CHARS:
                         continue
-                    if "<command-name>" in content or "<command-args>" in content:
+                    if SERVICE_RE.match(content) or "<command-name>" in content:
                         continue
                     if not any(w in content.lower() for w in low):
                         continue

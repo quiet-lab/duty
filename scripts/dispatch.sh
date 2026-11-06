@@ -559,12 +559,12 @@ layer_rules() {
 render_brief() {
     local template
     template=$(< "$plugin_root/reference/brief-template.md")
-    template=${template//'{{NAME}}'/$name}
-    template=${template//'{{GOAL}}'/$goal}
-    template=${template//'{{DONE}}'/$done_cond}
-    template=${template//'{{STOP}}'/$stop_cond}
-    template=${template//'{{RECALL}}'/$recall_cond}
-    printf '%s\n' "${template//'{{READ}}'/$read_cond}"
+    template=${template//'{{NAME}}'/"$name"}
+    template=${template//'{{GOAL}}'/"$goal"}
+    template=${template//'{{DONE}}'/"$done_cond"}
+    template=${template//'{{STOP}}'/"$stop_cond"}
+    template=${template//'{{RECALL}}'/"$recall_cond"}
+    printf '%s\n' "${template//'{{READ}}'/"$read_cond"}"
 }
 
 # Ворота постановки: до каталога задачи и до обращений к herdr.

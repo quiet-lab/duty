@@ -101,7 +101,12 @@ def resolve_project(value: str) -> str | None:
         state = Path(dutylib.config().get("paths.state"))
     except duty_config.ConfigError as error:
         return f"ошибка конфигурации: {error}"
-    if "/" not in value and (state / value).is_dir():
+    if (
+        value
+        and "/" not in value
+        and not value.startswith(".")
+        and (state / value).is_dir()
+    ):
         _PROJECT.update(name=value, dir=state / value / "signals")
         return None
     known = (
@@ -618,7 +623,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.project:
+    if args.project is not None:
         error = resolve_project(args.project)
         if error:
             print(error, file=sys.stderr)

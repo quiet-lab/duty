@@ -416,6 +416,12 @@ class ProjectFlagTest(Base):
         self.assertIn("other", r.stderr)
         self.assertIn("mine", r.stderr)
 
+    def test_bad_project_values(self) -> None:
+        for bad in ("", "..", "."):
+            r = self.run_cmd("signal", "x", "--project", bad)
+            self.assertEqual(r.returncode, 2, bad)
+            self.assertIn("неизвестный проект", r.stderr)
+
     def test_clear_and_list(self) -> None:
         self.run_cmd("signal", "c-done", "t", "--project", "other")
         out = self.run_cmd("list", "--project", "other").stdout

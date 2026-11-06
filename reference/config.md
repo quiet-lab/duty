@@ -149,8 +149,6 @@
 | `symbols.main` | строка | `""` | хук подписи пользователя `herdr-session-label.sh` (dotfiles); плагин только проверяет (`duty_config.py check`): постоянный символ главной сессии, из наборов задач исключается |
 | `symbols.tasks` | список | `[]` (тогда символ задачи выдаёт herdr по `[ui.workspace_symbols]` каталога родителя — токен `symbol` в `workspace get`; herdr не дал — запасной `scripts/symbols.txt`) | `dispatch.sh symbol` и запуск (`load_symbols`, `free_symbol`): непустой набор — свой, выбранный символ шлётся herdr токеном `symbol` источника `duty` (главнее токена herdr), занятыми считаются подписи и токены `symbol` открытых workspace; `DUTY_SYMBOLS_FILE` перекрывает только этот ключ |
 | `symbols.outside` | список | `[]` (тогда символ от herdr, затем `scripts/symbols.txt`, как у `symbols.tasks`) | `dispatch.sh symbol` (`load_symbols`); только пользовательский слой: workspace вне репозиториев |
-| `symbols.colors` | список `#rrggbb` | `[]` (тогда цвет задачи выдаёт herdr — токен `color` в `workspace get`; herdr не дал — запасной `scripts/colors.txt`, он шлётся токеном `color`) | `dispatch.sh` (`load_colors`, `free_color`): палитра, из которой задаче выдаётся случайный цвет заголовка workspace, не занятый открытыми workspace (по подписям задач и токенам `color`); выбранный цвет шлётся токеном `color` вместе с `symbol` одним вызовом |
-| `symbols.outside_colors` | список `#rrggbb` | `[]` (тогда цвет от herdr, затем `scripts/colors.txt`, как у `symbols.colors`) | `dispatch.sh` (`load_colors`); только пользовательский слой: палитра workspace вне репозиториев |
 
 У массивов таблиц обязательны все поля. Символ — ровно одна кодовая
 точка (`len == 1`): флаг из нескольких точек вроде «🏳️‍🌈» и символ

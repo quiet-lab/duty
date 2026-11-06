@@ -537,8 +537,8 @@ class CheckTest(Base):
         code, out = self.findings(
             f'schema = 1\n[bitbucket]\nurl = "u"\ntoken_file = "{token}"\n'
             '[[forbid.rules]]\nwords = ["a", "b"]\nreason = "r"\n'
-            '[symbols]\nmain = "🍀"\ntasks = ["🌱", "🌲"]\ncolors = ["#a6e3a1"]\n',
-            user='[symbols]\noutside = ["🍺", "☕"]\noutside_colors = ["#F5C2E7", "#89b4fa"]\n',
+            '[symbols]\nmain = "🍀"\ntasks = ["🌱", "🌲"]\n',
+            user='[symbols]\noutside = ["🍺", "☕"]\n',
         )
         self.assertEqual((code, out), (0, []))
 
@@ -559,28 +559,16 @@ class CheckTest(Base):
         (root / ".gitignore").write_text(".duty/local.toml\n", encoding="utf-8")
         self.assertEqual(self.cli("check", cwd=root).returncode, 0)
 
-    def test_color_format(self) -> None:
+    def test_removed_color_keys_warn_not_fail(self) -> None:
         code, out = self.findings(
-            'schema = 1\n[symbols]\ncolors = ["#a6e3a1", "green"]\n',
+            'schema = 1\n[symbols]\ncolors = ["#a6e3a1"]\n',
             user='[symbols]\noutside_colors = ["#12345"]\n',
         )
         text = "\n".join(out)
-        self.assertEqual(code, 1)
-        self.assertIn("symbols.colors: цвет «green» не в формате #rrggbb", text)
-        self.assertNotIn("«#a6e3a1»", text)
-        self.assertIn(
-            "symbols.outside_colors: цвет «#12345» не в формате #rrggbb", text
-        )
-
-    def test_outside_colors_user_layer_only(self) -> None:
-        code, out = self.findings(
-            'schema = 1\n[symbols]\noutside_colors = ["#a6e3a1"]\n'
-        )
-        self.assertEqual(code, 1)
-        self.assertIn(
-            "symbols.outside_colors допустим только в пользовательском слое",
-            "\n".join(out),
-        )
+        self.assertEqual(code, 0, text)
+        self.assertIn("предупреждение:", text)
+        self.assertIn("symbols.colors: ключ больше не читается", text)
+        self.assertIn("symbols.outside_colors: ключ больше не читается", text)
 
     def test_old_color_keys_unknown(self) -> None:
         code, out = self.findings(

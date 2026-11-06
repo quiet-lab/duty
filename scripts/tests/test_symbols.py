@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import colorsys
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -12,7 +14,6 @@ from pathlib import Path
 PLUGIN = Path(__file__).resolve().parents[2]
 DISPATCH = PLUGIN / "scripts" / "dispatch.sh"
 SYMBOLS_FILE = PLUGIN / "scripts" / "symbols.txt"
-COLORS_FILE = PLUGIN / "scripts" / "colors.txt"
 
 # Двойник herdr: состояние workspace — файл ws.json; close убирает workspace из файла.
 # create отвечает workspace w9 и панелью p9, агент панели p9 — claude; аргументы
@@ -266,14 +267,22 @@ class SymbolsTest(unittest.TestCase):
         log = (self.dir / "herdr.log").read_text(encoding="utf-8")
         self.assertIn(f"DUTY_PROJECT={self.root.resolve()}", log)
 
-    def project_colors(self, colors: list[str]) -> None:
-        """Дописывает палитру symbols.colors в конфигурацию проекта."""
-        items = ", ".join(f'"{c}"' for c in colors)
-        with (self.root / ".duty" / "duty.toml").open("a", encoding="utf-8") as f:
-            f.write(f"colors = [{items}]\n")
+    @staticmethod
+    def in_rule(color: str) -> bool:
+        """Цвет в диапазонах правила: S 50–70 %, V 70–100 %, оттенок кратен 10°."""
+        r, g, b = (int(color[i : i + 2], 16) / 255 for i in (1, 3, 5))
+        hue, sat, val = colorsys.rgb_to_hsv(r, g, b)
+        # запас на округление до 8 бит
+        return (
+            0.49 <= sat <= 0.71
+            and 0.69 <= val <= 1.001
+            and abs(hue * 36 - round(hue * 36)) < 0.15
+        )
 
-    def palette(self) -> list[str]:
-        return [c for c in COLORS_FILE.read_text(encoding="utf-8").splitlines() if c]
+    @staticmethod
+    def hue_slot(color: str) -> int:
+        r, g, b = (int(color[i : i + 2], 16) / 255 for i in (1, 3, 5))
+        return round(colorsys.rgb_to_hsv(r, g, b)[0] * 36) % 36
 
     def task_color_line(self, name: str) -> str:
         block = (self.results / name / "brief.md").read_text(encoding="utf-8")
@@ -299,29 +308,23 @@ class SymbolsTest(unittest.TestCase):
     def herdr_log(self) -> str:
         return (self.dir / "herdr.log").read_text(encoding="utf-8")
 
-    def test_start_reports_color_token(self) -> None:
-        self.project_config(["🦊"])
-        self.project_colors(["#a6e3a1"])
-        r = self.start_task()
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn(
-            "workspace\treport-metadata\tw9\t--source\tduty\t--token\tsymbol=🦊\t--token\tcolor=#a6e3a1\t",
-            self.herdr_log(),
-        )
-        self.assertEqual(self.task_color_line("tsk"), "#a6e3a1")
-        self.assertNotIn("report-metadata\t--help", self.herdr_log())
+    def color_tokens(self) -> list[str]:
+        return re.findall(r"--token\tcolor=(#[0-9a-f]{6})\t", self.herdr_log())
 
-    def test_start_without_colors_uses_fallback_palette(self) -> None:
+    def test_start_without_herdr_color_sends_rule_color(self) -> None:
         self.project_config(["🦊"])
         r = self.start_task()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         color = self.task_color_line("tsk")
-        self.assertIn(color, self.palette())
-        self.assertIn(f"--token\tcolor={color}\t", self.herdr_log())
+        self.assertTrue(self.in_rule(color), color)
+        self.assertIn(
+            f"workspace\treport-metadata\tw9\t--source\tduty\t--token\tsymbol=🦊\t--token\tcolor={color}\t",
+            self.herdr_log(),
+        )
+        self.assertNotIn("report-metadata\t--help", self.herdr_log())
 
     def test_start_color_skipped_on_upstream_herdr(self) -> None:
         self.project_config(["🦊"])
-        self.project_colors(["#a6e3a1"])
         r = self.start_task(FAKE_HERDR_NO_COLOR="1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("report-metadata не поддерживает --token", r.stderr)
@@ -329,7 +332,6 @@ class SymbolsTest(unittest.TestCase):
 
     def test_start_color_server_error_warns_with_message(self) -> None:
         self.project_config(["🦊"])
-        self.project_colors(["#a6e3a1"])
         r = self.start_task(FAKE_HERDR_COLOR_ERROR="1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("не выставлены: workspace w9 не найден", r.stderr)
@@ -351,22 +353,35 @@ class SymbolsTest(unittest.TestCase):
         self.assertEqual(len(lines), 1, block)
         return lines[0].split("`")[1]
 
-    def test_own_set_sends_symbol_and_color_in_one_call(self) -> None:
+    def test_own_set_sends_symbol_only_when_herdr_gave_color(self) -> None:
         self.project_config(["🦊"])
-        self.project_colors(["#a6e3a1"])
-        self.herdr_get("🦄", "#f38ba8")  # токены herdr при своём наборе не читаются
+        self.herdr_get("🦄", "#f38ba8")  # символ herdr при своём наборе не берётся
         r = self.start_task()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(
-            "workspace\treport-metadata\tw9\t--source\tduty\t--token\tsymbol=🦊\t--token\tcolor=#a6e3a1\t",
+            "workspace\treport-metadata\tw9\t--source\tduty\t--token\tsymbol=🦊\t",
             self.herdr_log(),
         )
-        self.assertNotIn("workspace\tget\t", self.herdr_log())
+        self.assertNotIn("color=", self.herdr_log())
+        self.assertEqual(self.task_color_line("tsk"), "#f38ba8")
         self.assertEqual(self.brief_symbol("tsk"), "🦊")
         self.assertIn("DUTY_SYMBOL=🦊", self.herdr_log())
         self.assertNotIn("workspace\trename\t", self.herdr_log())
 
-    def test_own_symbols_take_color_from_herdr(self) -> None:
+    def test_own_set_without_herdr_color_sends_both_in_one_call(self) -> None:
+        self.project_config(["🦊"])
+        r = self.start_task()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        color = self.task_color_line("tsk")
+        calls = [
+            x
+            for x in self.herdr_log().splitlines()
+            if x.startswith("workspace\treport-metadata")
+        ]
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn(f"--token\tsymbol=🦊\t--token\tcolor={color}\t", calls[0])
+
+    def test_color_from_herdr_is_not_sent(self) -> None:
         self.project_config(["🦊"])
         self.herdr_get("🦄", "#f38ba8")
         r = self.start_task()
@@ -383,7 +398,7 @@ class SymbolsTest(unittest.TestCase):
         self.assertEqual(self.task_color_line("tsk"), "#f38ba8")
         log = self.herdr_log()
         self.assertIn("workspace\trename\tw9\t🦄 tsk · sonnet\t", log)
-        self.assertNotIn("--token", log)  # свой токен не шлётся
+        self.assertNotIn("--token", log)  # цвет и символ от herdr, токены не шлются
         self.assertNotIn("DUTY_SYMBOL=", log)
 
     def test_no_set_no_tokens_uses_fallback(self) -> None:
@@ -391,35 +406,58 @@ class SymbolsTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(self.brief_symbol("tsk"), self.symbols())
         self.assertNotIn("symbol=", self.herdr_log())
-        self.assertIn(self.task_color_line("tsk"), self.palette())
+        color = self.task_color_line("tsk")
+        self.assertTrue(self.in_rule(color), color)
+        self.assertEqual(self.color_tokens(), [color])
 
-    def test_no_set_herdr_without_symbol_uses_fallback_color_from_herdr(self) -> None:
+    def test_no_set_herdr_without_symbol_uses_fallback_symbol_and_herdr_color(
+        self,
+    ) -> None:
         self.herdr_get(None, "#f38ba8")
         r = self.start_task()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(self.brief_symbol("tsk"), self.symbols())
         self.assertEqual(self.task_color_line("tsk"), "#f38ba8")
+        self.assertEqual(self.color_tokens(), [])
 
     def test_tokens_of_open_workspaces_are_occupied(self) -> None:
         self.project_config(["🦊", "🦄"])
         self.workspaces.append(
-            {"workspace_id": "w2", "label": "x", "tokens": {"symbol": "🦊", "color": "#a6e3a1"}}
+            {
+                "workspace_id": "w2",
+                "label": "x",
+                "tokens": {"symbol": "🦊", "color": "#a6e3a1"},
+            }
         )
         self.write_ws()
         for _ in range(10):
             r = self.run_cmd("symbol")
             self.assertEqual(r.stdout.strip(), "🦄", r.stdout + r.stderr)
 
-    def test_color_tokens_of_open_workspaces_are_occupied(self) -> None:
+    def test_rule_color_avoids_hues_of_open_workspaces(self) -> None:
         self.project_config(["🦊"])
-        self.project_colors(["#a6e3a1", "#f38ba8"])
+        # заняты все оттенки, кроме 120° (слот 12): белый корень оттенка не занимает
+        busy = []
+        for slot in range(36):
+            if slot == 12:
+                continue
+            r, g, b = colorsys.hsv_to_rgb(slot / 36, 0.6, 0.85)
+            busy.append(
+                f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
+            )
         self.workspaces.append(
-            {"workspace_id": "w2", "label": "x", "tokens": {"color": "#a6e3a1"}}
+            {"workspace_id": "w1", "label": "root", "tokens": {"color": "#ffffff"}}
         )
+        for i, c in enumerate(busy):
+            self.workspaces.append(
+                {"workspace_id": f"x{i}", "label": "x", "tokens": {"color": c}}
+            )
         self.write_ws()
         r = self.start_task()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.task_color_line("tsk"), "#f38ba8")
+        color = self.task_color_line("tsk")
+        self.assertTrue(self.in_rule(color), color)
+        self.assertEqual(self.hue_slot(color), 12, color)
 
     def create_calls(self) -> list[str]:
         return [
@@ -511,59 +549,24 @@ class SymbolsTest(unittest.TestCase):
         self.assertLess(log.index(keys), log.index("send-text"))
         self.assertLess(log.index("send-text"), log.index("ctrl+j"))
 
-    def test_outside_repo_colors_from_user_layer(self) -> None:
-        outside = self.dir / "plain"
-        outside.mkdir()
-        self.user_cfg.parent.mkdir()
-        self.user_cfg.write_text(
-            '[symbols]\noutside = ["🦊"]\noutside_colors = ["#f5c2e7"]\n',
-            encoding="utf-8",
-        )
-        r = subprocess.run(
-            [
-                "bash",
-                str(DISPATCH),
-                "tsk",
-                "sonnet",
-                "--goal",
-                "Сделать",
-                "--done",
-                "`true` зелёный",
-                "--stop",
-                "падение — отчёт",
-                "--read",
-                "`CLAUDE.md`",
-            ],
-            check=False,
-            env={**self.env, "DUTY_RESULTS_DIR": str(self.results)},
-            cwd=outside,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
+    def test_two_tasks_get_different_hues(self) -> None:
+        self.project_config(["🦊", "🐺"])
+        for name in ("one", "two"):
+            r = self.start_task(name)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        one, two = self.task_color_line("one"), self.task_color_line("two")
+        self.assertTrue(self.in_rule(one) and self.in_rule(two), (one, two))
+        self.assertNotEqual(self.hue_slot(one), self.hue_slot(two))
+
+    def test_removed_color_keys_are_ignored(self) -> None:
+        # старая палитра проекта больше не читается: цвет считается по правилу
+        self.project_config(["🦊"])
+        with (self.root / ".duty" / "duty.toml").open("a", encoding="utf-8") as f:
+            f.write('colors = ["#a6e3a1"]\n')
+        r = self.start_task()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("--token\tcolor=#f5c2e7", self.herdr_log())
-
-    def test_two_tasks_get_different_colors(self) -> None:
-        self.project_config(["🦊", "🐺"])
-        self.project_colors(["#a6e3a1", "#f5c2e7"])
-        for name in ("one", "two"):
-            r = self.start_task(name)
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertNotEqual(self.task_color_line("one"), self.task_color_line("two"))
-        self.assertEqual(
-            {self.task_color_line("one"), self.task_color_line("two")},
-            {"#a6e3a1", "#f5c2e7"},
-        )
-
-    def test_single_color_palette_is_reused(self) -> None:
-        self.project_config(["🦊", "🐺"])
-        self.project_colors(["#a6e3a1"])
-        for name in ("one", "two"):
-            r = self.start_task(name)
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.task_color_line("one"), "#a6e3a1")
-        self.assertEqual(self.task_color_line("two"), "#a6e3a1")
+        color = self.task_color_line("tsk")
+        self.assertTrue(self.in_rule(color), color)
 
     def test_color_line_does_not_break_list_and_close(self) -> None:
         # Блок со строкой цвета, как его пишет cmd_start; агент завершён, отчёт есть.
@@ -691,10 +694,14 @@ class TaskSymbolTest(unittest.TestCase):
         return r.stdout.strip()
 
     def test_env_symbol_wins(self) -> None:
-        self.assertEqual(self.run_script("- символ workspace: `🦄`\n", DUTY_SYMBOL="🦊"), "🦊")
+        self.assertEqual(
+            self.run_script("- символ workspace: `🦄`\n", DUTY_SYMBOL="🦊"), "🦊"
+        )
 
     def test_reads_symbol_given_by_herdr_from_brief(self) -> None:
-        self.assertEqual(self.run_script("# t\n\n- символ workspace: `🦄`\n- цвет: `#fff`\n"), "🦄")
+        self.assertEqual(
+            self.run_script("# t\n\n- символ workspace: `🦄`\n- цвет: `#fff`\n"), "🦄"
+        )
 
     def test_last_service_block_wins(self) -> None:
         brief = "- символ workspace: `🦄`\n\n- символ workspace: `🐟`\n"

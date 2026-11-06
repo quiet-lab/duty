@@ -46,7 +46,8 @@ allowed-tools: Bash, Read, Grep, Write
 4. **Итог в файл.** Имя —
    `<paths.results>/recall/<тема-латиницей-через-дефис>-<ГГГГММДД-ЧЧММ>.md`
    (местное время станции, `date +%Y%m%d-%H%M`; каталог `recall/`
-   создать `mkdir -p`). Содержание — разделы «Итог» ниже; тот же текст
+   создать `mkdir -p`); `<paths.results>` печатает
+   `python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/duty_config.py" get paths.results`. Содержание — разделы «Итог» ниже; тот же текст
    вернуть в ответе. Готово: файл существует и не пуст.
 
 ## Итог

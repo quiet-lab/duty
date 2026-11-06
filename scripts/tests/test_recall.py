@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -108,9 +109,29 @@ class RecallTest(unittest.TestCase):
             timestamp="2026-11-06T11:00:00.000Z",
             message={"role": "user", "content": "heartbeat " + "x" * 4100},
         )
+        service = [
+            dict(user, message={"role": "user", "content": text})
+            for text in (
+                "<task-notification>heartbeat отчёт субагента</task-notification>",
+                "  <local-command-stdout>heartbeat вывод</local-command-stdout>",
+                "<system-reminder>heartbeat напоминание</system-reminder>",
+                "<cross-session-message>heartbeat от агента</cross-session-message>",
+                "<bash-stdout>heartbeat</bash-stdout>",
+            )
+        ]
+        flagged = [
+            dict(
+                user, isMeta=True, message={"role": "user", "content": "heartbeat мета"}
+            ),
+            dict(
+                user,
+                isSidechain=True,
+                message={"role": "user", "content": "heartbeat боковая цепочка"},
+            ),
+        ]
         rows = [
             json.dumps(r, ensure_ascii=False)
-            for r in (user, listed, other, invoked, pasted)
+            for r in (user, listed, other, invoked, pasted, *service, *flagged)
         ]
         write(
             self.transcripts / "s.jsonl",
@@ -118,6 +139,7 @@ class RecallTest(unittest.TestCase):
         )
 
     def run_recall(self, *extra: str) -> str:
+        started = time.monotonic()
         done = subprocess.run(
             [
                 sys.executable,
@@ -134,9 +156,9 @@ class RecallTest(unittest.TestCase):
             text=True,
             env=self.env,
             stdin=subprocess.DEVNULL,
-            timeout=60,
             check=False,
         )
+        print(f"recall.py: {time.monotonic() - started:.2f} с", file=sys.stderr)
         self.assertEqual(done.returncode, 0, done.stderr)
         return done.stdout
 
@@ -178,6 +200,14 @@ class RecallTest(unittest.TestCase):
         )[1]
         self.assertNotIn("command-name", replies)
         self.assertNotIn("xxxx", replies)
+
+    def test_replies_skip_service_records(self) -> None:
+        replies = self.run_recall("--keyword", "heartbeat").split(
+            "## Реплики пользователя"
+        )[1]
+        for marker in ("отчёт", "вывод", "напоминание", "от агента", "мета", "боков"):
+            self.assertNotIn(marker, replies)
+        self.assertEqual(replies.count("- 2026-"), 1)
 
     def test_git_failure_is_reported(self) -> None:
         bare = self.root.parent / "bare"

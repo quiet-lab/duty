@@ -75,7 +75,7 @@ GATE_HINT = (
     "«Критерий готовности: <команда и ожидаемый результат>» и "
     "«Условие остановки: <сигнал, при котором работа прекращается и исполнитель "
     "отчитывается>» (или заголовки с текстом под ними), а также "
-    "«Справка: <путь к итогу /duty:recall не старше суток>» или "
+    "«Справка: <путь к итогу /duty:recall в <paths.results>/recall/>» или "
     "«Справка: не нужна — <причина>». Форма — "
     "reference/brief-template.md плагина duty, раздел «Раздел для субагентов»."
 )
@@ -187,7 +187,7 @@ def gate(data: dict[str, object]) -> bool:
     import brief_check
 
     missing = brief_check.check_prompt(
-        str(tool_input.get("prompt", "")), root=project_root()
+        str(tool_input.get("prompt", "")), root=project_root(), fresh=False
     )
     if not missing:
         return False

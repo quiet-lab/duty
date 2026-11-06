@@ -193,7 +193,7 @@ class DispatchGateTest(unittest.TestCase):
             "--read",
             "`CLAUDE.md`",
             "--recall",
-            "не нужна — проба",
+            "не нужна — решения A & B сверены",
         )
         self.assertNotIn("не проходит", r.stdout + r.stderr)
         text = (self.results / "gate" / "brief.md").read_text(encoding="utf-8")
@@ -202,14 +202,14 @@ class DispatchGateTest(unittest.TestCase):
             "`pytest -q` зелёный",
             "падение — отчёт",
             "Прочитанное при постановке: `CLAUDE.md`",
-            "Справка: не нужна — проба",
+            "Справка: не нужна — решения A & B сверены",
         ):
             self.assertIn(value, text)
         self.assertNotIn("{{", text.split("## Раздел для субагентов")[0])
 
     def recall_file(self, age_s: float) -> Path:
-        path = self.root / "recall" / "topic-20261106-1200.md"
-        path.parent.mkdir(exist_ok=True)
+        path = self.results / "recall" / "topic-20261106-1200.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("справка\n", encoding="utf-8")
         stamp = time.time() - age_s
         os.utime(path, (stamp, stamp))
@@ -225,8 +225,8 @@ class DispatchGateTest(unittest.TestCase):
     def test_recall_fresh_file_passes(self) -> None:
         self.recall_file(3600)
         for value in (
-            "recall/topic-20261106-1200.md",
-            str(self.root / "recall" / "topic-20261106-1200.md"),
+            "../results/recall/topic-20261106-1200.md",
+            str(self.results / "recall" / "topic-20261106-1200.md"),
         ):
             with self.subTest(value=value):
                 brief = self.brief_with_recall(f"- Справка: `{value}`")
@@ -238,16 +238,25 @@ class DispatchGateTest(unittest.TestCase):
 
     def test_recall_old_file_refused(self) -> None:
         self.recall_file(25 * 3600)
-        brief = self.brief_with_recall("- Справка: recall/topic-20261106-1200.md")
+        brief = self.brief_with_recall(
+            "- Справка: ../results/recall/topic-20261106-1200.md"
+        )
         self.assert_refused(self.dispatch("--brief", str(brief)), "старше суток")
 
     def test_recall_missing_file_refused(self) -> None:
-        brief = self.brief_with_recall("- Справка: recall/нет.md")
+        brief = self.brief_with_recall("- Справка: ../results/recall/нет.md")
         self.assert_refused(self.dispatch("--brief", str(brief)), "файла нет")
 
     def test_recall_not_needed_without_reason_refused(self) -> None:
         brief = self.brief_with_recall("- Справка: не нужна")
         self.assert_refused(self.dispatch("--brief", str(brief)), "Ссылки / Справка")
+
+    def test_recall_not_a_recall_file_refused(self) -> None:
+        (self.root / "todo.local.md").write_text("x\n", encoding="utf-8")
+        brief = self.brief_with_recall("- Справка: todo.local.md")
+        self.assert_refused(
+            self.dispatch("--brief", str(brief)), "не итог /duty:recall"
+        )
 
     def test_goal_recall_path_written_to_brief(self) -> None:
         self.recall_file(60)
@@ -261,11 +270,11 @@ class DispatchGateTest(unittest.TestCase):
             "--read",
             "`CLAUDE.md`",
             "--recall",
-            "recall/topic-20261106-1200.md",
+            "../results/recall/topic-20261106-1200.md",
         )
         self.assertNotIn("не проходит", r.stdout + r.stderr)
         text = (self.results / "gate" / "brief.md").read_text(encoding="utf-8")
-        self.assertIn("- Справка: recall/topic-20261106-1200.md", text)
+        self.assertIn("- Справка: ../results/recall/topic-20261106-1200.md", text)
 
     def test_goal_recall_old_file_refused(self) -> None:
         self.recall_file(25 * 3600)
@@ -279,7 +288,7 @@ class DispatchGateTest(unittest.TestCase):
             "--read",
             "`CLAUDE.md`",
             "--recall",
-            "recall/topic-20261106-1200.md",
+            "../results/recall/topic-20261106-1200.md",
         )
         self.assert_refused(r, "старше суток")
 

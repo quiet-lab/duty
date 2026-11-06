@@ -87,5 +87,58 @@ class DutylibConfigTest(unittest.TestCase):
         self.assertTrue(dutylib.ssl_context(_Cfg()).check_hostname)
 
 
+class TaskFinishedTest(unittest.TestCase):
+    """Признак завершения задачи по строке «Шаг:» в state.md — один на плагин."""
+
+    def test_finished_steps(self) -> None:
+        for state in (
+            "Шаг: завершено\n",
+            "Шаг: 9 — завершено\n",
+            "**Шаг:** Завершено.\n",
+            "Шаг: остановлена\n",
+            "# Задача\n\nШаг: 4 - Остановлена\n",
+        ):
+            self.assertTrue(dutylib.task_finished(state), state)
+
+    def test_unfinished_steps(self) -> None:
+        for state in (
+            "Шаг: 5 — ревью завершено, идёт слияние\n",
+            "Шаг: 3 — не завершено\n",
+            "Шаг: передача\n",
+            "Шаг: 3 — серия\n",
+            "# Задача завершено\n",
+            "",
+        ):
+            self.assertFalse(dutylib.task_finished(state), state)
+
+    def test_cli_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state.md"
+            for text, code in (("Шаг: завершено\n", 0), ("Шаг: передача\n", 1)):
+                state.write_text(text, encoding="utf-8")
+                r = subprocess.run(
+                    [
+                        sys.executable,
+                        "-I",
+                        dutylib.__file__,
+                        "task-finished",
+                        str(state),
+                    ],
+                    check=False,
+                )
+                self.assertEqual(r.returncode, code, text)
+            r = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    dutylib.__file__,
+                    "task-finished",
+                    f"{tmp}/none",
+                ],
+                check=False,
+            )
+            self.assertEqual(r.returncode, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

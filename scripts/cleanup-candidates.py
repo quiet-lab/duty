@@ -1,4 +1,5 @@
 """Перечень кандидатов на уборку для /duty:cleanup.
+" 2>/dev/null; exec python3 -I "$0" "$@" # файл, переданный оболочке (bash файл.py), запускается python3
 
 Сам ничего не удаляет: печатает таблицу «вид | что | размер | решение | команда».
 Строки с решением «удалить» исполняет навык по одной; остальные остаются
@@ -8,6 +9,13 @@
 Аргументы: корень проекта (необязательно, по умолчанию корень из
 конфигурации `.duty/duty.toml`, иначе текущий каталог) и повторяемый --exclude <шаблон> — glob по имени ветви; такие ветви
 и worktree, выписанные на них, остаются в перечне со строкой «оставлено».
+
+`--live <путь>…` — только проверка признаков живого прогона для каждого
+пути (процесс с текущим каталогом или открытым файлом внутри, прогон
+tab-run.sh без done с живым pid, незавершённая задача) каталога
+results/ верхнего уровня, в котором лежит путь: строка
+«<путь>\tживой: <признак>» или «<путь>\tне живой»; код 1, если живой
+есть, код 2 — нет пути или аргументов. Её выполняют перед удалением каталога результатов вне перечня.
 
 Признаки ветвей, каталог результатов, основные деревья и проекты docker,
 которые нельзя трогать, берутся из конфигурации проекта (reference/config.md:
@@ -50,12 +58,41 @@ sh, size, owner_kind, cwd_users, active_sessions = (
 )
 
 _args = sys.argv[1:]
+if _args[:1] == ["--live"]:
+    if not _args[1:]:
+        print("--live требует хотя бы один путь", file=sys.stderr)
+        sys.exit(2)
+    _missing = [p for p in _args[1:] if not Path(p).exists()]
+    if _missing:
+        # Опечатка или путь от другого каталога не должны выглядеть «не живым».
+        print("--live: пути нет: " + ", ".join(_missing), file=sys.stderr)
+        sys.exit(2)
+    try:
+        _results = Path(duty_config.load().get("paths.results")).resolve()
+    except (duty_config.ConfigError, TypeError) as error:
+        # Без каталога results/ вложенный путь не поднять до каталога задачи:
+        # ответ «не живой» открыл бы удаление идущей задачи.
+        print(f"--live: конфигурация не прочитана: {error}", file=sys.stderr)
+        sys.exit(2)
+    _opened = dutylib.open_paths()
+    _any = False
+    for _p in _args[1:]:
+        _top = Path(_p).resolve()
+        # Признаки задачи (brief.md, state.md, runs/) лежат в каталоге
+        # results/ верхнего уровня: вложенный путь поднимается до него.
+        if _top.is_relative_to(_results) and _top != _results:
+            _top = _results / _top.relative_to(_results).parts[0]
+        _why = dutylib.live_reason(_top, _opened)
+        _any = _any or bool(_why)
+        print(f"{_p}\t{'живой: ' + _why if _why else 'не живой'}")
+    sys.exit(1 if _any else 0)
 EXCLUDES: list[str] = []
 _positional: list[str] = []
 while _args:
     _a = _args.pop(0)
     if _a in ("-h", "--help"):
-        print(__doc__)
+        first, _, rest = __doc__.partition("\n")
+        print(first + "\n" + rest.partition("\n")[2])  # без строки-переходника
         sys.exit(0)
     elif _a == "--exclude":
         if not _args:
@@ -176,6 +213,9 @@ def worktrees(repo: Path) -> list[dict[str, str]]:
 
 
 live = active_sessions()
+# Один обход /proc на перечень: текущие каталоги — для cwd_users,
+# текущие каталоги с открытыми файлами — для live_reason.
+CWDS, OPENED = dutylib.proc_indexes()
 in_live_session = lambda p: any(s in str(p) for s in live)
 
 for repo, parent in submodules():
@@ -242,7 +282,7 @@ for repo, parent in submodules():
                 parent,
             )
             continue
-        if in_live_session(path) or cwd_users(path):
+        if in_live_session(path) or cwd_users(path, CWDS):
             add(
                 "worktree",
                 f"{path} [{branch}]",
@@ -379,7 +419,7 @@ for repo, parent in submodules():
 project = SCRATCH / ("-" + str(ROOT).strip("/").replace("/", "-"))
 transcripts = HOME / ".claude/projects" / project.name
 for d in sorted(project.glob("*")) if project.is_dir() else []:
-    if d.name in live or cwd_users(d):
+    if d.name in live or cwd_users(d, CWDS):
         continue
     t = transcripts / f"{d.name}.jsonl"
     # Сеанс без процесса, но с журналом свежее часа, мог продолжиться через
@@ -428,9 +468,33 @@ for d in sorted(project.glob("*")) if project.is_dir() else []:
     )
 
 STAND = RESULTS.parent
+_live_tops: dict[Path, str] = {}
+
+
+def live_top(f: Path) -> str:
+    """Признак живости каталога верхнего уровня results/, в котором лежит f.
+
+    Каталог задачи или серии стенда убирается целиком только завершённым:
+    у идущей серии итога ещё нет, а файлы пишет процесс.
+    """
+    top = RESULTS / f.relative_to(RESULTS).parts[0]
+    if top not in _live_tops:
+        _live_tops[top] = dutylib.live_reason(top.resolve(), OPENED)
+    return _live_tops[top]
+
+
 if RESULTS.is_dir():
     for f in sorted(RESULTS.rglob("*")):
         if f.name not in ("video.webm", "trace.zip") or not f.is_file():
+            continue
+        why_live = live_top(f)
+        if why_live:
+            add(
+                "results",
+                str(f.relative_to(STAND)),
+                size(f),
+                f"оставлено: прогон идёт — {why_live}",
+            )
             continue
         failed = (f.parent / "error-context.md").exists() or any(
             f.parent.glob("test-failed-*.png")
@@ -452,7 +516,12 @@ if RESULTS.is_dir():
     # и сами не исчезают.
     for f in RESULTS.rglob("*"):
         try:
-            if f.is_dir() and owner_kind(f) != "own" and not any(f.iterdir()):
+            if (
+                f.is_dir()
+                and owner_kind(f) != "own"
+                and not any(f.iterdir())
+                and not live_top(f)
+            ):
                 kind = owner_kind(f)
                 verdict = (
                     "удалить через rootlesskit: пустой каталог контейнера"

@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "cleanup-candidates.py"
+DISPATCH = Path(__file__).resolve().parents[1] / "dispatch.sh"
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "t",
     "GIT_AUTHOR_EMAIL": "t@t",
@@ -192,6 +193,207 @@ class ExcludeWorktreeTest(unittest.TestCase):
         script = folder / name
         script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
         script.chmod(0o755)
+
+    # Дефект: уборка удалила каталог идущей серии results/20261106-002951-qms-*
+    # (запись пишущего процесса открыта внутри, summary.json ещё нет).
+    def passed_video(self, top: str) -> Path:
+        video = self.base / "results" / top / "pt-e2e" / "t1" / "video.webm"
+        video.parent.mkdir(parents=True)
+        video.write_bytes(b"v")
+        return video
+
+    def video_row(self, out: str, video: Path) -> str:
+        rel = str(video.relative_to(self.base))
+        rows = [line for line in out.splitlines() if rel in line]
+        self.assertEqual(len(rows), 1, out)
+        return rows[0]
+
+    def spawn(self, *args: str, **kw) -> subprocess.Popen:
+        # Вывод не в трубу тестового прогона: живой потомок держал бы её открытой.
+        kw.setdefault("stdin", subprocess.DEVNULL)
+        kw.setdefault("stdout", subprocess.DEVNULL)
+        kw.setdefault("stderr", subprocess.DEVNULL)
+        proc = subprocess.Popen(list(args), **kw)
+        if proc.stdin is not None:
+            self.addCleanup(proc.stdin.close)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        return proc
+
+    def spawn_writer(self, log: Path) -> None:
+        """Файл внутри держит открытым только порождённый процесс, не сам тест."""
+        with log.open("w") as out:
+            self.spawn("sleep", "600", stdout=out)
+
+    def test_passed_video_of_finished_run_is_candidate(self) -> None:
+        video = self.passed_video("20261106-000000-qms-a")
+        self.assertIn("удалить: тест прошёл", self.video_row(self.candidates(), video))
+
+    def test_video_in_run_with_open_file_is_kept(self) -> None:
+        video = self.passed_video("20261106-002951-qms-b")
+        self.spawn_writer(video.parents[2] / "log.txt")
+        row = self.video_row(self.candidates(), video)
+        self.assertIn("оставлено: прогон идёт", row)
+        self.assertNotIn("rm -f", row)
+
+    def test_video_in_unfinished_task_is_kept(self) -> None:
+        video = self.passed_video("task-a")
+        task = video.parents[2]
+        (task / "brief.md").write_text("# Задача\n", encoding="utf-8")
+        (task / "state.md").write_text("Шаг: 3 — серия\n", encoding="utf-8")
+        self.assertIn(
+            "оставлено: прогон идёт", self.video_row(self.candidates(), video)
+        )
+        (task / "state.md").write_text("Шаг: завершено\n", encoding="utf-8")
+        self.assertIn("удалить: тест прошёл", self.video_row(self.candidates(), video))
+
+    def stalled(self) -> str:
+        """Вывод `dispatch.sh stalled` по каталогу результатов с двойником herdr."""
+        bin_dir = self.base / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        herdr = bin_dir / "herdr"
+        herdr.write_text(
+            "#!/usr/bin/env bash\n"
+            'case "$1 $2" in\n'
+            '    "workspace list") echo \'{"result":{"workspaces":[]}}\' ;;\n'
+            "    *) echo '{\"result\":{}}' ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        herdr.chmod(0o755)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("DUTY_")}
+        env.update(
+            DUTY_CONFIG_USER=str(self.base / "no-user-config.toml"),
+            PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        )
+        r = subprocess.run(
+            [
+                "bash",
+                str(DISPATCH),
+                "stalled",
+                "--root",
+                str(self.root),
+                "--results",
+                str(self.base / "results"),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout
+
+    def test_finished_task_markers_match_dispatch_stalled(self) -> None:
+        # Один признак у уборки и у dispatch.sh stalled (dutylib.task_finished):
+        # завершённую задачу уборка убирает, а stalled не предлагает продолжить;
+        # незавершённую — наоборот. Задача без state.md — не идущая.
+        video = self.passed_video("task-c")
+        task = video.parents[2]
+        (task / "brief.md").write_text("# Задача\n", encoding="utf-8")
+        for step, finished in (
+            ("Шаг: остановлена", True),
+            ("Шаг: Завершено", True),
+            ("Шаг: 9 — завершено", True),
+            ("**Шаг:** Завершено.", True),
+            ("Шаг: 5 — ревью завершено, идёт слияние", False),
+            ("Шаг: 3 — не завершено", False),
+            ("Шаг: передача", False),
+        ):
+            (task / "state.md").write_text(f"{step}\n", encoding="utf-8")
+            row = self.video_row(self.candidates(), video)
+            in_stalled = f"`{task}`" in self.stalled()
+            if finished:
+                self.assertIn("удалить: тест прошёл", row, step)
+                self.assertFalse(in_stalled, step)
+            else:
+                self.assertIn("оставлено: прогон идёт", row, step)
+                self.assertTrue(in_stalled, step)
+        (task / "state.md").unlink()
+        self.assertIn("удалить: тест прошёл", self.video_row(self.candidates(), video))
+
+    def test_video_in_task_with_live_tab_run_is_kept(self) -> None:
+        video = self.passed_video("task-b")
+        run = video.parents[2] / "runs" / "full5"
+        run.mkdir(parents=True)
+        (run / "cmd.sh").write_text("read -r _\n", encoding="utf-8")
+        # Путь cmd.sh только в командной строке ($0), файл не открыт: проверяется
+        # именно признак tab-run.sh (pid: в meta.txt, нет done), а не открытый файл.
+        proc = self.spawn(
+            "bash", "-c", "read -r _", str(run / "cmd.sh"), stdin=subprocess.PIPE
+        )
+        (run / "meta.txt").write_text(f"pid: {proc.pid}\n", encoding="utf-8")
+        self.assertIn(
+            "оставлено: прогон идёт — прогон full5 без done",
+            self.video_row(self.candidates(), video),
+        )
+        proc.kill()
+        proc.wait()
+        (run / "done").write_text("0\n", encoding="utf-8")
+        self.assertIn("удалить: тест прошёл", self.video_row(self.candidates(), video))
+
+    def test_live_mode_reports_open_file(self) -> None:
+        top = self.base / "results" / "20261106-002951-qms-c"
+        top.mkdir(parents=True)
+        self.spawn_writer(top / "log.txt")
+        idle = self.base / "results" / "idle"
+        idle.mkdir()
+        r = subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), "--live", str(top), str(idle)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(f"{top}\tживой: открыт файл процесса", r.stdout)
+        self.assertIn(f"{idle}\tне живой", r.stdout)
+
+    def live(self, *paths: str) -> subprocess.CompletedProcess:
+        env = {
+            **os.environ,
+            "DUTY_PROJECT": str(self.root),
+            "DUTY_CONFIG_USER": str(self.base / "no-user-config.toml"),
+        }
+        return subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), "--live", *paths],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=self.root,
+            check=False,
+        )
+
+    def test_live_mode_rejects_missing_path_and_no_args(self) -> None:
+        r = self.live(str(self.base / "results" / "no-such"))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("не живой", r.stdout)
+        self.assertEqual(self.live().returncode, 2)
+
+    def test_live_mode_fails_closed_on_config_error(self) -> None:
+        # Без конфигурации вложенный путь не поднять до каталога задачи:
+        # ответ «не живой» открыл бы удаление идущей задачи.
+        task = self.base / "results" / "set-d-e2e"
+        nested = task / "pt-e2e"
+        nested.mkdir(parents=True)
+        (task / "brief.md").write_text("# Задача\n", encoding="utf-8")
+        (task / "state.md").write_text("Шаг: 2 — серия\n", encoding="utf-8")
+        (self.root / ".duty" / "duty.toml").write_text(
+            "schema = 1\n[paths\n", encoding="utf-8"
+        )
+        r = self.live(str(nested))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("не живой", r.stdout)
+        self.assertIn("--live", r.stderr)
+
+    def test_live_mode_checks_top_level_results_dir(self) -> None:
+        task = self.base / "results" / "set-c-e2e"
+        nested = task / "pt-e2e"
+        nested.mkdir(parents=True)
+        (task / "brief.md").write_text("# Задача\n", encoding="utf-8")
+        (task / "state.md").write_text("Шаг: 2 — серия\n", encoding="utf-8")
+        r = self.live(str(nested))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("живой: задача не завершена", r.stdout)
 
     def test_extension_json_line_becomes_row(self) -> None:
         self.write_extension(

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Проверка файлов правил плагина duty и записок задач.
+" 2>/dev/null; exec python3 -I "$0" "$@" # файл, переданный оболочке (bash файл.py), запускается python3
 
 Подкоманды:
 
@@ -221,7 +222,7 @@ def run_repeats(root_arg: Path | None) -> list[str]:
     return sorted(set(findings))
 
 
-def run_brief(source: str) -> list[str]:
+def run_brief(source: str, root: Path | None = None) -> list[str]:
     if source == "-":
         text, shown = sys.stdin.read(), "записка"
     else:
@@ -231,7 +232,7 @@ def run_brief(source: str) -> list[str]:
             raise ConfigError(f"{source}: {error}") from error
     return [
         f"{shown}: нет или не заполнен раздел: {name}"
-        for name in brief_check.check_brief(text)
+        for name in brief_check.check_brief(text, root=root or duty_config.find_root())
     ]
 
 
@@ -247,6 +248,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     brief = sub.add_parser("brief", help="обязательные разделы записки")
     brief.add_argument("file", help="файл записки или - (стандартный ввод)")
+    brief.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="корень проекта для относительного пути справки (иначе ищет duty_config.py)",
+    )
     return parser
 
 
@@ -256,7 +263,7 @@ def main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "brief":
-            findings = run_brief(args.file)
+            findings = run_brief(args.file, args.root)
         else:
             findings = run_repeats(args.root)
     except ConfigError as error:

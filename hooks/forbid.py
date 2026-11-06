@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Запреты агента задачи в виде хука PreToolUse для `Bash`.
+"""Запреты агента задачи в виде хука PreToolUse для Bash.
+" 2>/dev/null; exec python3 -I "$0" "$@" # файл, переданный оболочке (bash файл.py), запускается python3
 
 Правила, которые раньше жили только текстом (`reference/worker-rules.md`,
 `agents/worker.md`, правила проекта), здесь отвергаются механизмом.

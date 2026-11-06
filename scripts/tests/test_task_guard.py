@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -35,7 +36,11 @@ BRIEF = """# Задача probe
 """
 
 # Строки, которых требуют ворота постановки (scripts/brief_check.py).
-GATE_LINES = "Критерий готовности: `pytest -q` зелёный\nУсловие остановки: падение теста — отчёт\n"
+GATE_LINES = (
+    "Критерий готовности: `pytest -q` зелёный\n"
+    "Условие остановки: падение теста — отчёт\n"
+    "Справка: не нужна — проба\n"
+)
 
 # Двойник herdr: дописывает argv строкой (поля через табуляцию), всё принимает.
 FAKE_HERDR = """#!/usr/bin/env bash
@@ -406,7 +411,10 @@ class GuardTest(unittest.TestCase):
     # --- ворота постановки: Agent/Task во всех сессиях ---
 
     def plain_env(self) -> dict:
-        return {k: v for k, v in self.env.items() if not k.startswith("DUTY_")}
+        keep = ("DUTY_RESULTS_DIR",)
+        return {
+            k: v for k, v in self.env.items() if not k.startswith("DUTY_") or k in keep
+        }
 
     def agent_call(
         self, prompt: str, env: dict | None, tool: str = "Agent", **extra: str
@@ -450,6 +458,41 @@ class GuardTest(unittest.TestCase):
         for env in (self.plain_env(), self.env):
             self.assert_not_denied(self.agent_call(GATE_LINES + "Сделай.", env))
 
+    def recall_file(self, age_s: float) -> Path:
+        path = self.results / "recall" / "topic-20261106-1200.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("справка\n", encoding="utf-8")
+        stamp = time.time() - age_s
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def test_gate_requires_recall_line(self) -> None:
+        base = "Критерий готовности: `pytest -q` зелёный\nУсловие остановки: падение\n"
+        for env in (self.plain_env(), self.env):
+            self.assert_denied(self.agent_call(base + "Сделай.", env), "Справка")
+            self.assert_denied(
+                self.agent_call(base + "Справка: не нужна\n", env), "Справка"
+            )
+            self.assert_denied(
+                self.agent_call(base + f"Справка: {self.root}/нет.md\n", env), "Справка"
+            )
+
+    def test_gate_recall_file_freshness(self) -> None:
+        base = "Критерий готовности: `pytest -q` зелёный\nУсловие остановки: падение\n"
+        path = self.recall_file(3600)
+        for env in (self.plain_env(), self.env):
+            self.assert_not_denied(self.agent_call(f"{base}Справка: {path}\n", env))
+        for age in (25 * 3600, 30 * 24 * 3600):
+            self.recall_file(age)
+            for env in (self.plain_env(), self.env):
+                self.assert_not_denied(self.agent_call(f"{base}Справка: {path}\n", env))
+        other = self.root / "recall.md"
+        other.write_text("x\n", encoding="utf-8")
+        for env in (self.plain_env(), self.env):
+            self.assert_denied(
+                self.agent_call(f"{base}Справка: {other}\n", env), "Справка"
+            )
+
     def test_gate_free_types(self) -> None:
         for kind in (
             "Explore",
@@ -464,6 +507,61 @@ class GuardTest(unittest.TestCase):
                         self.agent_call("Найди.", env, subagent_type=kind)
                     )
 
+    # --- ворота вопроса пользователю ---
+
+    def ask_call(self, *questions: object, env: dict | None = None):
+        items = [{"question": q} if isinstance(q, str) else q for q in questions]
+        return self.hook(
+            "pre-tool",
+            {"tool_name": "AskUserQuestion", "tool_input": {"questions": items}},
+            env=env or self.plain_env(),
+        )
+
+    def test_ask_denied_without_phrase(self) -> None:
+        for env in (self.plain_env(), self.env):
+            r = self.ask_call("Какой вариант выбрать?", env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            out = json.loads(r.stdout)["hookSpecificOutput"]
+            self.assertEqual(out["permissionDecision"], "deny")
+            self.assertIn("/duty:recall", out["permissionDecisionReason"])
+            self.assertIn("По документам:", out["permissionDecisionReason"])
+
+    def test_ask_allowed_with_phrase(self) -> None:
+        for env in (self.plain_env(), self.env):
+            r = self.ask_call(
+                "Какой вариант? По документам: решено в записи 0032.", env=env
+            )
+            self.assert_not_denied(r)
+            self.assertEqual(r.stdout, "")
+
+    def test_ask_empty_phrase_denied(self) -> None:
+        r = self.ask_call("Какой вариант? По документам: <что найдено>")
+        self.assertIn("deny", r.stdout)
+
+    def test_ask_one_bad_question_denies(self) -> None:
+        r = self.ask_call("Первый? По документам: записей нет.", "Второй без справки?")
+        out = json.loads(r.stdout)["hookSpecificOutput"]
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.assertIn("2", out["permissionDecisionReason"])
+        self.assert_not_denied(
+            self.ask_call("Первый? По документам: нет.", "Второй? По документам: нет.")
+        )
+
+    def test_ask_single_json_in_stdout(self) -> None:
+        r = self.ask_call("Без справки?", env=self.env)
+        self.assertEqual(len(r.stdout.strip().splitlines()), 1)
+        json.loads(r.stdout)
+
+    def test_hooks_json_matches_ask_user_question(self) -> None:
+        config = json.loads(
+            (PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8")
+        )
+        entry = config["hooks"]["PreToolUse"][0]
+        self.assertEqual(
+            set(entry["matcher"].split("|")), {"Agent", "Task", "AskUserQuestion"}
+        )
+        self.assertNotIn("DUTY_ROLE", entry["hooks"][0]["command"])
+
     def test_gate_task_tool_like_agent(self) -> None:
         self.assert_denied(
             self.agent_call("Сделай.", self.plain_env(), tool="Task"),
@@ -474,7 +572,7 @@ class GuardTest(unittest.TestCase):
         )
 
     def test_gate_headings_pass(self) -> None:
-        prompt = "## Критерий готовности\n\n`pytest -q` зелёный\n\n## Условие остановки\n\nпадение\n"
+        prompt = "## Критерий готовности\n\n`pytest -q` зелёный\n\n## Условие остановки\n\nпадение\n\nСправка: не нужна — проба\n"
         self.assert_not_denied(self.agent_call(prompt, self.plain_env()))
 
     def test_gate_empty_values_denied(self) -> None:
@@ -597,7 +695,7 @@ class GuardTest(unittest.TestCase):
             (PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8")
         )
         entries = {e["matcher"]: e for e in config["hooks"]["PreToolUse"]}
-        gate = entries["Agent|Task"]["hooks"][0]["command"]
+        gate = entries["Agent|Task|AskUserQuestion"]["hooks"][0]["command"]
         self.assertNotIn("DUTY_ROLE", gate)
         self.assertIn("task-guard.py", gate)
         guard = entries["Monitor|Bash|SendMessage"]["hooks"][0]["command"]

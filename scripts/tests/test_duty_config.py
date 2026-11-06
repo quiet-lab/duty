@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import unittest
 from pathlib import Path
@@ -127,6 +128,21 @@ class LayersTest(Base):
         self.assertIs(cfg.get("git.forbid_stash"), True)
         self.assertEqual(cfg.get("nope.key", "d"), "d")
         self.assertEqual(cfg.name, "proj")
+
+    def test_docs_recall_default_override_and_check(self) -> None:
+        root = self.repo()
+        self.assertEqual(
+            self.cli("get", "docs.recall", cwd=root).stdout.strip(), '["docs/"]'
+        )
+        root2 = self.repo(
+            name="p2",
+            toml='schema = 1\n[docs]\nrecall = ["docs/", "todo.local.md"]\n',
+        )
+        cfg = duty_config.load(cwd=root2)
+        self.assertEqual(cfg.get("docs.recall"), ["docs/", "todo.local.md"])
+        self.assertEqual(self.cli("check", cwd=root2).returncode, 0)
+        root3 = self.repo(name="p3", toml='schema = 1\n[docs]\nrecall = "docs/"\n')
+        self.assertNotEqual(self.cli("check", cwd=root3).returncode, 0)
 
     def test_protected_default_includes_origin_head(self) -> None:
         root = self.repo(toml=None)
@@ -797,6 +813,113 @@ class HelpersTest(Base):
         )
         (sessions / "b.json").write_text("{bad", encoding="utf-8")
         self.assertEqual(dutylib.active_sessions(self.home), {"live"})
+
+
+class HelpHasNoShimTest(unittest.TestCase):
+    def test_help_has_no_launch_shim(self) -> None:
+        scripts = Path(__file__).resolve().parent.parent
+        for path in sorted(scripts.glob("*.py")):
+            if path.name == "dutylib.py":
+                continue
+            text = path.read_text(encoding="utf-8")
+            if "exec python3 -I" not in text or (
+                "argparse" not in text and path.name != "cleanup-candidates.py"
+            ):
+                continue
+            with self.subTest(script=path.name):
+                proc = subprocess.run(
+                    ["python3", "-I", str(path), "--help"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    stdin=subprocess.DEVNULL,
+                )
+                self.assertNotIn("exec python3", proc.stdout + proc.stderr)
+
+
+class ShellLaunchTest(Base):
+    """Сценарий, переданный оболочке (`bash duty_config.py get …`), не выполняет строки Python.
+
+    Без защиты bash исполняет докстринг и строки `import …`, а `import`
+    ImageMagick ждёт щелчка мыши по окну: команда не завершается.
+    Заглушка `import` в PATH повторяет это ожидание без X-сервера.
+    Срока ожидания у вызова нет: при регрессии тест зависает, и его
+    останавливает внешний предел прогона; длительность вызова печатается
+    в stderr как замер.
+    """
+
+    def stubs(self, import_body: str, python_body: str | None = None) -> Path:
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        bodies = {"import": import_body}
+        if python_body is not None:
+            bodies["python3"] = python_body
+        for name, body in bodies.items():
+            stub = bin_dir / name
+            stub.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
+            stub.chmod(0o755)
+        return bin_dir
+
+    def run_shell(
+        self, shell: str, script: Path, *args: str, path: str
+    ) -> tuple[int, str, str]:
+        proc = subprocess.Popen(
+            [shell, str(script), *args],
+            cwd=self.tmp,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**self.env, "PATH": path},
+        )
+        # Срока ожидания нет: при регрессии (bash исполняет `import`) вызов
+        # не завершается, и его ловит внешний предел прогона целиком.
+        started = time.monotonic()
+        out, err = proc.communicate()
+        print(
+            f"замер: {shell} {script.name} {' '.join(args)}:"
+            f" {time.monotonic() - started:.3f} с",
+            file=sys.stderr,
+        )
+        return proc.returncode, out, err
+
+    def test_bash_get_does_not_wait_for_import(self) -> None:
+        root = self.repo(toml='schema = 1\n[docs]\ndecisions = "docs/decisions"\n')
+        # Заглушка ждёт без конца, как import ImageMagick до щелчка мыши.
+        bin_dir = self.stubs("exec tail -f /dev/null")
+        path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+        rc, out, err = self.run_shell(
+            "bash", SCRIPT, "--root", str(root), "get", "docs.decisions", path=path
+        )
+        self.assertEqual((rc, out, err), (0, "docs/decisions\n", ""))
+
+    def test_every_entry_script_hands_shell_launch_to_python(self) -> None:
+        marker = self.tmp / "import-called"
+        calls = self.tmp / "python-calls"
+        bin_dir = self.stubs(
+            f'echo "$0" >> "{marker}"', f'printf "%s\\n" "$*" >> "{calls}"'
+        )
+        scripts = [
+            p
+            for p in [*SCRIPTS.glob("*.py"), *(SCRIPTS.parent / "hooks").glob("*.py")]
+            if p.name != "dutylib.py"
+        ]
+        self.assertIn(SCRIPT, scripts)
+        for script in scripts:
+            for shell in ("bash", "sh"):
+                with self.subTest(script=script.name, shell=shell):
+                    rc, _, err = self.run_shell(
+                        shell,
+                        script,
+                        "--help",
+                        path=f"{bin_dir}{os.pathsep}/usr/bin:/bin",
+                    )
+                    self.assertEqual((rc, err), (0, ""))
+                    self.assertFalse(marker.exists(), "оболочка дошла до import")
+                    self.assertEqual(
+                        calls.read_text(encoding="utf-8").splitlines()[-1],
+                        f"-I {script} --help",
+                    )
 
 
 if __name__ == "__main__":

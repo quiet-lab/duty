@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -13,6 +14,10 @@ PLUGIN = Path(__file__).resolve().parents[2]
 LINT = PLUGIN / "scripts" / "rules-lint.py"
 # Замер: запуск на двойниках — 0,05 с; предел — предохранитель от зависания.
 LIMIT_S = 10
+
+# Переменные среды запуска, которые меняют поиск корня проекта и слой
+# пользователя: тесты их убирают, чтобы не видеть настоящий проект.
+CLEARED = ("DUTY_PROJECT", "CLAUDE_PROJECT_DIR", "DUTY_CONFIG_USER")
 
 SENTENCE = (
     "Независимые подзадачи выполняются параллельно, если они не пересекаются "
@@ -25,6 +30,14 @@ class RulesLintTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
+        env = {k: v for k, v in os.environ.items() if k not in CLEARED}
+        env.update(
+            HOME=str(self.root / "home"),
+            DUTY_CONFIG_USER=str(self.root / "no-user.toml"),
+        )
+        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def write(self, name: str, text: str) -> None:
         path = self.root / name
@@ -126,6 +139,13 @@ class RulesLintTest(unittest.TestCase):
         sys.modules["rules_lint"] = module
         self.addCleanup(sys.modules.pop, "rules_lint", None)
         spec.loader.exec_module(module)
+        # Без корня проекта: подъём от текущего каталога не должен найти
+        # конфигурацию дерева, из которого запущен тест.
+        bare = self.root / "bare"
+        bare.mkdir()
+        cwd = os.getcwd()
+        os.chdir(bare)
+        self.addCleanup(os.chdir, cwd)
         with mock.patch.object(module, "PLUGIN_FILES", ("reference/нет-файла.md",)):
             findings = module.run_repeats(None)
         self.assertEqual(
@@ -199,7 +219,7 @@ class RulesLintTest(unittest.TestCase):
     def test_brief_subcommand(self) -> None:
         good = (
             "## Цель\n\nЦель задачи.\n\n## Критерий готовности\n\n`true`\n\n"
-            "## Условие остановки\n\nСтоп при падении.\n\n## Ссылки\n\n- Прочитанное при постановке: `CLAUDE.md`\n"
+            "## Условие остановки\n\nСтоп при падении.\n\n## Ссылки\n\n- Прочитанное при постановке: `CLAUDE.md`\n- Справка: не нужна — проба\n"
         )
         path = self.root / "brief.md"
         path.write_text(good, encoding="utf-8")
@@ -213,6 +233,26 @@ class RulesLintTest(unittest.TestCase):
         self.assertIn("Условие остановки", r.stdout)
         r = self.run_lint("brief", "-", stdin=good)
         self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_brief_subcommand_recall(self) -> None:
+        base = (
+            "## Цель\n\nЦель задачи.\n\n## Критерий готовности\n\n`true`\n\n"
+            "## Условие остановки\n\nСтоп при падении.\n\n## Ссылки\n\n- Прочитанное при постановке: `CLAUDE.md`\n"
+        )
+        r = self.run_lint("brief", "-", stdin=base)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Ссылки / Справка", r.stdout)
+        self.write(".duty/duty.toml", 'schema = 1\n[paths]\nresults = "res"\n')
+        report = self.root / "res" / "recall" / "t-20261106-1200.md"
+        self.write("res/recall/t-20261106-1200.md", "справка\n")
+        text = base + "- Справка: res/recall/t-20261106-1200.md\n"
+        r = self.run_lint("brief", "-", "--root", str(self.root), stdin=text)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        old = time.time() - 25 * 3600
+        os.utime(report, (old, old))
+        r = self.run_lint("brief", "-", "--root", str(self.root), stdin=text)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("старше суток", r.stdout)
 
 
 if __name__ == "__main__":

@@ -1,16 +1,24 @@
 """Проверка формы записки задачи и приглашения субагента.
+" 2>/dev/null; exec python3 -I "$0" "$@" # файл, переданный оболочке (bash файл.py), запускается python3
 
 Единственный код проверки: его вызывают `scripts/rules-lint.py` (а через него
-и `dispatch.sh`) и хук `hooks/task-guard.py`. Зависимостей нет.
+и `dispatch.sh`) и хук `hooks/task-guard.py`. Зависимость одна: `duty_config` (каталог результатов).
 
 - `check_brief` — файл записки `brief.md` по шаблону `reference/brief-template.md`;
-- `check_prompt` — приглашение `Agent`: строки «Критерий готовности» и
-  «Условие остановки».
+- `check_prompt` — приглашение `Agent`: строки «Критерий готовности»,
+  «Условие остановки» и «Справка»;
+- `check_question` — текст вопроса `AskUserQuestion`: фраза «По документам:».
+
+Строка «Справка: <путь>» называет файл итога `/duty:recall` в `<paths.results>/recall/`
+с расширением .md, в записке — не старше суток (путь абсолютный или от корня проекта) либо «Справка: не нужна — <причина>».
 """
 
 from __future__ import annotations
 
+import os
 import re
+import time
+from pathlib import Path
 
 SECTIONS = ("Цель", "Критерий готовности", "Условие остановки", "Ссылки")
 READ_NAME = "Прочитанное при постановке"
@@ -19,6 +27,14 @@ STOP_NAME = "Условие остановки"
 LINKS_READ_VIOLATION = f"Ссылки / {READ_NAME}"
 DONE_COMMAND_VIOLATION = f"{DONE_NAME} (не названа команда)"
 PROMPT_NAMES = (DONE_NAME, STOP_NAME)
+RECALL_NAME = "Справка"
+LINKS_RECALL_VIOLATION = f"Ссылки / {RECALL_NAME}"
+RECALL_MAX_AGE_S = 24 * 60 * 60
+RECALL_FUTURE_S = 5 * 60
+NOT_NEEDED_RE = re.compile(
+    r"^не\s+нужна\b\s*(?:[:,;—–-]+\s*(.*))?$", re.IGNORECASE | re.DOTALL
+)
+QUESTION_MARK = "По документам:"
 
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
@@ -166,8 +182,84 @@ def has_read(
     return any(not is_placeholder(v) for v in labeled_values(body, READ_NAME))
 
 
-def check_brief(text: str) -> list[str]:
-    """Имена разделов записки с нарушением; пусто — записка годна."""
+def project_root(root: str | os.PathLike[str] | None = None) -> Path:
+    """Корень проекта для относительных путей: аргумент, `DUTY_PROJECT`, `CLAUDE_PROJECT_DIR`, cwd."""
+    for given in (
+        root,
+        os.environ.get("DUTY_PROJECT"),
+        os.environ.get("CLAUDE_PROJECT_DIR"),
+    ):
+        if given:
+            return Path(given).expanduser()
+    return Path.cwd()
+
+
+def in_recall_dir(path: Path, root: str | os.PathLike[str] | None) -> bool:
+    """Файл лежит в `<paths.results>/recall/` и имеет расширение .md."""
+    import duty_config
+
+    base = project_root(root)
+    try:
+        value = duty_config.load(base).get("paths.results")
+    except duty_config.ConfigError:
+        return False
+    if not isinstance(value, str) or not value:
+        return False
+    directory = Path(value).expanduser()
+    directory = (directory if directory.is_absolute() else base / directory) / "recall"
+    return path.suffix == ".md" and directory.resolve() in path.resolve().parents
+
+
+def recall_state(
+    values: list[str],
+    root: str | os.PathLike[str] | None,
+    now: float | None,
+    fresh: bool = True,
+) -> str | None:
+    """Состояние строки «Справка»: None — годна; иначе суффикс нарушения.
+
+    Суффиксы: '', ' (не нужна — без причины)', ' (файла нет)', ' (не итог /duty:recall)',
+    ' (старше суток)', ' (время в будущем)'. `fresh=False` — свежесть файла не проверяется.
+    """
+    value = next((v for v in values if not is_placeholder(v)), None)
+    if value is None:
+        return ""
+    plain = value.replace("`", "").strip()
+    refusal = NOT_NEEDED_RE.match(plain)
+    if refusal:
+        if is_placeholder(refusal.group(1) or ""):
+            return " (не нужна — без причины)"
+        return None
+    fragments = INLINE_CODE_RE.findall(value)
+    target = (fragments[0] if fragments else plain).strip()
+    path = Path(target).expanduser()
+    if not path.is_absolute():
+        path = project_root(root) / path
+    try:
+        if not path.is_file():
+            return " (файла нет)"
+        age = (time.time() if now is None else now) - path.stat().st_mtime
+    except OSError:
+        return " (файла нет)"
+    if not in_recall_dir(path, root):
+        return " (не итог /duty:recall)"
+    if not fresh:
+        return None
+    if age < -RECALL_FUTURE_S:
+        return " (время в будущем)"
+    return " (старше суток)" if age > RECALL_MAX_AGE_S else None
+
+
+def check_brief(
+    text: str,
+    root: str | os.PathLike[str] | None = None,
+    now: float | None = None,
+) -> list[str]:
+    """Имена разделов записки с нарушением; пусто — записка годна.
+
+    `root` — корень проекта для относительного пути справки, `now` — текущее время
+    (секунды с начала эпохи), оба для вызывающих и тестов.
+    """
     lines = text.splitlines()
     headings = scan(lines, skip_fences=True)
     problems: list[str] = []
@@ -182,8 +274,12 @@ def check_brief(text: str) -> list[str]:
             problems.append(name)
         elif name == DONE_NAME and not has_command(body):
             problems.append(DONE_COMMAND_VIOLATION)
-        elif name == "Ссылки" and not has_read(body, lines, headings, head.index + 1):
-            problems.append(LINKS_READ_VIOLATION)
+        elif name == "Ссылки":
+            if not has_read(body, lines, headings, head.index + 1):
+                problems.append(LINKS_READ_VIOLATION)
+            state = recall_state(labeled_values(body, RECALL_NAME), root, now)
+            if state is not None:
+                problems.append(LINKS_RECALL_VIOLATION + state)
     return problems
 
 
@@ -197,8 +293,28 @@ def prompt_has(lines: list[str], headings: list[Heading], name: str) -> bool:
     return any(not is_placeholder(v) for v in labeled_values(lines, name))
 
 
-def check_prompt(text: str) -> list[str]:
-    """Недостающие в приглашении строки: «Критерий готовности», «Условие остановки»."""
+def check_prompt(
+    text: str,
+    root: str | os.PathLike[str] | None = None,
+    now: float | None = None,
+    fresh: bool = True,
+) -> list[str]:
+    """Недостающие в приглашении строки: «Критерий готовности», «Условие остановки», «Справка».
+
+    `fresh=False` — у файла справки не проверяется возраст (приглашение `Agent` долгой задачи).
+    """
     lines = text.splitlines()
     headings = scan(lines, skip_fences=False)
-    return [name for name in PROMPT_NAMES if not prompt_has(lines, headings, name)]
+    problems = [name for name in PROMPT_NAMES if not prompt_has(lines, headings, name)]
+    state = recall_state(labeled_values(lines, RECALL_NAME), root, now, fresh)
+    if state is not None:
+        problems.append(RECALL_NAME + state)
+    return problems
+
+
+def check_question(text: str) -> bool:
+    """В вопросе есть «По документам:» и за ним предложение (не заполнитель)."""
+    found = re.search(re.escape(QUESTION_MARK), text, re.IGNORECASE)
+    if found is None:
+        return False
+    return not is_placeholder(text[found.end() :])

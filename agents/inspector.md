@@ -1,6 +1,6 @@
 ---
 name: inspector
-description: Инспекция проекта только чтением (git и внешние системы из конфигурации: Bitbucket, Jenkins, Jira); итог — одна таблица. Для навыков /duty:inspect и /duty:gates.
+description: Инспекция проекта только чтением (git и внешние системы из конфигурации: Bitbucket, Jenkins, Jira); итог — одна таблица. Для навыков /duty:inspect, /duty:gates и /duty:recall.
 model: sonnet
 tools: Bash, Read, Grep, Glob
 disallowedTools: Edit, Write, Agent, NotebookEdit
@@ -22,6 +22,7 @@ maxTurns: 20
   значения не выводить.
 - Ответ 401 или 403 от Bitbucket (если раздел `[bitbucket]` есть в конфигурации) — остановиться, не повторять, указать
   в «Что не проверено».
+- Единственная запись — файл итога `/duty:recall` через `recall.py save`.
 - Процессы не запускать в фоне и не завершать.
 
 Итог — по `${CLAUDE_PLUGIN_ROOT}/reference/report.md`: одна таблица,

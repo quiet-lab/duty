@@ -15,9 +15,12 @@ import importlib.util
 import json
 import os
 import pwd
+import re
 import signal
 import ssl
 import subprocess
+import sys
+from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
 
@@ -159,17 +162,126 @@ def owner_kind(path: Path, subuids: range | None = None) -> str:
     )
 
 
-def cwd_users(path: Path) -> bool:
-    """Есть ли процесс с текущим каталогом внутри path."""
+def _with_ancestors(paths: Iterable[Path]) -> dict[Path, Path]:
+    """Индекс «каталог → один из путей внутри него»: сам путь и все его предки."""
+    index: dict[Path, Path] = {}
+    for path in paths:
+        index.setdefault(path, path)
+        for parent in path.parents:
+            if parent in index:
+                break
+            index[parent] = path
+    return index
+
+
+def _proc_paths(with_fds: bool) -> tuple[list[Path], list[Path]]:
+    """Текущие каталоги и открытые файлы процессов за один обход `/proc`; чужие процессы пропускаются."""
+    cwds: list[Path] = []
+    files: list[Path] = []
     for p in Path("/proc").iterdir():
         if not p.name.isdigit():
             continue
         try:
-            if Path(os.readlink(p / "cwd")).is_relative_to(path):
-                return True
+            cwds.append(Path(os.readlink(p / "cwd")))
+            fds = list((p / "fd").iterdir()) if with_fds else []
         except OSError:
             continue
-    return False
+        for fd in fds:
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if target.startswith("/"):
+                files.append(Path(target.removesuffix(" (deleted)")))
+    return cwds, files
+
+
+def cwd_index() -> dict[Path, Path]:
+    """Индекс текущих каталогов процессов: один обход `/proc` на запуск."""
+    return _with_ancestors(_proc_paths(False)[0])
+
+
+def cwd_users(path: Path, index: dict[Path, Path] | None = None) -> bool:
+    """Есть ли процесс с текущим каталогом внутри path (index — результат `cwd_index`)."""
+    return path in (cwd_index() if index is None else index)
+
+
+def open_paths() -> dict[Path, Path]:
+    """Индекс текущих каталогов и открытых файлов процессов (`/proc/<pid>/{cwd,fd}`).
+
+    Собирается один раз на перечень: обход `/proc` на каждый путь дорог,
+    поиск каталога — по индексу (`_with_ancestors`).
+    Процессы других пользователей пропускаются (нет прав на чтение).
+    """
+    return proc_indexes()[1]
+
+
+def proc_indexes() -> tuple[dict[Path, Path], dict[Path, Path]]:
+    """Индексы `cwd_index` и `open_paths` за один обход `/proc`."""
+    cwds, files = _proc_paths(True)
+    return _with_ancestors(cwds), _with_ancestors([*cwds, *files])
+
+
+# Строка шага state.md: «Шаг: …» или «**Шаг:** …» (как `task_step` в dispatch.sh).
+_STEP_LINE = re.compile(r"^(?:\*\*)?Шаг(?:\*\*)?:(?:\*\*)?(.*)$", re.MULTILINE)
+# Значение шага завершённой задачи: необязательный номер с тире, затем слово
+# целиком, без учёта регистра, с допустимой точкой в конце.
+_STEP_FINISHED = re.compile(
+    r"(?:\d+\s*[—–-]\s*)?(?:завершено|остановлена)\.?", re.IGNORECASE
+)
+
+
+def task_finished(state: str) -> bool:
+    """Завершена ли задача по тексту её state.md — единственный признак плагина.
+
+    Берётся первая строка «Шаг:»; её значение без пробелов по краям, без
+    префикса «<номер> —», равно «завершено» или «остановлена». «передача» —
+    не завершение: такую задачу продолжают. Зовут `live_reason` и
+    `dispatch.sh stalled` (подкоманда `task-finished`).
+    """
+    match = _STEP_LINE.search(state)
+    return bool(match and _STEP_FINISHED.fullmatch(match.group(1).strip()))
+
+
+_PID_LINE = re.compile(r"^pid: (\d+)$", re.MULTILINE)
+
+
+def tab_run_alive(run_dir: Path) -> bool:
+    """Прогон tab-run.sh без `done`, чей cmd.sh ещё работает (PID из meta.txt сверяется с командной строкой)."""
+    if (run_dir / "done").exists():
+        return False
+    try:
+        match = _PID_LINE.search((run_dir / "meta.txt").read_text(encoding="utf-8"))
+        if not match:
+            return False
+        cmdline = Path(f"/proc/{match.group(1)}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return str(run_dir / "cmd.sh").encode() in cmdline
+
+
+def live_reason(top: Path, opened: dict[Path, Path] | None = None) -> str:
+    """Почему каталог результатов (задачи или прогона) нельзя убирать; пустая строка — признаков нет.
+
+    Признаки: процесс с текущим каталогом или открытым файлом внутри
+    (серия стенда пишет журнал, итог `summary.json` появляется только
+    в конце); прогон tab-run.sh в `runs/*` без `done` с живым PID;
+    задача (`brief.md`) со `state.md`, где шаг не завершён (`task_finished`).
+    """
+    index = open_paths() if opened is None else opened
+    if top in index:
+        return f"открыт файл процесса ({index[top]})"
+    for meta in sorted(top.glob("runs/*/meta.txt")):
+        if tab_run_alive(meta.parent):
+            return f"прогон {meta.parent.name} без done с живым pid"
+    if (top / "brief.md").is_file():
+        try:
+            state = (top / "state.md").read_text(encoding="utf-8")
+        except OSError:
+            return ""  # без state.md задача не идёт — как у dispatch.sh stalled
+        if not task_finished(state):
+            return "задача не завершена (state.md без «завершено» или «остановлена» в шаге)"
+    return ""
 
 
 def active_sessions(home: Path | None = None) -> set[str]:
@@ -258,3 +370,19 @@ def run_extensions(
         else:
             results.append((entry.name, out, None))
     return results
+
+
+def _main(argv: list[str]) -> int:
+    """`dutylib.py task-finished <state.md>`: код 0 — задача завершена, 1 — нет или файла нет."""
+    if len(argv) != 2 or argv[0] != "task-finished":
+        print("использование: dutylib.py task-finished <state.md>", file=sys.stderr)
+        return 2
+    try:
+        state = Path(argv[1]).read_text(encoding="utf-8")
+    except OSError:
+        return 1
+    return 0 if task_finished(state) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv[1:]))

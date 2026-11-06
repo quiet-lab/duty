@@ -137,7 +137,8 @@
 | `docs.lint` | строка | `""` | навык `docs-sweep` |
 | `docs.sweep_area` | список | `["docs/", "*.md"]` | навык `docs-sweep` |
 | `docs.sweep_exclude` | список | `[]` | навык `docs-sweep` |
-| `docs.openspec` | список | `[]` | навык `after-merge` |
+| `docs.openspec` | список | `[]` | навыки `after-merge`, `recall` (сценарий `recall.py`) |
+| `docs.recall` | список | `["docs/"]` | навык `recall`, сценарий `recall.py`: каталоги, маски и файлы документов устройства и открытых вопросов от корня проекта; отсутствующий файл пропускается |
 | `[[docs.post_change]]` | `paths` — список, `note` — строка | `[]` | навык `docs-sweep` |
 | `[[busy.resources]]` | `name`, `why`, `until` — строки | `[]` | навыки `inspect` и `dispatch`, `reference/worker-rules.md` (текст); сценарии ключ не читают |
 | `cleanup.keep_trees` | список | `[]` | `cleanup-candidates.py` |
@@ -271,6 +272,7 @@ lint = "python3 -I scripts/docs-lint.py"
 sweep_area = ["docs/", "*.md", ".claude/rules/", "openspec/"]
 sweep_exclude = ["openspec/changes/archive/", "docs/decisions/README.md"]
 openspec = ["openspec", "services/api/openspec"]
+recall = ["docs/", "todo.local.md"]
 
 [[docs.post_change]]
 paths = ["docs/ci/"]

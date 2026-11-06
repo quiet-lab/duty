@@ -32,7 +32,7 @@ maxTurns: 40
   проверить командой, что объекта нет.
 - `/tmp` — общий tmpfs: копии и выводы туда не класть, результаты —
   в каталоге результатов из конфигурации (`paths.results`,
-  `duty_config.py get paths.results`).
+  `python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/duty_config.py" get paths.results`).
 
 Итог — по `${CLAUDE_PLUGIN_ROOT}/reference/report.md`: одна таблица
 шагов с результатом, «Решения за пользователем» (вопрос с вариантами,

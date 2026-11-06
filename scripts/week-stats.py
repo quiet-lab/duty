@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Неделя в цифрах: показатели работы за период для /duty:inspect.
+" 2>/dev/null; exec python3 -I "$0" "$@" # файл, переданный оболочке (bash файл.py), запускается python3
 
 Показатели: время жизни набора (pull request'ы репозитория наборов
 `bitbucket.sets_repo` от создания до слияния), занятость Jenkins и доля случайных падений, вопросов агентов
@@ -290,9 +291,18 @@ def classify_path(repo_name: str, path: str) -> str:
     return "код"
 
 
+def git_since(since_ms: int) -> str:
+    """Граница `--since` для git в ISO UTC.
+
+    Форму `@<секунды>` git разбирает как метку времени только для больших
+    чисел: `@0` он понимает как «сейчас» и отсекает коммиты прошлых секунд.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since_ms // 1000))
+
+
 def git_stats(root: Path, since_ms: int) -> dict:
     """Доли моделей и классов по коммитам периода без слияний во всех репозиториях."""
-    since = f"@{since_ms // 1000}"
+    since = git_since(since_ms)
     models: Counter = Counter()
     primary: Counter = Counter()
     seen: set[str] = set()
@@ -337,7 +347,7 @@ def new_records(root: Path, since_ms: int) -> int:
     log = run_git(
         root,
         "log",
-        f"--since=@{since_ms // 1000}",
+        f"--since={git_since(since_ms)}",
         "--diff-filter=A",
         "-M",
         "--format=",

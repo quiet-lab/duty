@@ -173,21 +173,6 @@ class DispatchGateTest(unittest.TestCase):
                         args += [key, value]
                 self.assert_refused(self.dispatch(*args), missing)
 
-    def test_goal_without_priorities_refused(self) -> None:
-        r = self.dispatch(
-            "--goal",
-            "Сделать",
-            "--done",
-            "`true` зелёный",
-            "--stop",
-            "стоп",
-            "--read",
-            "`CLAUDE.md`",
-            "--recall",
-            "не нужна — проба",
-        )
-        self.assert_refused(r, "--priorities")
-
     def test_goal_done_without_command_refused(self) -> None:
         r = self.dispatch(
             "--goal",

@@ -42,6 +42,9 @@ RECALL_FUTURE_S = 5 * 60
 NOT_NEEDED_RE = re.compile(
     r"^не\s+нужна\b\s*(?:[:,;—–-]+\s*(.*))?$", re.IGNORECASE | re.DOTALL
 )
+NO_FORKS_RE = re.compile(
+    r"^развилок\s+нет\b\s*(?:[:,;—–-]+\s*(.*))?$", re.IGNORECASE | re.DOTALL
+)
 QUESTION_MARK = "По документам:"
 
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
@@ -278,7 +281,9 @@ def check_brief(
             problems.append(name)
             continue
         body = body_of(lines, headings, head, max_level=2)
-        if not has_content(body):
+        if not has_content(body) or (
+            name == PRIORITIES_NAME and forks_without_reason(body)
+        ):
             problems.append(name)
         elif name == DONE_NAME and not has_command(body):
             problems.append(DONE_COMMAND_VIOLATION)
@@ -289,6 +294,17 @@ def check_brief(
             if state is not None:
                 problems.append(LINKS_RECALL_VIOLATION + state)
     return problems
+
+
+def forks_without_reason(candidates: list[str]) -> bool:
+    """Среди строк есть «развилок нет» без непустой причины после тире."""
+    for text in candidates:
+        found = NO_FORKS_RE.match(
+            BULLET_RE.sub("", text, count=1).replace("`", "").strip()
+        )
+        if found and is_placeholder(found.group(1) or ""):
+            return True
+    return False
 
 
 def prompt_has(lines: list[str], headings: list[Heading], name: str) -> bool:
@@ -315,6 +331,15 @@ def check_prompt(
     lines = text.splitlines()
     headings = scan(lines, skip_fences=False)
     problems = [name for name in PROMPT_NAMES if not prompt_has(lines, headings, name)]
+    if PRIORITIES_NAME not in problems:
+        bodies = [
+            line
+            for head in headings
+            if head.name == PRIORITIES_NAME.casefold()
+            for line in body_of(lines, headings, head, max_level=6)
+        ]
+        if forks_without_reason(labeled_values(lines, PRIORITIES_NAME) + bodies):
+            problems.append(PRIORITIES_NAME)
     state = recall_state(labeled_values(lines, RECALL_NAME), root, now, fresh)
     if state is not None:
         problems.append(RECALL_NAME + state)

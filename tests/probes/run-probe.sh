@@ -63,7 +63,7 @@ case $num in
     6) name=overflow-handoff model=haiku ;;
     6b | 6б) name=overflow-handoff model=haiku ;;
     7) name=neighbours model= ;;
-    *) die "нет пробы $num (есть 1-7 и 6b)" ;;
+    *) die "нет пробы $num (есть 2-7 и 6b)" ;;
 esac
 
 render() { # источник приёмник

@@ -74,6 +74,16 @@ class CheckBriefTest(unittest.TestCase):
         )
         self.assertEqual(brief_check.check_brief(empty), ["Приоритеты"])
 
+    def test_brief_priorities_no_forks_needs_reason(self) -> None:
+        line = "Правка одного репозитория важнее общей оснастки."
+        for bad in ("Развилок нет", "Развилок нет —"):
+            with self.subTest(bad=bad):
+                self.assertEqual(
+                    brief_check.check_brief(FULL.replace(line, bad)), ["Приоритеты"]
+                )
+        ok = FULL.replace(line, "Развилок нет — линейная задача")
+        self.assertEqual(brief_check.check_brief(ok), [])
+
     def test_missing_section_named(self) -> None:
         for name in brief_check.SECTIONS:
             with self.subTest(name=name):
@@ -432,6 +442,8 @@ class RecallLineTest(unittest.TestCase):
         )
         self.assertEqual(got("Приоритеты: <порядок предпочтений>\n"), ["Приоритеты"])
         self.assertEqual(got("Приоритеты: —\n"), ["Приоритеты"])
+        self.assertEqual(got("Приоритеты: развилок нет\n"), ["Приоритеты"])
+        self.assertEqual(got("Приоритеты: развилок нет —\n"), ["Приоритеты"])
 
     def test_prompt_recall_line(self) -> None:
         base = f"Критерий готовности: `x` зелёный\nУсловие остановки: падение\n{PRIORITIES_OK}\n"

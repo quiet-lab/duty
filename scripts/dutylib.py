@@ -19,6 +19,7 @@ import re
 import signal
 import ssl
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
 
@@ -160,32 +161,27 @@ def owner_kind(path: Path, subuids: range | None = None) -> str:
     )
 
 
-def cwd_users(path: Path) -> bool:
-    """Есть ли процесс с текущим каталогом внутри path."""
-    for p in Path("/proc").iterdir():
-        if not p.name.isdigit():
-            continue
-        try:
-            if Path(os.readlink(p / "cwd")).is_relative_to(path):
-                return True
-        except OSError:
-            continue
-    return False
+def _with_ancestors(paths: Iterable[Path]) -> dict[Path, Path]:
+    """Индекс «каталог → один из путей внутри него»: сам путь и все его предки."""
+    index: dict[Path, Path] = {}
+    for path in paths:
+        index.setdefault(path, path)
+        for parent in path.parents:
+            if parent in index:
+                break
+            index[parent] = path
+    return index
 
 
-def open_paths() -> list[Path]:
-    """Текущие каталоги и открытые файлы всех доступных процессов (`/proc/<pid>/{cwd,fd}`).
-
-    Собирается один раз на перечень: обход `/proc` на каждый путь дорог.
-    Процессы других пользователей пропускаются (нет прав на чтение).
-    """
+def _proc_paths(with_fds: bool) -> list[Path]:
+    """Текущие каталоги (и открытые файлы) процессов; чужие процессы пропускаются."""
     found: list[Path] = []
     for p in Path("/proc").iterdir():
         if not p.name.isdigit():
             continue
         try:
             found.append(Path(os.readlink(p / "cwd")))
-            fds = list((p / "fd").iterdir())
+            fds = list((p / "fd").iterdir()) if with_fds else []
         except OSError:
             continue
         for fd in fds:
@@ -196,6 +192,26 @@ def open_paths() -> list[Path]:
             if target.startswith("/"):
                 found.append(Path(target.removesuffix(" (deleted)")))
     return found
+
+
+def cwd_index() -> dict[Path, Path]:
+    """Индекс текущих каталогов процессов: один обход `/proc` на запуск."""
+    return _with_ancestors(_proc_paths(False))
+
+
+def cwd_users(path: Path, index: dict[Path, Path] | None = None) -> bool:
+    """Есть ли процесс с текущим каталогом внутри path (index — результат `cwd_index`)."""
+    return path in (cwd_index() if index is None else index)
+
+
+def open_paths() -> dict[Path, Path]:
+    """Индекс текущих каталогов и открытых файлов процессов (`/proc/<pid>/{cwd,fd}`).
+
+    Собирается один раз на перечень: обход `/proc` на каждый путь дорог,
+    поиск каталога — по индексу (`_with_ancestors`).
+    Процессы других пользователей пропускаются (нет прав на чтение).
+    """
+    return _with_ancestors(_proc_paths(True))
 
 
 # Признаки конца задачи — те же, что у `dispatch.sh stalled`: «завершено» или
@@ -220,7 +236,7 @@ def tab_run_alive(run_dir: Path) -> bool:
     return str(run_dir / "cmd.sh").encode() in cmdline
 
 
-def live_reason(top: Path, opened: list[Path] | None = None) -> str:
+def live_reason(top: Path, opened: dict[Path, Path] | None = None) -> str:
     """Почему каталог результатов (задачи или прогона) нельзя убирать; пустая строка — признаков нет.
 
     Признаки: процесс с текущим каталогом или открытым файлом внутри
@@ -229,9 +245,9 @@ def live_reason(top: Path, opened: list[Path] | None = None) -> str:
     задача (`brief.md`) со `state.md`, где шаг не «завершено» и не
     «остановлена» (признаки `dispatch.sh stalled`).
     """
-    for path in open_paths() if opened is None else opened:
-        if path.is_relative_to(top):
-            return f"открыт файл процесса ({path})"
+    index = open_paths() if opened is None else opened
+    if top in index:
+        return f"открыт файл процесса ({index[top]})"
     for meta in sorted(top.glob("runs/*/meta.txt")):
         if tab_run_alive(meta.parent):
             return f"прогон {meta.parent.name} без done с живым pid"

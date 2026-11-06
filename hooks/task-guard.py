@@ -39,7 +39,6 @@ from pathlib import Path
 PLUGIN = Path(__file__).resolve().parent.parent
 SCRIPTS = PLUGIN / "scripts"
 TAG_RE = re.compile(r"^Подзадача: ([a-z0-9][a-z0-9_.-]{0,63})\s*$", re.MULTILINE)
-PID_RE = re.compile(r"^pid: (\d+)$", re.MULTILINE)
 SUBAGENT_TOOLS = {"Agent", "Task"}
 # Эти субагенты только читают и отвечают сразу: итог виден в их ответе.
 READ_ONLY_TYPES = {"Explore", "Plan", "claude-code-guide", "duty:inspector"}
@@ -338,17 +337,11 @@ def stopped_without_result(task: Path) -> list[tuple[str, str]]:
 
 
 def run_alive(run_dir: Path) -> bool:
-    """Прогон без `done`, чей cmd.sh ещё работает; PID сверяется с командной строкой."""
-    if (run_dir / "done").exists():
-        return False
-    try:
-        match = PID_RE.search((run_dir / "meta.txt").read_text(encoding="utf-8"))
-        if not match:
-            return False
-        cmdline = Path(f"/proc/{match.group(1)}/cmdline").read_bytes()
-    except OSError:
-        return False
-    return str(run_dir / "cmd.sh").encode() in cmdline
+    """Прогон без `done`, чей cmd.sh ещё работает; реализация — `dutylib.tab_run_alive`."""
+    sys.path.insert(0, str(SCRIPTS))
+    import dutylib
+
+    return dutylib.tab_run_alive(run_dir)
 
 
 def json_lines(argv: list[str]) -> object:

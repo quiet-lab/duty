@@ -88,7 +88,8 @@ _positional: list[str] = []
 while _args:
     _a = _args.pop(0)
     if _a in ("-h", "--help"):
-        print(__doc__)
+        first, _, rest = __doc__.partition("\n")
+        print(first + "\n" + rest.partition("\n")[2])  # без строки-переходника
         sys.exit(0)
     elif _a == "--exclude":
         if not _args:
@@ -209,6 +210,7 @@ def worktrees(repo: Path) -> list[dict[str, str]]:
 
 
 live = active_sessions()
+CWDS = dutylib.cwd_index()
 in_live_session = lambda p: any(s in str(p) for s in live)
 
 for repo, parent in submodules():
@@ -275,7 +277,7 @@ for repo, parent in submodules():
                 parent,
             )
             continue
-        if in_live_session(path) or cwd_users(path):
+        if in_live_session(path) or cwd_users(path, CWDS):
             add(
                 "worktree",
                 f"{path} [{branch}]",
@@ -412,7 +414,7 @@ for repo, parent in submodules():
 project = SCRATCH / ("-" + str(ROOT).strip("/").replace("/", "-"))
 transcripts = HOME / ".claude/projects" / project.name
 for d in sorted(project.glob("*")) if project.is_dir() else []:
-    if d.name in live or cwd_users(d):
+    if d.name in live or cwd_users(d, CWDS):
         continue
     t = transcripts / f"{d.name}.jsonl"
     # Сеанс без процесса, но с журналом свежее часа, мог продолжиться через

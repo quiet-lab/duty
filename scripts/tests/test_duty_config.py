@@ -818,10 +818,12 @@ class HelpHasNoShimTest(unittest.TestCase):
     def test_help_has_no_launch_shim(self) -> None:
         scripts = Path(__file__).resolve().parent.parent
         for path in sorted(scripts.glob("*.py")):
-            if path.name in ("cleanup-candidates.py", "dutylib.py"):
+            if path.name == "dutylib.py":
                 continue
             text = path.read_text(encoding="utf-8")
-            if "exec python3 -I" not in text or "argparse" not in text:
+            if "exec python3 -I" not in text or (
+                "argparse" not in text and path.name != "cleanup-candidates.py"
+            ):
                 continue
             with self.subTest(script=path.name):
                 proc = subprocess.run(

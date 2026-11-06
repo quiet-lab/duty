@@ -12,6 +12,10 @@
 
 Шаг не выполняется или проверка падает и не чинится правкой за один подход — остановка и запись причины в `report.md`; вопрос вне пробы не задаётся.
 
+## Приоритеты
+
+Развилок нет — проба линейна.
+
 ## Следующие шаги
 
 1. Запустить вкладку: `bash {{PLUGIN}}/scripts/tab-run.sh waiter --cwd {{SANDBOX}} -- 'inotifywait -e create -e moved_to {{SANDBOX}}/marker'`. В ответе JSON с `tab_id`.
@@ -29,7 +33,7 @@
 - репозиторий проекта не трогать; Jira, Bitbucket, Confluence, Jenkins не менять; push только в песочный `origin` (`{{SANDBOX}}/origin.git`), если разрешён ниже.
 - Песочница `{{SANDBOX}}/` вне проекта: правки только в клонах внутри `$DUTY_TASK/work/`.
 - Тесты песочницы: `{{SANDBOX}}/venv/bin/python -m pytest -q` (в системном `python3` pytest нет). Один тест падает намеренно: `tests/test_pricing.py::test_threshold_is_inclusive`.
-- Вопросов не задавать (`ask.py` не вызывать).
+- Вопросов не задавать (`AskUserQuestion` не вызывать).
 - Workspace закрыть самому.
 
 ## Ожидание в report.md

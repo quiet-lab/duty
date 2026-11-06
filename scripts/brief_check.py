@@ -4,9 +4,10 @@
 Единственный код проверки: его вызывают `scripts/rules-lint.py` (а через него
 и `dispatch.sh`) и хук `hooks/task-guard.py`. Зависимость одна: `duty_config` (каталог результатов).
 
-- `check_brief` — файл записки `brief.md` по шаблону `reference/brief-template.md`;
+- `check_brief` — файл записки `brief.md` по шаблону `reference/brief-template.md`
+  (обязательные разделы, среди них «Приоритеты»);
 - `check_prompt` — приглашение `Agent`: строки «Критерий готовности»,
-  «Условие остановки» и «Справка»;
+  «Условие остановки», «Приоритеты» и «Справка»;
 - `check_question` — текст вопроса `AskUserQuestion`: фраза «По документам:».
 
 Строка «Справка: <путь>» называет файл итога `/duty:recall` в `<paths.results>/recall/`
@@ -20,19 +21,29 @@ import re
 import time
 from pathlib import Path
 
-SECTIONS = ("Цель", "Критерий готовности", "Условие остановки", "Ссылки")
+SECTIONS = (
+    "Цель",
+    "Критерий готовности",
+    "Условие остановки",
+    "Приоритеты",
+    "Ссылки",
+)
 READ_NAME = "Прочитанное при постановке"
 DONE_NAME = "Критерий готовности"
 STOP_NAME = "Условие остановки"
+PRIORITIES_NAME = "Приоритеты"
 LINKS_READ_VIOLATION = f"Ссылки / {READ_NAME}"
 DONE_COMMAND_VIOLATION = f"{DONE_NAME} (не названа команда)"
-PROMPT_NAMES = (DONE_NAME, STOP_NAME)
+PROMPT_NAMES = (DONE_NAME, STOP_NAME, PRIORITIES_NAME)
 RECALL_NAME = "Справка"
 LINKS_RECALL_VIOLATION = f"Ссылки / {RECALL_NAME}"
 RECALL_MAX_AGE_S = 24 * 60 * 60
 RECALL_FUTURE_S = 5 * 60
 NOT_NEEDED_RE = re.compile(
     r"^не\s+нужна\b\s*(?:[:,;—–-]+\s*(.*))?$", re.IGNORECASE | re.DOTALL
+)
+NO_FORKS_RE = re.compile(
+    r"^развилок\s+нет\b\s*(?:[:,;—–-]+\s*(.*))?$", re.IGNORECASE | re.DOTALL
 )
 QUESTION_MARK = "По документам:"
 
@@ -270,7 +281,9 @@ def check_brief(
             problems.append(name)
             continue
         body = body_of(lines, headings, head, max_level=2)
-        if not has_content(body):
+        if not has_content(body) or (
+            name == PRIORITIES_NAME and forks_without_reason(body)
+        ):
             problems.append(name)
         elif name == DONE_NAME and not has_command(body):
             problems.append(DONE_COMMAND_VIOLATION)
@@ -281,6 +294,17 @@ def check_brief(
             if state is not None:
                 problems.append(LINKS_RECALL_VIOLATION + state)
     return problems
+
+
+def forks_without_reason(candidates: list[str]) -> bool:
+    """Среди строк есть «развилок нет» без непустой причины после тире."""
+    for text in candidates:
+        found = NO_FORKS_RE.match(
+            BULLET_RE.sub("", text, count=1).replace("`", "").strip()
+        )
+        if found and is_placeholder(found.group(1) or ""):
+            return True
+    return False
 
 
 def prompt_has(lines: list[str], headings: list[Heading], name: str) -> bool:
@@ -299,13 +323,23 @@ def check_prompt(
     now: float | None = None,
     fresh: bool = True,
 ) -> list[str]:
-    """Недостающие в приглашении строки: «Критерий готовности», «Условие остановки», «Справка».
+    """Недостающие в приглашении строки: «Критерий готовности», «Условие остановки», «Приоритеты», «Справка».
 
+    «Приоритеты» — порядок предпочтений на развилках или «развилок нет — <причина>»; заполнитель не годится.
     `fresh=False` — у файла справки не проверяется возраст (приглашение `Agent` долгой задачи).
     """
     lines = text.splitlines()
     headings = scan(lines, skip_fences=False)
     problems = [name for name in PROMPT_NAMES if not prompt_has(lines, headings, name)]
+    if PRIORITIES_NAME not in problems:
+        bodies = [
+            line
+            for head in headings
+            if head.name == PRIORITIES_NAME.casefold()
+            for line in body_of(lines, headings, head, max_level=6)
+        ]
+        if forks_without_reason(labeled_values(lines, PRIORITIES_NAME) + bodies):
+            problems.append(PRIORITIES_NAME)
     state = recall_state(labeled_values(lines, RECALL_NAME), root, now, fresh)
     if state is not None:
         problems.append(RECALL_NAME + state)

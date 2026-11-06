@@ -40,6 +40,10 @@ FULL = """# Задача t
 
 Падение теста — отчёт.
 
+## Приоритеты
+
+Развилок нет — линейная задача.
+
 ## Ссылки
 
 - Прочитанное при постановке: `CLAUDE.md`.
@@ -114,6 +118,7 @@ class DispatchGateTest(unittest.TestCase):
             "Цель": "## Цель\n\nСделать.\n\n",
             "Критерий готовности": "## Критерий готовности\n\n`pytest -q` — зелёный.\n\n",
             "Условие остановки": "## Условие остановки\n\nПадение теста — отчёт.\n\n",
+            "Приоритеты": "## Приоритеты\n\nРазвилок нет — линейная задача.\n\n",
             "Ссылки": "## Ссылки\n\n- Прочитанное при постановке: `CLAUDE.md`.\n- Справка: не нужна — проба.\n",
         }
         for name, cut in cases.items():
@@ -156,6 +161,7 @@ class DispatchGateTest(unittest.TestCase):
         keys = {
             "--done": "`true` зелёный",
             "--stop": "падение — отчёт",
+            "--priorities": "развилок нет — линейная задача",
             "--read": "`CLAUDE.md`",
             "--recall": "не нужна — проба",
         }
@@ -175,6 +181,8 @@ class DispatchGateTest(unittest.TestCase):
             "всё готово",
             "--stop",
             "стоп",
+            "--priorities",
+            "развилок нет — линейная задача",
             "--read",
             "`CLAUDE.md`",
             "--recall",
@@ -190,6 +198,8 @@ class DispatchGateTest(unittest.TestCase):
             "`pytest -q` зелёный",
             "--stop",
             "падение — отчёт",
+            "--priorities",
+            "развилок нет — линейная задача",
             "--read",
             "`CLAUDE.md`",
             "--recall",
@@ -201,6 +211,7 @@ class DispatchGateTest(unittest.TestCase):
             "Цель & смысл",
             "`pytest -q` зелёный",
             "падение — отчёт",
+            "развилок нет — линейная задача",
             "Прочитанное при постановке: `CLAUDE.md`",
             "Справка: не нужна — решения A & B сверены",
         ):
@@ -267,6 +278,8 @@ class DispatchGateTest(unittest.TestCase):
             "`true` зелёный",
             "--stop",
             "стоп",
+            "--priorities",
+            "развилок нет — линейная задача",
             "--read",
             "`CLAUDE.md`",
             "--recall",
@@ -285,6 +298,8 @@ class DispatchGateTest(unittest.TestCase):
             "`true` зелёный",
             "--stop",
             "стоп",
+            "--priorities",
+            "развилок нет — линейная задача",
             "--read",
             "`CLAUDE.md`",
             "--recall",

@@ -75,6 +75,7 @@ case "$1 $2" in
         fi ;;
     "agent read") exit 0 ;;
     "workspace list") cat "$FAKE_DIR/ws.json" ;;
+    "workspace get") [ ! -r "$FAKE_DIR/get.json" ] || cat "$FAKE_DIR/get.json" ;;
     "workspace close")
         jq --arg w "$3" '.result.workspaces |= map(select(.workspace_id != $w))' "$FAKE_DIR/ws.json" > "$FAKE_DIR/ws.tmp"
         mv "$FAKE_DIR/ws.tmp" "$FAKE_DIR/ws.json" ;;
@@ -304,7 +305,7 @@ class SymbolsTest(unittest.TestCase):
         r = self.start_task()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(
-            "workspace\treport-metadata\tw9\t--source\tduty\t--token\tcolor=#a6e3a1\t",
+            "workspace\treport-metadata\tw9\t--source\tduty\t--token\tsymbol=🦊\t--token\tcolor=#a6e3a1\t",
             self.herdr_log(),
         )
         self.assertEqual(self.task_color_line("tsk"), "#a6e3a1")
@@ -323,7 +324,7 @@ class SymbolsTest(unittest.TestCase):
         self.project_colors(["#a6e3a1"])
         r = self.start_task(FAKE_HERDR_NO_COLOR="1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("токен color не поддерживается", r.stderr)
+        self.assertIn("report-metadata не поддерживает --token", r.stderr)
         self.assertNotIn("report-metadata\t--help", self.herdr_log())
 
     def test_start_color_server_error_warns_with_message(self) -> None:
@@ -331,8 +332,94 @@ class SymbolsTest(unittest.TestCase):
         self.project_colors(["#a6e3a1"])
         r = self.start_task(FAKE_HERDR_COLOR_ERROR="1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("не выставлен: workspace w9 не найден", r.stderr)
+        self.assertIn("не выставлены: workspace w9 не найден", r.stderr)
         self.assertNotIn("report-metadata\t--help", self.herdr_log())
+
+    def herdr_get(self, symbol: str | None, color: str | None) -> None:
+        """Ответ workspace get двойника: токены herdr (None — токена нет)."""
+        tokens = {k: v for k, v in (("symbol", symbol), ("color", color)) if v}
+        ws: dict = {"workspace_id": "w9"}
+        if tokens:
+            ws["tokens"] = tokens
+        (self.dir / "get.json").write_text(
+            json.dumps({"result": {"workspace": ws}}), encoding="utf-8"
+        )
+
+    def brief_symbol(self, name: str) -> str:
+        block = (self.results / name / "brief.md").read_text(encoding="utf-8")
+        lines = [x for x in block.splitlines() if x.startswith("- символ workspace: ")]
+        self.assertEqual(len(lines), 1, block)
+        return lines[0].split("`")[1]
+
+    def test_own_set_sends_symbol_and_color_in_one_call(self) -> None:
+        self.project_config(["🦊"])
+        self.project_colors(["#a6e3a1"])
+        self.herdr_get("🦄", "#f38ba8")  # токены herdr при своём наборе не читаются
+        r = self.start_task()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(
+            "workspace\treport-metadata\tw9\t--source\tduty\t--token\tsymbol=🦊\t--token\tcolor=#a6e3a1\t",
+            self.herdr_log(),
+        )
+        self.assertNotIn("workspace\tget\t", self.herdr_log())
+        self.assertEqual(self.brief_symbol("tsk"), "🦊")
+        self.assertIn("DUTY_SYMBOL=🦊", self.herdr_log())
+        self.assertNotIn("workspace\trename\t", self.herdr_log())
+
+    def test_own_symbols_take_color_from_herdr(self) -> None:
+        self.project_config(["🦊"])
+        self.herdr_get("🦄", "#f38ba8")
+        r = self.start_task()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.task_color_line("tsk"), "#f38ba8")
+        self.assertIn("--token\tsymbol=🦊\t", self.herdr_log())
+        self.assertNotIn("color=", self.herdr_log())
+
+    def test_no_set_takes_symbol_and_color_from_herdr(self) -> None:
+        self.herdr_get("🦄", "#f38ba8")
+        r = self.start_task()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.brief_symbol("tsk"), "🦄")
+        self.assertEqual(self.task_color_line("tsk"), "#f38ba8")
+        log = self.herdr_log()
+        self.assertIn("workspace\trename\tw9\t🦄 tsk · sonnet\t", log)
+        self.assertNotIn("--token", log)  # свой токен не шлётся
+        self.assertNotIn("DUTY_SYMBOL=", log)
+
+    def test_no_set_no_tokens_uses_fallback(self) -> None:
+        r = self.start_task()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(self.brief_symbol("tsk"), self.symbols())
+        self.assertNotIn("symbol=", self.herdr_log())
+        self.assertIn(self.task_color_line("tsk"), self.palette())
+
+    def test_no_set_herdr_without_symbol_uses_fallback_color_from_herdr(self) -> None:
+        self.herdr_get(None, "#f38ba8")
+        r = self.start_task()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(self.brief_symbol("tsk"), self.symbols())
+        self.assertEqual(self.task_color_line("tsk"), "#f38ba8")
+
+    def test_tokens_of_open_workspaces_are_occupied(self) -> None:
+        self.project_config(["🦊", "🦄"])
+        self.workspaces.append(
+            {"workspace_id": "w2", "label": "x", "tokens": {"symbol": "🦊", "color": "#a6e3a1"}}
+        )
+        self.write_ws()
+        for _ in range(10):
+            r = self.run_cmd("symbol")
+            self.assertEqual(r.stdout.strip(), "🦄", r.stdout + r.stderr)
+
+    def test_color_tokens_of_open_workspaces_are_occupied(self) -> None:
+        self.project_config(["🦊"])
+        self.project_colors(["#a6e3a1", "#f38ba8"])
+        self.workspaces.append(
+            {"workspace_id": "w2", "label": "x", "tokens": {"color": "#a6e3a1"}}
+        )
+        self.write_ws()
+        r = self.start_task()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.task_color_line("tsk"), "#f38ba8")
 
     def create_calls(self) -> list[str]:
         return [
@@ -583,3 +670,35 @@ class SymbolsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaskSymbolTest(unittest.TestCase):
+    """scripts/task-symbol.sh: DUTY_SYMBOL, иначе символ из последнего служебного блока brief.md."""
+
+    SCRIPT = PLUGIN / "scripts" / "task-symbol.sh"
+
+    def run_script(self, brief: str | None, **env: str) -> str:
+        with tempfile.TemporaryDirectory() as d:
+            e = {k: v for k, v in os.environ.items() if not k.startswith("DUTY_")}
+            if brief is not None:
+                (Path(d) / "brief.md").write_text(brief, encoding="utf-8")
+                e["DUTY_TASK"] = d
+            e.update(env)
+            r = subprocess.run(
+                ["bash", str(self.SCRIPT)], env=e, capture_output=True, text=True
+            )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def test_env_symbol_wins(self) -> None:
+        self.assertEqual(self.run_script("- символ workspace: `🦄`\n", DUTY_SYMBOL="🦊"), "🦊")
+
+    def test_reads_symbol_given_by_herdr_from_brief(self) -> None:
+        self.assertEqual(self.run_script("# t\n\n- символ workspace: `🦄`\n- цвет: `#fff`\n"), "🦄")
+
+    def test_last_service_block_wins(self) -> None:
+        brief = "- символ workspace: `🦄`\n\n- символ workspace: `🐟`\n"
+        self.assertEqual(self.run_script(brief), "🐟")
+
+    def test_no_brief_prints_empty(self) -> None:
+        self.assertEqual(self.run_script(None), "")

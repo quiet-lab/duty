@@ -21,12 +21,16 @@
 # когда пользователь согласился.
 #
 # Символ workspace — случайный эмодзи из набора symbols.tasks конфигурации
-# (вне репозитория — symbols.outside пользовательского слоя; пустой набор —
-# запасной scripts/symbols.txt), не занятый открытыми задачами
-# (dispatch.sh list); цвет заголовка — случайный из палитры symbols.colors
-# (вне репозитория — symbols.outside_colors пользовательского слоя; пустая
-# палитра — запасной scripts/colors.txt), не занятый открытыми задачами,
-# хранится в служебном блоке brief.md; symbols.main — постоянный символ
+# (вне репозитория — symbols.outside пользовательского слоя), не занятый
+# открытыми workspace (подписи задач и токены symbol); цвет заголовка —
+# случайный из палитры symbols.colors (вне репозитория — symbols.outside_colors
+# пользовательского слоя), не занятый так же (токены color); оба хранятся
+# в служебном блоке brief.md и сообщаются herdr токенами symbol и color
+# (workspace report-metadata --source duty). Пустой набор (палитра) — символ
+# (цвет) выдаёт herdr дочернему workspace по [ui.workspace_symbols] каталога
+# родителя (токены в workspace get); herdr их не дал — запасной
+# scripts/symbols.txt (scripts/colors.txt); запасной символ токеном не шлётся.
+# symbols.main — постоянный символ
 # главной сессии, задачам не выдаётся; по нему главная сессия и пользователь узнают задачу
 # в подписях herdr и в шапке вопроса (ask.py). Метка workspace и вкладки —
 # «<символ> <имя> · <модель>»; имя агента herdr и сессии Claude — <имя>.
@@ -179,16 +183,20 @@ resolve_paths() {
 
 # Набор символов задач в массив symbol_set: symbols.tasks конфигурации
 # (DUTY_SYMBOLS_FILE модуль уже учёл); вне репозитория — symbols.outside
-# пользовательского слоя; пустой набор — запасной symbols.txt.
+# пользовательского слоя; пустой набор — запасной symbols.txt. symbols_own=1 —
+# набор задан конфигурацией (свой), 0 — набор запасной: символ тогда берётся
+# у herdr (herdr_tokens), запасной набор нужен лишь когда herdr токена не дал.
 load_symbols() {
     local key=symbols.tasks json
     [ -n "$root" ] || key=symbols.outside
     json=$(cfg get "$key" --default '[]') || die "набор символов $key не получен"
     symbol_set=()
+    symbols_own=0
     local sym
     while IFS= read -r sym; do
         [ -z "$sym" ] || symbol_set+=("$sym")
     done < <(jq -r '.[]?' <<< "$json")
+    [ ${#symbol_set[@]} -eq 0 ] || symbols_own=1
     if [ ${#symbol_set[@]} -eq 0 ] && [ -r "$symbols_fallback" ]; then
         while IFS= read -r sym; do
             [ -z "$sym" ] || symbol_set+=("$sym")
@@ -198,16 +206,18 @@ load_symbols() {
 
 # Палитра цветов задач в массив color_set: symbols.colors конфигурации проекта
 # (вне репозитория — symbols.outside_colors пользовательского слоя); пустая
-# палитра — запасной colors.txt.
+# палитра — запасной colors.txt. colors_own — как symbols_own.
 load_colors() {
     local key=symbols.colors json
     [ -n "$root" ] || key=symbols.outside_colors
     json=$(cfg get "$key" --default '[]') || die "палитра $key не получена"
     color_set=()
+    colors_own=0
     local c
     while IFS= read -r c; do
         [ -z "$c" ] || color_set+=("$c")
     done < <(jq -r '.[]?' <<< "$json")
+    [ ${#color_set[@]} -eq 0 ] || colors_own=1
     if [ ${#color_set[@]} -eq 0 ] && [ -r "$colors_fallback" ]; then
         while IFS= read -r c; do
             [ -z "$c" ] || color_set+=("$c")
@@ -215,25 +225,42 @@ load_colors() {
     fi
 }
 
-# Токен color на workspace: herdr.fg = "$color" понимает только herdr, у
-# которого report-metadata знает --token (форк duty-*). Поддержка определяется
-# по ответу сервера, а не по версии или справке: токен шлётся всегда. Код 2
-# (команда или флаг неизвестны) — пропуск с пометкой; иной код — ошибка
-# отправки, в предупреждение идёт текст ошибки. Запуск от этого не прерывается.
-report_color() {
-    local ws=$1 color=$2 out rc=0 msg
-    [ -n "$color" ] || return 0
-    out=$(herdr workspace report-metadata "$ws" --source duty --token "color=$color" 2>&1) || rc=$?
+# Токены symbol и color на workspace одним вызовом report-metadata (источник
+# duty): herdr.fg = "$color" и символ из токена понимает только herdr, у которого
+# report-metadata знает --token (форк duty-*); токен report-metadata любого
+# источника главнее токенов, которые herdr выдаёт сам по [ui.workspace_symbols].
+# Аргументы — workspace, символ, цвет; пустое значение не шлётся (набор не свой —
+# токен оставлен herdr). Поддержка определяется по ответу сервера, а не по версии
+# или справке: токены шлются всегда. Код 2 (команда или флаг неизвестны) — пропуск
+# с пометкой; иной код — ошибка отправки, в предупреждение идёт текст ошибки.
+# Запуск от этого не прерывается.
+report_tokens() {
+    local ws=$1 symbol=$2 color=$3 out rc=0 msg what
+    local -a tokens=()
+    [ -z "$symbol" ] || tokens+=(--token "symbol=$symbol")
+    [ -z "$color" ] || tokens+=(--token "color=$color")
+    [ ${#tokens[@]} -gt 0 ] || return 0
+    what="${symbol:+символ $symbol}${symbol:+${color:+, }}${color:+цвет $color}"
+    out=$(herdr workspace report-metadata "$ws" --source duty "${tokens[@]}" 2>&1) || rc=$?
     case $rc in
         0) return 0 ;;
-        2) warn "цвет workspace $ws пропущен: токен color не поддерживается этим herdr (команда или флаг неизвестны)" ;;
+        2) warn "токены workspace $ws пропущены: report-metadata не поддерживает --token в этом herdr (команда или флаг неизвестны)" ;;
         *)
             msg=$(grep -m1 '^{' <<< "$out" | jq -r '.error.message // empty' 2> /dev/null) || msg=
             [ -n "$msg" ] || msg=$(head -n 1 <<< "$out")
-            warn "цвет $color у workspace $ws не выставлен: $msg"
+            warn "$what у workspace $ws не выставлены: $msg"
             ;;
     esac
     return 0
+}
+
+# Токены symbol и color, которые herdr выдал workspace по [ui.workspace_symbols]
+# каталога родителя: две строки — символ и цвет — из workspace get; нет токенов
+# (старый herdr, нет записи каталога) или ответ не разобран — пустые строки.
+herdr_tokens() {
+    local out
+    out=$(herdr workspace get "$1" 2> /dev/null | grep -m1 '^{') || out=
+    jq -r '(.result.workspace.tokens // {}) | (.symbol // ""), (.color // "")' <<< "$out" 2> /dev/null || printf '\n\n'
 }
 
 # Срок ожидания приглашения оболочки панели, мс. Замер 2026-11-05 на этой
@@ -304,6 +331,13 @@ open_tasks() {
     done
 }
 
+# Значения токена (symbol или color) всех открытых workspace из workspace list,
+# через пробел с пробелом в конце; токены herdr и duty занимают символы и цвета
+# наравне с подписями задач, чтобы наборы herdr и плагина не пересекались.
+workspace_tokens() {
+    jq -r --arg k "$2" '[.result.workspaces[]? | .tokens[$k]? // empty | select(type == "string" and . != "")] | map(. + " ") | join("")' <<< "$1" 2> /dev/null || true
+}
+
 # Случайный эмодзи из набора symbol_set, которого нет у открытых задач (символы
 # прежних версий — буквы Ⓐ…Ⓩ — в набор не входят и просто занимают место
 # в used). Код 1 — набор исчерпан или пуст.
@@ -316,6 +350,7 @@ free_symbol() {
         [ -n "$dir" ] || continue
         used+="$(task_symbol "$dir") "
     done < <(open_tasks "$workspaces")
+    used+="$(workspace_tokens "$workspaces" symbol)"
     for sym in "${symbol_set[@]}"; do
         [[ $used == *" $sym "* ]] || free+=("$sym")
     done
@@ -334,6 +369,7 @@ free_color() {
         [ -n "$dir" ] || continue
         used+="$(task_color "$dir") "
     done < <(open_tasks "$workspaces")
+    used+="$(workspace_tokens "$workspaces" color)"
     for c in "${color_set[@]}"; do
         [[ $used == *" $c "* ]] || free+=("$c")
     done
@@ -591,7 +627,7 @@ check_config() {
 create_workspace() {
     herdr workspace create "$@" --cwd "${root:-$PWD}" --label "$label" \
         --env DUTY_ROLE=worker --env "DUTY_TASK=$task" --env "DUTY_NAME=$name" \
-        --env "DUTY_SYMBOL=$symbol" --env "DUTY_MODEL=$model_arg" \
+        ${symbol:+--env "DUTY_SYMBOL=$symbol"} --env "DUTY_MODEL=$model_arg" \
         ${root:+--env "DUTY_PROJECT=$root"} --no-focus 2>&1
 }
 
@@ -639,9 +675,25 @@ cmd_start() {
         done
         workspaces=$(herdr workspace list)
     fi
-    symbol=$(free_symbol "$workspaces") || die "нет свободного символа: все символы набора заняты открытыми задачами или набор пуст"
+    # Свой набор (конфигурация проекта или symbols.outside) выбирает символ и цвет
+    # сам и сообщает herdr токенами; без своего набора символ и цвет выдаёт herdr
+    # при создании дочернего workspace, запасной набор — когда herdr их не дал.
+    # Флаги *_own ставят load_*: в подоболочке $(…) они не видны, поэтому
+    # загрузка — здесь.
+    load_symbols
+    load_colors
+    symbol='' color='' fallback_symbol='' send_symbol='' send_color=''
+    if [ "$symbols_own" = 1 ]; then
+        symbol=$(free_symbol "$workspaces") || die "нет свободного символа: все символы набора заняты открытыми задачами или набор пуст"
+        send_symbol=$symbol
+    else
+        fallback_symbol=$(free_symbol "$workspaces") || fallback_symbol=''
+    fi
     color=$(free_color "$workspaces") || die 'цвет workspace не выбран'
-    label="$symbol $name · $model_arg"
+    # Цвет шлётся токеном, пока его не заменил цвет herdr; запасной символ — нет.
+    send_color=$color
+    [ "$colors_own" = 1 ] || color=''
+    label="${symbol:+$symbol }$name · $model_arg"
     agents=$(herdr agent list)
     jq -e --arg n "$name" '[.result.agents[] | select(.name == $n)] | length == 0' <<< "$agents" > /dev/null \
         || die "агент herdr с именем $name уже есть"
@@ -719,7 +771,24 @@ cmd_start() {
     pane=$(jq -er '.result.root_pane.pane_id' <<< "$created_json") || die "шаг 2: нет корневой панели: $created"
     herdr workspace list | jq -e --arg w "$ws" '.result.workspaces[] | select(.workspace_id == $w)' > /dev/null \
         || die "шаг 2: workspace $ws не виден в herdr workspace list"
-    report_color "$ws" "$color"
+    # Цвет и символ herdr — только при пустом своём наборе и только если herdr их выдал.
+    if [ "$symbols_own" != 1 ] || [ "$colors_own" != 1 ]; then
+        herdr_symbol='' herdr_color=''
+        { IFS= read -r herdr_symbol || true; IFS= read -r herdr_color || true; } < <(herdr_tokens "$ws")
+        if [ "$symbols_own" != 1 ]; then
+            symbol=${herdr_symbol:-$fallback_symbol}
+            [ -n "$symbol" ] || { herdr workspace close "$ws" > /dev/null 2>&1 || true; die 'нет свободного символа: herdr токена не дал, запасной набор исчерпан'; }
+            label="$symbol $name · $model_arg"
+            herdr workspace rename "$ws" "$label" > /dev/null || warn "workspace $ws не переименован в $label"
+        fi
+        if [ "$colors_own" != 1 ] && [ -n "$herdr_color" ]; then
+            color=$herdr_color
+            send_color=''
+        elif [ "$colors_own" != 1 ]; then
+            color=$send_color
+        fi
+    fi
+    report_tokens "$ws" "$send_symbol" "$send_color"
 
     # Ожидание приглашения оболочки идёт в фоне, пока пишется служебный блок:
     # команда, отправленная до конца .bashrc (mise activate, ble.sh), застревает

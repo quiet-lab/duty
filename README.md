@@ -195,14 +195,19 @@ push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane 
 не получает. Запуск — детерминированный сценарий `scripts/dispatch.sh`,
 одна команда с проверкой каждого шага: каталог задачи с `brief.md`
 и `rules.md`; символ workspace — из набора `symbols.tasks` конфигурации (вне репозитория —
-`symbols.outside` пользовательского слоя, пустой набор — запасной
-`scripts/symbols.txt`; `dispatch.sh symbol`), не занятый открытыми
-задачами того же каталога результатов (`symbols.main` — постоянный символ
-главной сессии, его ставит хук подписи пользователя, плагин только хранит); цвет заголовка — случайный из палитры `symbols.colors` (вне репозитория — `symbols.outside_colors`
-пользовательского слоя, пустая палитра — запасной `scripts/colors.txt`), не занятый открытыми
-задачами того же каталога результатов, хранится в служебном блоке `brief.md`:
-`herdr workspace report-metadata <workspace> --source duty --token color=<#rrggbb>`
-сразу после создания; токен шлётся всегда, код 2 ответа (herdr без `--token`) — пропуск с предупреждением, иная ошибка — предупреждение с её текстом; `herdr workspace create [--parent <workspace главной сессии>] --label "<символ> <имя> · <модель>"
+`symbols.outside` пользовательского слоя; `dispatch.sh symbol`), не занятый
+открытыми workspace: занятыми считаются подписи задач и токены `symbol` в
+`herdr workspace list`, чтобы наборы herdr и плагина не пересекались
+(`symbols.main` — постоянный символ главной сессии, его ставит herdr
+по `[ui.workspace_symbols]`, плагин только хранит); цвет заголовка — случайный из палитры `symbols.colors` (вне репозитория — `symbols.outside_colors`
+пользовательского слоя), не занятый так же (токены `color`); символ и цвет хранятся в служебном блоке `brief.md`:
+`herdr workspace report-metadata <workspace> --source duty --token symbol=<символ> --token color=<#rrggbb>`
+сразу после создания одним вызовом; токены шлются всегда, код 2 ответа (herdr без `--token`) — пропуск с предупреждением, иная ошибка — предупреждение с её текстом; токен `report-metadata` главнее токена, который herdr выдал сам. Набор (палитра) пуст — символ (цвет) выдаёт herdr
+дочернему workspace по `[ui.workspace_symbols]` каталога родителя: после `workspace create --parent`
+читается `herdr workspace get` (`tokens.symbol`, `tokens.color`), символ идёт в подпись
+(`herdr workspace rename`) и в служебный блок, свой токен `symbol` не шлётся, `DUTY_SYMBOL` в окружении
+не задаётся (символ — в служебном блоке; уведомления исполнителя берут его `scripts/task-symbol.sh`); herdr токенов не дал (старый herdr, нет записи каталога) — запасные
+`scripts/symbols.txt` и `scripts/colors.txt`, запасной цвет шлётся токеном `color`, запасной символ — нет; `herdr workspace create [--parent <workspace главной сессии>] --label "<символ> <имя> · <модель>"
 --env DUTY_ROLE=worker --env DUTY_TASK=<каталог> --env DUTY_NAME=<имя>
 --env DUTY_SYMBOL=<символ> --env DUTY_MODEL=<модель> --env DUTY_PROJECT=<корень проекта>
 --no-focus`; workspace задачи — дочерний workspace главной сессии, один

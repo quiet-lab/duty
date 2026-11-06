@@ -26,7 +26,6 @@ import argparse
 import copy
 import json
 import os
-import re
 import shlex
 import subprocess
 import sys
@@ -46,9 +45,11 @@ ENV_PATHS = {
     "busy": "DUTY_BUSY_DIR",
     "signals": "DUTY_SIGNALS_DIR",
 }
-COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}")
+# Ключи, которые больше не читаются: старая конфигурация с ними — предупреждение
+# в `check`, а не находка (цвет задачи назначает herdr по ui.workspace_symbols.color_rule).
+REMOVED_KEYS = {"symbols.colors", "symbols.outside_colors"}
 # Ключи, которые допустимы только в пользовательском слое.
-USER_ONLY = {"paths.state", "symbols.outside", "symbols.outside_colors"}
+USER_ONLY = {"paths.state", "symbols.outside"}
 
 # Типы значений схемы: str, int, bool, list (список строк) и записи вида
 # ("tables", {поле: тип}) — массив таблиц, у которого обязательны все поля.
@@ -110,8 +111,6 @@ SCHEMA_KEYS: dict[str, dict[str, Any]] = {
         "main": STR,
         "tasks": LIST,
         "outside": LIST,
-        "colors": LIST,
-        "outside_colors": LIST,
     },
 }
 
@@ -161,8 +160,6 @@ DEFAULTS: dict[str, Any] = {
         "main": "",
         "tasks": [],
         "outside": [],
-        "colors": [],
-        "outside_colors": [],
     },
 }
 OPTIONAL_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -565,6 +562,8 @@ def check_layer(
         for key, value in body.items():
             dotted = f"{section}.{key}"
             kind = spec.get(key)
+            if dotted in REMOVED_KEYS:
+                continue
             if kind is None:
                 out.append(f"{path}: неизвестный ключ {dotted}")
                 continue
@@ -634,7 +633,6 @@ def check_config(cfg: Config) -> list[str]:
                     f"{src}: {section}.{key}: обязателен при наличии [{section}]"
                 )
     out += _check_symbols(cfg)
-    out += _check_colors(cfg)
     out += _check_local_ignored(cfg)
     return out
 
@@ -676,8 +674,15 @@ def _check_local_ignored(cfg: Config) -> list[str]:
 
 
 def check_notes(cfg: Config) -> list[str]:
-    """Примечания `check`: не находки, код выхода не меняют (нет файла доступа)."""
+    """Примечания `check`: не находки, код выхода не меняют (нет файла доступа, ушедшие ключи)."""
     out: list[str] = []
+    for path, layer in cfg.layers:
+        for dotted in sorted(REMOVED_KEYS):
+            if lookup(layer, dotted)[0]:
+                out.append(
+                    f"предупреждение: {path}: {dotted}: ключ больше не читается "
+                    "(цвет задачи назначает herdr по ui.workspace_symbols.color_rule)"
+                )
     base = cfg.base or cfg.root or Path.cwd()
     for section, spec in SCHEMA_KEYS.items():
         for key in spec:
@@ -728,21 +733,6 @@ def _check_symbols(cfg: Config) -> list[str]:
                 out.append(f"{src}: {dotted}: повтор символа «{sym}» ({where})")
                 continue
             seen[sym] = dotted
-    return out
-
-
-def _check_colors(cfg: Config) -> list[str]:
-    """Палитры цветов workspace: каждый элемент — строка `#rrggbb`."""
-    out: list[str] = []
-    for key in ("colors", "outside_colors"):
-        dotted = f"symbols.{key}"
-        src = _origin(cfg.layers, dotted)
-        value = cfg.get(dotted)
-        if src is None or not isinstance(value, list):
-            continue
-        for item in value:
-            if not isinstance(item, str) or not COLOR_RE.fullmatch(item):
-                out.append(f"{src}: {dotted}: цвет «{item}» не в формате #rrggbb")
     return out
 
 
@@ -837,7 +827,6 @@ name = {name}  # имя для подписей, статистики и кат�
 # [symbols]                     # по одной кодовой точке, без повторов между наборами
 # main = ""                     # постоянный символ главной сессии репозитория
 # tasks = []                    # символы workspace задач (пусто — scripts/symbols.txt плагина)
-# colors = []                  # палитра цветов заголовка workspace задач, #rrggbb (пусто — scripts/colors.txt плагина)
 """
 
 

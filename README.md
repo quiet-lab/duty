@@ -199,15 +199,15 @@ push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane 
 открытыми workspace: занятыми считаются подписи задач и токены `symbol` в
 `herdr workspace list`, чтобы наборы herdr и плагина не пересекались
 (`symbols.main` — постоянный символ главной сессии, его ставит herdr
-по `[ui.workspace_symbols]`, плагин только хранит); цвет заголовка — случайный из палитры `symbols.colors` (вне репозитория — `symbols.outside_colors`
-пользовательского слоя), не занятый так же (токены `color`); символ и цвет хранятся в служебном блоке `brief.md`:
-`herdr workspace report-metadata <workspace> --source duty --token symbol=<символ> --token color=<#rrggbb>`
-сразу после создания одним вызовом; токены шлются всегда, код 2 ответа (herdr без `--token`) — пропуск с предупреждением, иная ошибка — предупреждение с её текстом; токен `report-metadata` главнее токена, который herdr выдал сам. Набор (палитра) пуст — символ (цвет) выдаёт herdr
+по `[ui.workspace_symbols]`, плагин только хранит); символ хранится в служебном блоке `brief.md`:
+`herdr workspace report-metadata <workspace> --source duty --token symbol=<символ>`
+сразу после создания; токены шлются всегда, код 2 ответа (herdr без `--token`) — пропуск с предупреждением, иная ошибка — предупреждение с её текстом; токен `report-metadata` главнее токена, который herdr выдал сам. Набор символов пуст — символ выдаёт herdr
 дочернему workspace по `[ui.workspace_symbols]` каталога родителя: после `workspace create --parent`
 читается `herdr workspace get` (`tokens.symbol`, `tokens.color`), символ идёт в подпись
 (`herdr workspace rename`) и в служебный блок, свой токен `symbol` не шлётся, `DUTY_SYMBOL` в окружении
-не задаётся (символ — в служебном блоке; уведомления исполнителя берут его `scripts/task-symbol.sh`); herdr токенов не дал (старый herdr, нет записи каталога) — запасные
-`scripts/symbols.txt` и `scripts/colors.txt`, запасной цвет шлётся токеном `color`, запасной символ — нет; `herdr workspace create [--parent <workspace главной сессии>] --label "<символ> <имя> · <модель>"
+не задаётся (символ — в служебном блоке; уведомления исполнителя берут его `scripts/task-symbol.sh`); herdr символа не дал (старый herdr, нет записи каталога) — запасной
+`scripts/symbols.txt`, он токеном не шлётся.
+**Цвет** заголовка назначает herdr по правилу `ui.workspace_symbols.color_rule` (корни белые, ребёнку — случайный оттенок из 36 с шагом 10°, насыщенность 50–70 %, яркость 70–100 %, свободные оттенки первыми); плагин читает `tokens.color` из `workspace get` и пишет его в служебный блок. herdr цвета не дал (форк без правила) — плагин считает цвет сам по тому же правилу (`scripts/rule-color.py`: HSV; оттенки открытых задач и токенов `color` открытых workspace занимают место, свободные первыми) и шлёт токеном `color` (`report-metadata`, как символ); в служебном блоке — цвет, который в итоге у workspace. Ключи `symbols.colors` и `symbols.outside_colors` не читаются: `duty_config.py check` предупреждает о них, не отвергая конфигурацию. Создание: `herdr workspace create [--parent <workspace главной сессии>] --label "<символ> <имя> · <модель>"
 --env DUTY_ROLE=worker --env DUTY_TASK=<каталог> --env DUTY_NAME=<имя>
 --env DUTY_SYMBOL=<символ> --env DUTY_MODEL=<модель> --env DUTY_PROJECT=<корень проекта>
 --no-focus`; workspace задачи — дочерний workspace главной сессии, один
@@ -480,7 +480,7 @@ marketplace quiet-lab>`, затем `claude plugin install duty@quiet-lab`;
 
 **Пользовательский слой** — `~/.config/duty/config.toml`: значения по
 умолчанию для всех проектов (каталог состояния `paths.state`, набор
-символов и палитра цветов для workspace вне репозиториев `symbols.outside`, `symbols.outside_colors`, запреты станции).
+символов для workspace вне репозиториев `symbols.outside`, запреты станции).
 Порядок слоёв — `reference/config.md`.
 
 ## Конфигурация

@@ -206,9 +206,7 @@ class ReviewFindingsTest(unittest.TestCase):
         ):
             with self.subTest(value=value):
                 text = f"Критерий готовности: {value}\nУсловие остановки: падение теста"
-                self.assertEqual(
-                    check_prompt(text), ["Критерий готовности"]
-                )
+                self.assertEqual(check_prompt(text), ["Критерий готовности"])
 
     def test_value_with_placeholder_part_is_value(self) -> None:
         text = "Критерий готовности: wait-done.sh <каталог> зелёный\nУсловие остановки: падение теста"
@@ -235,9 +233,7 @@ class CheckPromptTest(unittest.TestCase):
     STOP = "Условие остановки: падение теста — отчёт"
 
     def test_both_lines(self) -> None:
-        self.assertEqual(
-            check_prompt(f"Сделай.\n{self.DONE}\n{self.STOP}\n"), []
-        )
+        self.assertEqual(check_prompt(f"Сделай.\n{self.DONE}\n{self.STOP}\n"), [])
 
     def test_missing_one(self) -> None:
         self.assertEqual(check_prompt(self.DONE), ["Условие остановки"])
@@ -265,9 +261,7 @@ class CheckPromptTest(unittest.TestCase):
         for value in ("", "—", "<команда и ожидаемый результат>", "-"):
             with self.subTest(value=value):
                 text = f"Критерий готовности: {value}\n{self.STOP}"
-                self.assertEqual(
-                    check_prompt(text), ["Критерий готовности"]
-                )
+                self.assertEqual(check_prompt(text), ["Критерий готовности"])
 
     def test_inside_code_block_counts(self) -> None:
         text = f"```text\n{self.DONE}\n{self.STOP}\n```"
@@ -298,13 +292,15 @@ class RecallLineTest(unittest.TestCase):
 
     def test_missing_line(self) -> None:
         self.assertEqual(self.check(""), [brief_check.LINKS_RECALL_VIOLATION])
-        self.assertEqual(
-            self.check("- Справка: {{RECALL}}"), ["Ссылки / Справка"]
-        )
+        self.assertEqual(self.check("- Справка: {{RECALL}}"), ["Ссылки / Справка"])
         self.assertEqual(self.check("- Справка: —"), ["Ссылки / Справка"])
 
     def test_fresh_file_absolute_and_relative(self) -> None:
-        for value in (str(self.file), f"`{self.file}`", "results/topic-20261106-1200.md"):
+        for value in (
+            str(self.file),
+            f"`{self.file}`",
+            "results/topic-20261106-1200.md",
+        ):
             with self.subTest(value=value):
                 self.assertEqual(self.check(f"- Справка: {value}"), [])
 
@@ -332,7 +328,12 @@ class RecallLineTest(unittest.TestCase):
                 )
 
     def test_not_needed_without_reason(self) -> None:
-        for value in ("не нужна", "не нужна —", "не нужна — ...", "не нужна — <причина>"):
+        for value in (
+            "не нужна",
+            "не нужна —",
+            "не нужна — ...",
+            "не нужна — <причина>",
+        ):
             with self.subTest(value=value):
                 self.assertEqual(
                     self.check(f"- Справка: {value}"), ["Ссылки / Справка"]
@@ -360,7 +361,7 @@ class RecallLineTest(unittest.TestCase):
 
     def test_prompt_recall_line(self) -> None:
         base = "Критерий готовности: `x` зелёный\nУсловие остановки: падение\n"
-        got = lambda extra: brief_check.check_prompt(  # noqa: E731
+        got = lambda extra: brief_check.check_prompt(
             base + extra, root=self.root, now=self.NOW
         )
         self.assertEqual(got(""), ["Справка"])
@@ -369,9 +370,7 @@ class RecallLineTest(unittest.TestCase):
         self.assertEqual(got("Справка: не нужна — проба\n"), [])
         self.assertEqual(got("Справка: не нужна\n"), ["Справка"])
         self.touch(30 * 3600)
-        self.assertEqual(
-            got(f"Справка: {self.file}\n"), ["Справка (старше суток)"]
-        )
+        self.assertEqual(got(f"Справка: {self.file}\n"), ["Справка (старше суток)"])
 
 
 class CheckQuestionTest(unittest.TestCase):

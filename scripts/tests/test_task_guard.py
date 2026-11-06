@@ -7,8 +7,8 @@ import shutil
 import signal
 import subprocess
 import sys
-import time
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -528,9 +528,7 @@ class GuardTest(unittest.TestCase):
         self.assertIn("deny", r.stdout)
 
     def test_ask_one_bad_question_denies(self) -> None:
-        r = self.ask_call(
-            "Первый? По документам: записей нет.", "Второй без справки?"
-        )
+        r = self.ask_call("Первый? По документам: записей нет.", "Второй без справки?")
         out = json.loads(r.stdout)["hookSpecificOutput"]
         self.assertEqual(out["permissionDecision"], "deny")
         self.assertIn("2", out["permissionDecisionReason"])
@@ -548,7 +546,9 @@ class GuardTest(unittest.TestCase):
             (PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8")
         )
         entry = config["hooks"]["PreToolUse"][0]
-        self.assertEqual(set(entry["matcher"].split("|")), {"Agent", "Task", "AskUserQuestion"})
+        self.assertEqual(
+            set(entry["matcher"].split("|")), {"Agent", "Task", "AskUserQuestion"}
+        )
         self.assertNotIn("DUTY_ROLE", entry["hooks"][0]["command"])
 
     def test_gate_task_tool_like_agent(self) -> None:

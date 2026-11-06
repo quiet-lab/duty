@@ -161,7 +161,9 @@ def gate_question(data: dict[str, object]) -> bool:
 
     bad = [
         str(index)
-        for index, item in enumerate(questions if isinstance(questions, list) else [], 1)
+        for index, item in enumerate(
+            questions if isinstance(questions, list) else [], 1
+        )
         if not brief_check.check_question(
             str(item.get("question", "")) if isinstance(item, dict) else ""
         )

@@ -29,7 +29,9 @@ PROMPT_NAMES = (DONE_NAME, STOP_NAME)
 RECALL_NAME = "Справка"
 LINKS_RECALL_VIOLATION = f"Ссылки / {RECALL_NAME}"
 RECALL_MAX_AGE_S = 24 * 60 * 60
-NOT_NEEDED_RE = re.compile(r"^не\s+нужна\b\s*(?:[—–-]+\s*(.*))?$", re.IGNORECASE | re.DOTALL)
+NOT_NEEDED_RE = re.compile(
+    r"^не\s+нужна\b\s*(?:[—–-]+\s*(.*))?$", re.IGNORECASE | re.DOTALL
+)
 QUESTION_MARK = "По документам:"
 
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
@@ -180,7 +182,11 @@ def has_read(
 
 def project_root(root: str | os.PathLike[str] | None = None) -> Path:
     """Корень проекта для относительных путей: аргумент, `DUTY_PROJECT`, `CLAUDE_PROJECT_DIR`, cwd."""
-    for given in (root, os.environ.get("DUTY_PROJECT"), os.environ.get("CLAUDE_PROJECT_DIR")):
+    for given in (
+        root,
+        os.environ.get("DUTY_PROJECT"),
+        os.environ.get("CLAUDE_PROJECT_DIR"),
+    ):
         if given:
             return Path(given).expanduser()
     return Path.cwd()

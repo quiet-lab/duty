@@ -169,7 +169,16 @@ class DispatchGateTest(unittest.TestCase):
 
     def test_goal_done_without_command_refused(self) -> None:
         r = self.dispatch(
-            "--goal", "Сделать", "--done", "всё готово", "--stop", "стоп", "--read", "`CLAUDE.md`", "--recall", "не нужна — проба"
+            "--goal",
+            "Сделать",
+            "--done",
+            "всё готово",
+            "--stop",
+            "стоп",
+            "--read",
+            "`CLAUDE.md`",
+            "--recall",
+            "не нужна — проба",
         )
         self.assert_refused(r, "не названа команда")
 
@@ -243,8 +252,16 @@ class DispatchGateTest(unittest.TestCase):
     def test_goal_recall_path_written_to_brief(self) -> None:
         self.recall_file(60)
         r = self.dispatch(
-            "--goal", "Сделать", "--done", "`true` зелёный", "--stop", "стоп",
-            "--read", "`CLAUDE.md`", "--recall", "recall/topic-20261106-1200.md",
+            "--goal",
+            "Сделать",
+            "--done",
+            "`true` зелёный",
+            "--stop",
+            "стоп",
+            "--read",
+            "`CLAUDE.md`",
+            "--recall",
+            "recall/topic-20261106-1200.md",
         )
         self.assertNotIn("не проходит", r.stdout + r.stderr)
         text = (self.results / "gate" / "brief.md").read_text(encoding="utf-8")
@@ -253,8 +270,16 @@ class DispatchGateTest(unittest.TestCase):
     def test_goal_recall_old_file_refused(self) -> None:
         self.recall_file(25 * 3600)
         r = self.dispatch(
-            "--goal", "Сделать", "--done", "`true` зелёный", "--stop", "стоп",
-            "--read", "`CLAUDE.md`", "--recall", "recall/topic-20261106-1200.md",
+            "--goal",
+            "Сделать",
+            "--done",
+            "`true` зелёный",
+            "--stop",
+            "стоп",
+            "--read",
+            "`CLAUDE.md`",
+            "--recall",
+            "recall/topic-20261106-1200.md",
         )
         self.assert_refused(r, "старше суток")
 

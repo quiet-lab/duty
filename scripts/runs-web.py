@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """duty-runs-web: местный веб-просмотр прогонов агентов (tab-run.sh).
+" 2>/dev/null; exec python3 -I "$0" "$@" # файл, переданный оболочке (bash файл.py), запускается python3
 
 Страницы строятся при запросе, а не по таймеру: сводка (`dispatch.sh list`,
 `busy.py list`, `signals.py list --waits`), перечень прогонов

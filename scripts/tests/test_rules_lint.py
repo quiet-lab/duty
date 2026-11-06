@@ -15,6 +15,10 @@ LINT = PLUGIN / "scripts" / "rules-lint.py"
 # Замер: запуск на двойниках — 0,05 с; предел — предохранитель от зависания.
 LIMIT_S = 10
 
+# Переменные среды запуска, которые меняют поиск корня проекта и слой
+# пользователя: тесты их убирают, чтобы не видеть настоящий проект.
+CLEARED = ("DUTY_PROJECT", "CLAUDE_PROJECT_DIR", "DUTY_CONFIG_USER")
+
 SENTENCE = (
     "Независимые подзадачи выполняются параллельно, если они не пересекаются "
     "по файлам, ветвям и ресурсам."
@@ -26,6 +30,14 @@ class RulesLintTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
+        env = {k: v for k, v in os.environ.items() if k not in CLEARED}
+        env.update(
+            HOME=str(self.root / "home"),
+            DUTY_CONFIG_USER=str(self.root / "no-user.toml"),
+        )
+        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def write(self, name: str, text: str) -> None:
         path = self.root / name
@@ -127,6 +139,13 @@ class RulesLintTest(unittest.TestCase):
         sys.modules["rules_lint"] = module
         self.addCleanup(sys.modules.pop, "rules_lint", None)
         spec.loader.exec_module(module)
+        # Без корня проекта: подъём от текущего каталога не должен найти
+        # конфигурацию дерева, из которого запущен тест.
+        bare = self.root / "bare"
+        bare.mkdir()
+        cwd = os.getcwd()
+        os.chdir(bare)
+        self.addCleanup(os.chdir, cwd)
         with mock.patch.object(module, "PLUGIN_FILES", ("reference/нет-файла.md",)):
             findings = module.run_repeats(None)
         self.assertEqual(

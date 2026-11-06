@@ -85,7 +85,12 @@ class RecallTest(unittest.TestCase):
             "timestamp": "2026-11-05T12:00:00.000Z",
             "message": {"content": "heartbeat"},
         }
-        rows = [json.dumps(r, ensure_ascii=False) for r in (user, listed, other)]
+        invoked = dict(user, timestamp="2026-11-06T10:00:00.000Z", message={
+            "role": "user",
+            "content": "<command-name>/duty:recall</command-name><command-args>heartbeat</command-args>"})
+        pasted = dict(user, timestamp="2026-11-06T11:00:00.000Z", message={
+            "role": "user", "content": "heartbeat " + "x" * 4100})
+        rows = [json.dumps(r, ensure_ascii=False) for r in (user, listed, other, invoked, pasted)]
         write(self.transcripts / "s.jsonl", "\n".join(rows + ["не json heartbeat user"]) + "\n")
 
     def run_recall(self, *extra: str) -> str:
@@ -127,6 +132,37 @@ class RecallTest(unittest.TestCase):
         self.assertIn("2026-11-05", replies)
         self.assertIn("раз в 30 с", replies)
         self.assertEqual(replies.count("- 2026-"), 1)
+
+    def test_replies_skip_skill_calls_and_long_lines(self) -> None:
+        replies = self.run_recall("--keyword", "heartbeat").split("## Реплики пользователя")[1]
+        self.assertNotIn("command-name", replies)
+        self.assertNotIn("xxxx", replies)
+
+    def test_git_failure_is_reported(self) -> None:
+        bare = self.root.parent / "bare"
+        write(bare / ".duty/duty.toml", TOML)
+        done = subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), "тема", "--keyword", "heartbeat",
+             "--root", str(bare), "--transcripts", str(self.transcripts)],
+            capture_output=True, text=True, env=self.env, stdin=subprocess.DEVNULL, check=False,
+        )
+        out = done.stdout
+        git_part = out.split("## История git")[1].split("## Реплики")[0]
+        self.assertIn("git log не выполнен:", git_part)
+        self.assertNotIn("Совпадений нет.", git_part)
+
+    def test_save(self) -> None:
+        results = self.root.parent / "res"
+        env = dict(self.env, DUTY_RESULTS_DIR=str(results))
+        done = subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), "save", "Канал данных", "--root", str(self.root)],
+            input="# итог\n", capture_output=True, text=True, env=env, check=False,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        path = Path(done.stdout.strip())
+        self.assertEqual(path.parent, results / "recall")
+        self.assertRegex(path.name, r"^kanal-dannykh-\d{8}-\d{4}\.md$")
+        self.assertEqual(path.read_text(encoding="utf-8"), "# итог\n")
 
     def test_missing_files_and_dirs_are_skipped(self) -> None:
         (self.root / "todo.local.md").unlink()

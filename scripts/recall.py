@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Сбор кандидатов для /duty:recall: что по теме уже записано и сказано.
 
-    recall.py <тема> --keyword <слово> [--keyword …] [--root <корень>]
+    recall.py [scan] <тема> --keyword <слово> [--keyword …] [--root <корень>]
               [--transcripts <каталог>]
+    recall.py save <тема> [--root <корень>]      # Markdown итога — со stdin
+
+`save` пишет итог в `<paths.results>/recall/<тема-латиницей>-<ГГГГММДД-ЧЧММ>.md`
+(кириллица транслитерируется, пустая латиница — `topic`) и печатает путь.
 
 Только чтение, вывод — Markdown на stdout, разделы: «Записи решений»
 (`docs.decisions`), «Спецификации» (`docs.openspec`: `specs/*/spec.md`,
@@ -16,7 +20,7 @@
 
 Каталог транскриптов — `--transcripts`, затем переменная
 `DUTY_TRANSCRIPTS_DIR`, затем `~/.claude/projects/<имя>`. Транскрипты
-читаются построчно; stdin не читается.
+читаются построчно; stdin читает только `save`.
 """
 
 import argparse
@@ -25,6 +29,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -35,6 +40,12 @@ MAX_LINES = 3
 MAX_FILES = 40
 MAX_REPLIES = 20
 QUOTE = 300
+MAX_REPLY_CHARS = 4000
+TRANSLIT = dict(zip(
+    "абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+    ["a","b","v","g","d","e","e","zh","z","i","y","k","l","m","n","o","p","r","s","t",
+     "u","f","kh","ts","ch","sh","shch","","y","","e","yu","ya"],
+))
 
 
 def md_files(path: Path) -> list[Path]:
@@ -132,10 +143,21 @@ def section(
 def git_section(root: Path, words: list[str]) -> str:
     lines = ["## История git", ""]
     for word in words:
-        out = dutylib.sh("git", "-C", str(root), "log", f"-S{word}", "--oneline", "-20")
         lines.append(f"### `{word}`")
         lines.append("")
-        lines += [f"- {row}" for row in out.splitlines()] if out else ["Совпадений нет."]
+        try:
+            done = subprocess.run(
+                ["git", "-C", str(root), "log", f"-S{word}", "--oneline", "-20"],
+                capture_output=True, text=True, check=False,
+            )
+            code, out, err = done.returncode, done.stdout.strip(), done.stderr
+        except OSError as error:
+            code, out, err = 1, "", str(error)
+        if code != 0:
+            first = (err.strip().splitlines() or ["код " + str(code)])[0]
+            lines.append(f"git log не выполнен: {first}")
+        else:
+            lines += [f"- {row}" for row in out.splitlines()] if out else ["Совпадений нет."]
         lines.append("")
     return "\n".join(lines)
 
@@ -182,6 +204,10 @@ def replies(directory: Path, words: list[str]) -> list[tuple[str, str, str]]:
                     content = message.get("content") if isinstance(message, dict) else None
                     if not isinstance(content, str):
                         continue
+                    if len(content) > MAX_REPLY_CHARS:
+                        continue
+                    if "<command-name>" in content or "<command-args>" in content:
+                        continue
                     if not any(w in content.lower() for w in low):
                         continue
                     text = quote(content, words)
@@ -210,7 +236,40 @@ def replies_section(directory: Path, words: list[str]) -> str:
     return "\n".join(lines)
 
 
+def slug(topic: str) -> str:
+    latin = "".join(TRANSLIT.get(c, c) for c in topic.lower())
+    return re.sub(r"[^a-z0-9]+", "-", latin).strip("-") or "topic"
+
+
+def save(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="recall.py save")
+    parser.add_argument("topic", help="тема")
+    parser.add_argument("--root", help="корень проекта")
+    args = parser.parse_args(argv)
+    try:
+        cfg = dutylib.config(args.root)
+    except dutylib.duty_config.ConfigError as error:
+        sys.exit(f"recall.py: ошибка конфигурации: {error}")
+    text = sys.stdin.read()
+    if not text.strip():
+        sys.exit("recall.py save: итог на stdin пуст")
+    results = cfg.get("paths.results", "")
+    if not results:
+        sys.exit("recall.py save: paths.results не задан в конфигурации")
+    directory = Path(results) / "recall"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{slug(args.topic)}-{time.strftime('%Y%m%d-%H%M')}.md"
+    path.write_text(text, encoding="utf-8")
+    print(path)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "save":
+        return save(argv[1:])
+    if argv and argv[0] == "scan":
+        argv = argv[1:]
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("topic", help="тема")
     parser.add_argument("--keyword", action="append", default=[], help="ключевое слово")
@@ -241,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     out.append(section("Правила", files, words, root, seen))
 
     files = []
-    for entry in cfg.get("docs.recall", ["docs/"]):
+    for entry in cfg.get("docs.recall", dutylib.duty_config.DEFAULTS["docs"]["recall"]):
         files += expand(root, entry)
     out.append(section("Документы", files, words, root, seen))
 

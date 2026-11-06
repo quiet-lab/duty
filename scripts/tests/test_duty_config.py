@@ -830,6 +830,7 @@ class HelpHasNoShimTest(unittest.TestCase):
                     ["python3", "-I", str(path), "--help"],
                     capture_output=True,
                     text=True,
+                    check=False,
                     stdin=subprocess.DEVNULL,
                 )
                 self.assertNotIn("exec python3", proc.stdout + proc.stderr)
@@ -902,7 +903,10 @@ class ShellLaunchTest(Base):
             for shell in ("bash", "sh"):
                 with self.subTest(script=script.name, shell=shell):
                     rc, _, err = self.run_shell(
-                        shell, script, "--help", path=f"{bin_dir}{os.pathsep}/usr/bin:/bin"
+                        shell,
+                        script,
+                        "--help",
+                        path=f"{bin_dir}{os.pathsep}/usr/bin:/bin",
                     )
                     self.assertEqual((rc, err), (0, ""))
                     self.assertFalse(marker.exists(), "оболочка дошла до import")

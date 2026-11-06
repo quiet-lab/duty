@@ -43,7 +43,9 @@ class RecallTest(unittest.TestCase):
         self.transcripts.mkdir()
         env = {k: v for k, v in os.environ.items() if not k.startswith("DUTY_")}
         env.pop("CLAUDE_PROJECT_DIR", None)
-        env.update(GIT_ENV, HOME=str(base / "home"), DUTY_CONFIG_USER=str(base / "u.toml"))
+        env.update(
+            GIT_ENV, HOME=str(base / "home"), DUTY_CONFIG_USER=str(base / "u.toml")
+        )
         self.env = env
         write(self.root / ".duty/duty.toml", TOML)
         write(self.root / ".gitignore", ".duty/local.toml\n")
@@ -60,9 +62,14 @@ class RecallTest(unittest.TestCase):
             "heartbeat в архиве\n",
         )
         write(self.root / "CLAUDE.md", "# Правила\n\nНичего.\n")
-        write(self.root / "docs/open-questions/q.md", "# Вопрос\n\nHEARTBEAT при перезапуске?\n")
+        write(
+            self.root / "docs/open-questions/q.md",
+            "# Вопрос\n\nHEARTBEAT при перезапуске?\n",
+        )
         write(self.root / "todo.local.md", "- heartbeat в очереди\n")
-        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.root, env=env, check=True)
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main"], cwd=self.root, env=env, check=True
+        )
         subprocess.run(["git", "add", "docs"], cwd=self.root, env=env, check=True)
         subprocess.run(
             ["git", "commit", "-q", "-m", "добавлен heartbeat"],
@@ -78,25 +85,51 @@ class RecallTest(unittest.TestCase):
         listed = {
             "type": "user",
             "timestamp": "2026-11-05T11:00:00.000Z",
-            "message": {"role": "user", "content": [{"type": "text", "text": "heartbeat"}]},
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": "heartbeat"}],
+            },
         }
         other = {
             "type": "assistant",
             "timestamp": "2026-11-05T12:00:00.000Z",
             "message": {"content": "heartbeat"},
         }
-        invoked = dict(user, timestamp="2026-11-06T10:00:00.000Z", message={
-            "role": "user",
-            "content": "<command-name>/duty:recall</command-name><command-args>heartbeat</command-args>"})
-        pasted = dict(user, timestamp="2026-11-06T11:00:00.000Z", message={
-            "role": "user", "content": "heartbeat " + "x" * 4100})
-        rows = [json.dumps(r, ensure_ascii=False) for r in (user, listed, other, invoked, pasted)]
-        write(self.transcripts / "s.jsonl", "\n".join(rows + ["не json heartbeat user"]) + "\n")
+        invoked = dict(
+            user,
+            timestamp="2026-11-06T10:00:00.000Z",
+            message={
+                "role": "user",
+                "content": "<command-name>/duty:recall</command-name><command-args>heartbeat</command-args>",
+            },
+        )
+        pasted = dict(
+            user,
+            timestamp="2026-11-06T11:00:00.000Z",
+            message={"role": "user", "content": "heartbeat " + "x" * 4100},
+        )
+        rows = [
+            json.dumps(r, ensure_ascii=False)
+            for r in (user, listed, other, invoked, pasted)
+        ]
+        write(
+            self.transcripts / "s.jsonl",
+            "\n".join(rows + ["не json heartbeat user"]) + "\n",
+        )
 
     def run_recall(self, *extra: str) -> str:
         done = subprocess.run(
-            [sys.executable, "-I", str(SCRIPT), "тема", *extra, "--root", str(self.root),
-             "--transcripts", str(self.transcripts)],
+            [
+                sys.executable,
+                "-I",
+                str(SCRIPT),
+                "тема",
+                *extra,
+                "--root",
+                str(self.root),
+                "--transcripts",
+                str(self.transcripts),
+            ],
             capture_output=True,
             text=True,
             env=self.env,
@@ -109,8 +142,14 @@ class RecallTest(unittest.TestCase):
 
     def test_sections_and_matches(self) -> None:
         out = self.run_recall("--keyword", "heartbeat")
-        for title in ("Записи решений", "Спецификации", "Правила", "Документы",
-                      "История git", "Реплики пользователя"):
+        for title in (
+            "Записи решений",
+            "Спецификации",
+            "Правила",
+            "Документы",
+            "История git",
+            "Реплики пользователя",
+        ):
             self.assertIn(f"## {title}", out)
         decisions = out.split("## Спецификации")[0]
         self.assertIn("docs/decisions/01-a/0001-channel.md", decisions)
@@ -134,7 +173,9 @@ class RecallTest(unittest.TestCase):
         self.assertEqual(replies.count("- 2026-"), 1)
 
     def test_replies_skip_skill_calls_and_long_lines(self) -> None:
-        replies = self.run_recall("--keyword", "heartbeat").split("## Реплики пользователя")[1]
+        replies = self.run_recall("--keyword", "heartbeat").split(
+            "## Реплики пользователя"
+        )[1]
         self.assertNotIn("command-name", replies)
         self.assertNotIn("xxxx", replies)
 
@@ -142,9 +183,23 @@ class RecallTest(unittest.TestCase):
         bare = self.root.parent / "bare"
         write(bare / ".duty/duty.toml", TOML)
         done = subprocess.run(
-            [sys.executable, "-I", str(SCRIPT), "тема", "--keyword", "heartbeat",
-             "--root", str(bare), "--transcripts", str(self.transcripts)],
-            capture_output=True, text=True, env=self.env, stdin=subprocess.DEVNULL, check=False,
+            [
+                sys.executable,
+                "-I",
+                str(SCRIPT),
+                "тема",
+                "--keyword",
+                "heartbeat",
+                "--root",
+                str(bare),
+                "--transcripts",
+                str(self.transcripts),
+            ],
+            capture_output=True,
+            text=True,
+            env=self.env,
+            stdin=subprocess.DEVNULL,
+            check=False,
         )
         out = done.stdout
         git_part = out.split("## История git")[1].split("## Реплики")[0]
@@ -155,8 +210,20 @@ class RecallTest(unittest.TestCase):
         results = self.root.parent / "res"
         env = dict(self.env, DUTY_RESULTS_DIR=str(results))
         done = subprocess.run(
-            [sys.executable, "-I", str(SCRIPT), "save", "Канал данных", "--root", str(self.root)],
-            input="# итог\n", capture_output=True, text=True, env=env, check=False,
+            [
+                sys.executable,
+                "-I",
+                str(SCRIPT),
+                "save",
+                "Канал данных",
+                "--root",
+                str(self.root),
+            ],
+            input="# итог\n",
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
         )
         self.assertEqual(done.returncode, 0, done.stderr)
         path = Path(done.stdout.strip())
@@ -169,9 +236,23 @@ class RecallTest(unittest.TestCase):
         out = self.run_recall("--keyword", "нетТакого")
         self.assertEqual(out.count("Совпадений нет."), 6)
         done = subprocess.run(
-            [sys.executable, "-I", str(SCRIPT), "тема", "--keyword", "x", "--root", str(self.root),
-             "--transcripts", str(self.root / "нет")],
-            capture_output=True, text=True, env=self.env, stdin=subprocess.DEVNULL, check=False,
+            [
+                sys.executable,
+                "-I",
+                str(SCRIPT),
+                "тема",
+                "--keyword",
+                "x",
+                "--root",
+                str(self.root),
+                "--transcripts",
+                str(self.root / "нет"),
+            ],
+            capture_output=True,
+            text=True,
+            env=self.env,
+            stdin=subprocess.DEVNULL,
+            check=False,
         )
         self.assertEqual(done.returncode, 0)
         self.assertIn("Каталога транскриптов нет", done.stdout)

@@ -696,7 +696,11 @@ class TaskSymbolTest(unittest.TestCase):
                 e["DUTY_TASK"] = d
             e.update(env)
             r = subprocess.run(
-                ["bash", str(self.SCRIPT)], env=e, capture_output=True, text=True
+                ["bash", str(self.SCRIPT)],
+                env=e,
+                capture_output=True,
+                text=True,
+                check=False,
             )
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout.strip()

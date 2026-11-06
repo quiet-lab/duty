@@ -30,8 +30,8 @@ import json
 import os
 import re
 import subprocess
-import time
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -42,11 +42,46 @@ MAX_FILES = 40
 MAX_REPLIES = 20
 QUOTE = 300
 MAX_REPLY_CHARS = 4000
-TRANSLIT = dict(zip(
-    "абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
-    ["a","b","v","g","d","e","e","zh","z","i","y","k","l","m","n","o","p","r","s","t",
-     "u","f","kh","ts","ch","sh","shch","","y","","e","yu","ya"],
-))
+TRANSLIT = dict(
+    zip(
+        "абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+        [
+            "a",
+            "b",
+            "v",
+            "g",
+            "d",
+            "e",
+            "e",
+            "zh",
+            "z",
+            "i",
+            "y",
+            "k",
+            "l",
+            "m",
+            "n",
+            "o",
+            "p",
+            "r",
+            "s",
+            "t",
+            "u",
+            "f",
+            "kh",
+            "ts",
+            "ch",
+            "sh",
+            "shch",
+            "",
+            "y",
+            "",
+            "e",
+            "yu",
+            "ya",
+        ],
+    )
+)
 
 
 def md_files(path: Path) -> list[Path]:
@@ -149,7 +184,9 @@ def git_section(root: Path, words: list[str]) -> str:
         try:
             done = subprocess.run(
                 ["git", "-C", str(root), "log", f"-S{word}", "--oneline", "-20"],
-                capture_output=True, text=True, check=False,
+                capture_output=True,
+                text=True,
+                check=False,
             )
             code, out, err = done.returncode, done.stdout.strip(), done.stderr
         except OSError as error:
@@ -158,7 +195,9 @@ def git_section(root: Path, words: list[str]) -> str:
             first = (err.strip().splitlines() or ["код " + str(code)])[0]
             lines.append(f"git log не выполнен: {first}")
         else:
-            lines += [f"- {row}" for row in out.splitlines()] if out else ["Совпадений нет."]
+            lines += (
+                [f"- {row}" for row in out.splitlines()] if out else ["Совпадений нет."]
+            )
         lines.append("")
     return "\n".join(lines)
 
@@ -202,7 +241,9 @@ def replies(directory: Path, words: list[str]) -> list[tuple[str, str, str]]:
                     if not isinstance(obj, dict) or obj.get("type") != "user":
                         continue
                     message = obj.get("message")
-                    content = message.get("content") if isinstance(message, dict) else None
+                    content = (
+                        message.get("content") if isinstance(message, dict) else None
+                    )
                     if not isinstance(content, str):
                         continue
                     if len(content) > MAX_REPLY_CHARS:
@@ -284,7 +325,12 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.root).resolve() if args.root else (cfg.root or Path.cwd())
     words = [w for w in args.keyword if w.strip()] or [args.topic]
     seen: set[Path] = set()
-    out = [f"# Справка по теме: {args.topic}", "", "Слова: " + ", ".join(f"`{w}`" for w in words), ""]
+    out = [
+        f"# Справка по теме: {args.topic}",
+        "",
+        "Слова: " + ", ".join(f"`{w}`" for w in words),
+        "",
+    ]
 
     decisions = cfg.get("docs.decisions", "")
     files = expand(root, decisions) if isinstance(decisions, str) and decisions else []

@@ -173,14 +173,15 @@ def _with_ancestors(paths: Iterable[Path]) -> dict[Path, Path]:
     return index
 
 
-def _proc_paths(with_fds: bool) -> list[Path]:
-    """Текущие каталоги (и открытые файлы) процессов; чужие процессы пропускаются."""
-    found: list[Path] = []
+def _proc_paths(with_fds: bool) -> tuple[list[Path], list[Path]]:
+    """Текущие каталоги и открытые файлы процессов за один обход `/proc`; чужие процессы пропускаются."""
+    cwds: list[Path] = []
+    files: list[Path] = []
     for p in Path("/proc").iterdir():
         if not p.name.isdigit():
             continue
         try:
-            found.append(Path(os.readlink(p / "cwd")))
+            cwds.append(Path(os.readlink(p / "cwd")))
             fds = list((p / "fd").iterdir()) if with_fds else []
         except OSError:
             continue
@@ -190,13 +191,13 @@ def _proc_paths(with_fds: bool) -> list[Path]:
             except OSError:
                 continue
             if target.startswith("/"):
-                found.append(Path(target.removesuffix(" (deleted)")))
-    return found
+                files.append(Path(target.removesuffix(" (deleted)")))
+    return cwds, files
 
 
 def cwd_index() -> dict[Path, Path]:
     """Индекс текущих каталогов процессов: один обход `/proc` на запуск."""
-    return _with_ancestors(_proc_paths(False))
+    return _with_ancestors(_proc_paths(False)[0])
 
 
 def cwd_users(path: Path, index: dict[Path, Path] | None = None) -> bool:
@@ -211,7 +212,13 @@ def open_paths() -> dict[Path, Path]:
     поиск каталога — по индексу (`_with_ancestors`).
     Процессы других пользователей пропускаются (нет прав на чтение).
     """
-    return _with_ancestors(_proc_paths(True))
+    return proc_indexes()[1]
+
+
+def proc_indexes() -> tuple[dict[Path, Path], dict[Path, Path]]:
+    """Индексы `cwd_index` и `open_paths` за один обход `/proc`."""
+    cwds, files = _proc_paths(True)
+    return _with_ancestors(cwds), _with_ancestors([*cwds, *files])
 
 
 # Признаки конца задачи — те же, что у `dispatch.sh stalled`: «завершено» или

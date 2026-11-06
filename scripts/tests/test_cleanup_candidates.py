@@ -219,15 +219,18 @@ class ExcludeWorktreeTest(unittest.TestCase):
         self.addCleanup(proc.kill)
         return proc
 
+    def spawn_writer(self, log: Path) -> None:
+        """Файл внутри держит открытым только порождённый процесс, не сам тест."""
+        with log.open("w") as out:
+            self.spawn("sleep", "600", stdout=out)
+
     def test_passed_video_of_finished_run_is_candidate(self) -> None:
         video = self.passed_video("20261106-000000-qms-a")
         self.assertIn("удалить: тест прошёл", self.video_row(self.candidates(), video))
 
     def test_video_in_run_with_open_file_is_kept(self) -> None:
         video = self.passed_video("20261106-002951-qms-b")
-        log = (video.parents[2] / "log.txt").open("w")
-        self.addCleanup(log.close)
-        self.spawn("sleep", "600", stdout=log)
+        self.spawn_writer(video.parents[2] / "log.txt")
         row = self.video_row(self.candidates(), video)
         self.assertIn("оставлено: прогон идёт", row)
         self.assertNotIn("rm -f", row)
@@ -241,6 +244,19 @@ class ExcludeWorktreeTest(unittest.TestCase):
             "оставлено: прогон идёт", self.video_row(self.candidates(), video)
         )
         (task / "state.md").write_text("Шаг: завершено\n", encoding="utf-8")
+        self.assertIn("удалить: тест прошёл", self.video_row(self.candidates(), video))
+
+    def test_finished_task_markers_match_dispatch_stalled(self) -> None:
+        # Те же признаки, что у dispatch.sh stalled: «завершено» или «остановлена»
+        # в строке «Шаг:» без учёта регистра; задача без state.md — не идущая.
+        video = self.passed_video("task-c")
+        task = video.parents[2]
+        (task / "brief.md").write_text("# Задача\n", encoding="utf-8")
+        for step in ("Шаг: остановлена", "Шаг: Завершено", "Шаг: 9 — завершено"):
+            (task / "state.md").write_text(f"{step}\n", encoding="utf-8")
+            row = self.video_row(self.candidates(), video)
+            self.assertIn("удалить: тест прошёл", row, step)
+        (task / "state.md").unlink()
         self.assertIn("удалить: тест прошёл", self.video_row(self.candidates(), video))
 
     def test_video_in_task_with_live_tab_run_is_kept(self) -> None:
@@ -266,9 +282,7 @@ class ExcludeWorktreeTest(unittest.TestCase):
     def test_live_mode_reports_open_file(self) -> None:
         top = self.base / "results" / "20261106-002951-qms-c"
         top.mkdir(parents=True)
-        log = (top / "log.txt").open("w")
-        self.addCleanup(log.close)
-        self.spawn("sleep", "600", stdout=log)
+        self.spawn_writer(top / "log.txt")
         idle = self.base / "results" / "idle"
         idle.mkdir()
         r = subprocess.run(
@@ -280,6 +294,37 @@ class ExcludeWorktreeTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn(f"{top}\tживой: открыт файл процесса", r.stdout)
         self.assertIn(f"{idle}\tне живой", r.stdout)
+
+    def live(self, *paths: str) -> subprocess.CompletedProcess:
+        env = {
+            **os.environ,
+            "DUTY_PROJECT": str(self.root),
+            "DUTY_CONFIG_USER": str(self.base / "no-user-config.toml"),
+        }
+        return subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), "--live", *paths],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=self.root,
+            check=False,
+        )
+
+    def test_live_mode_rejects_missing_path_and_no_args(self) -> None:
+        r = self.live(str(self.base / "results" / "no-such"))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("не живой", r.stdout)
+        self.assertEqual(self.live().returncode, 2)
+
+    def test_live_mode_checks_top_level_results_dir(self) -> None:
+        task = self.base / "results" / "set-c-e2e"
+        nested = task / "pt-e2e"
+        nested.mkdir(parents=True)
+        (task / "brief.md").write_text("# Задача\n", encoding="utf-8")
+        (task / "state.md").write_text("Шаг: 2 — серия\n", encoding="utf-8")
+        r = self.live(str(nested))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("живой: задача не завершена", r.stdout)
 
     def test_extension_json_line_becomes_row(self) -> None:
         self.write_extension(

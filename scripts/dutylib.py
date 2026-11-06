@@ -198,6 +198,11 @@ def open_paths() -> list[Path]:
     return found
 
 
+# Признаки конца задачи — те же, что у `dispatch.sh stalled`: «завершено» или
+# «остановлена» в строке «Шаг:» либо в начале строки (после заголовка «# …»).
+_TASK_FINISHED = re.compile(
+    r"^(Шаг:.*|(# .*)?)(завершено|остановлена)", re.IGNORECASE | re.MULTILINE
+)
 _PID_LINE = re.compile(r"^pid: (\d+)$", re.MULTILINE)
 
 
@@ -221,7 +226,8 @@ def live_reason(top: Path, opened: list[Path] | None = None) -> str:
     Признаки: процесс с текущим каталогом или открытым файлом внутри
     (серия стенда пишет журнал, итог `summary.json` появляется только
     в конце); прогон tab-run.sh в `runs/*` без `done` с живым PID;
-    задача (`brief.md`) без строки «Шаг: заверш…» в `state.md`.
+    задача (`brief.md`) со `state.md`, где шаг не «завершено» и не
+    «остановлена» (признаки `dispatch.sh stalled`).
     """
     for path in open_paths() if opened is None else opened:
         if path.is_relative_to(top):
@@ -233,9 +239,9 @@ def live_reason(top: Path, opened: list[Path] | None = None) -> str:
         try:
             state = (top / "state.md").read_text(encoding="utf-8")
         except OSError:
-            state = ""
-        if not re.search(r"^Шаг: заверш", state, re.MULTILINE):
-            return "задача не завершена (state.md без «Шаг: заверш…»)"
+            return ""  # без state.md задача не идёт — как у dispatch.sh stalled
+        if not _TASK_FINISHED.search(state):
+            return "задача не завершена (state.md без «завершено» или «остановлена» в шаге)"
     return ""
 
 

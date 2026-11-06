@@ -11,9 +11,10 @@
 
 `--live <путь>…` — только проверка признаков живого прогона для каждого
 пути (процесс с текущим каталогом или открытым файлом внутри, прогон
-tab-run.sh без done с живым pid, незавершённая задача): строка
+tab-run.sh без done с живым pid, незавершённая задача) каталога
+results/ верхнего уровня, в котором лежит путь: строка
 «<путь>\tживой: <признак>» или «<путь>\tне живой»; код 1, если живой
-есть. Её выполняют перед удалением каталога результатов вне перечня.
+есть, код 2 — нет пути или аргументов. Её выполняют перед удалением каталога результатов вне перечня.
 
 Признаки ветвей, каталог результатов, основные деревья и проекты docker,
 которые нельзя трогать, берутся из конфигурации проекта (reference/config.md:
@@ -57,10 +58,27 @@ sh, size, owner_kind, cwd_users, active_sessions = (
 
 _args = sys.argv[1:]
 if _args[:1] == ["--live"]:
+    if not _args[1:]:
+        print("--live требует хотя бы один путь", file=sys.stderr)
+        sys.exit(2)
+    _missing = [p for p in _args[1:] if not Path(p).exists()]
+    if _missing:
+        # Опечатка или путь от другого каталога не должны выглядеть «не живым».
+        print("--live: пути нет: " + ", ".join(_missing), file=sys.stderr)
+        sys.exit(2)
+    try:
+        _results = Path(duty_config.load().get("paths.results")).resolve()
+    except (duty_config.ConfigError, TypeError):
+        _results = None
     _opened = dutylib.open_paths()
     _any = False
     for _p in _args[1:]:
-        _why = dutylib.live_reason(Path(_p).resolve(), _opened)
+        _top = Path(_p).resolve()
+        # Признаки задачи (brief.md, state.md, runs/) лежат в каталоге
+        # results/ верхнего уровня: вложенный путь поднимается до него.
+        if _results is not None and _top.is_relative_to(_results) and _top != _results:
+            _top = _results / _top.relative_to(_results).parts[0]
+        _why = dutylib.live_reason(_top, _opened)
         _any = _any or bool(_why)
         print(f"{_p}\t{'живой: ' + _why if _why else 'не живой'}")
     sys.exit(1 if _any else 0)

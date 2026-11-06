@@ -262,16 +262,19 @@ require_tools() {
 
 # Id workspace из служебного блока brief.md задачи.
 task_workspace() {
+    # shellcheck disable=SC2016 # обратные кавычки — разметка Markdown, не подстановка
     sed -n 's/^- workspace: `\([^`]*\)`.*/\1/p' "$1/brief.md" 2> /dev/null | tail -1
 }
 
 # Символ workspace из служебного блока brief.md задачи.
 task_symbol() {
+    # shellcheck disable=SC2016 # обратные кавычки — разметка Markdown, не подстановка
     sed -n 's/^- символ workspace: `\([^`]*\)`.*/\1/p' "$1/brief.md" 2> /dev/null | tail -1
 }
 
 # Цвет workspace из служебного блока brief.md задачи.
 task_color() {
+    # shellcheck disable=SC2016 # обратные кавычки — разметка Markdown, не подстановка
     sed -n 's/^- цвет workspace: `\([^`]*\)`.*/\1/p' "$1/brief.md" 2> /dev/null | tail -1
 }
 
@@ -377,6 +380,7 @@ agent_status() {
 
 # Панель агента из служебного блока brief.md задачи.
 task_pane() {
+    # shellcheck disable=SC2016 # обратные кавычки — разметка Markdown, не подстановка
     sed -n 's/^- панель агента: `\([^`]*\)`.*/\1/p' "$1/brief.md" 2> /dev/null | tail -1
 }
 
@@ -415,6 +419,7 @@ cmd_list() {
         status=$(agent_status "$(agent_target "$name" "$dir")")
         report='нет'
         [ -s "$dir/report.md" ] && report='есть'
+        # shellcheck disable=SC2016 # обратные кавычки — разметка Markdown, не подстановка
         printf '| %s | %s | `%s` | %s | %s | %s | %s | `%s` |\n' "${sym:-—}" "$name" "$ws" "${status:-вышел}" \
             "$(task_step "$dir")" "$(task_overdue "$dir")" "$report" "$dir"
     done < <(open_tasks "$workspaces")
@@ -447,6 +452,7 @@ cmd_stalled() {
             [ -f "$other/brief.md" ] && { newer=1; break; }
         done
         [ -z "$newer" ] || continue
+        # shellcheck disable=SC2016 # обратные кавычки — разметка Markdown, не подстановка
         printf '| %s | %s | `%s` |\n' "$name" "$step" "$dir"
     done
 }
@@ -455,13 +461,14 @@ cmd_stalled() {
 # с держателем <имя> (по реестру ожиданий) и wait-done.sh/inotifywait, чей
 # каталог или аргументы лежат в каталоге задачи. Печатает PID через запятую.
 find_orphans() {
-    local name=$1 task=$2 pid comm cmdline cwd waits found=" "
+    local name=$1 task=$2 proc pid comm cmdline cwd waits found=" "
     task=$(realpath -m "$task")
     waits=$(python3 -I "$signals" list --waits --json) || return 1
     for pid in $(jq -r --arg n "$name" '.waits[] | select(.holder == $n and .alive) | .pid' <<< "$waits"); do
         found+="$pid "
     done
-    for pid in $(ls /proc | grep -E '^[0-9]+$'); do
+    for proc in /proc/[0-9]*; do
+        pid=${proc#/proc/}
         [ "$pid" != "$$" ] || continue
         comm=$(cat "/proc/$pid/comm" 2> /dev/null) || continue
         cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2> /dev/null) || continue
@@ -613,7 +620,7 @@ create_workspace() {
 
 cmd_start() {
     local name=$1 model_arg=$2 model task workspaces agents passed template rules
-    local rc rename_out created created_json ws pane started_at_ms state status prompt screen input tab symbol label
+    local rc rename_out created created_json ws pane started_at_ms status prompt screen tab symbol label
     local -a claude_args
 
     # Имя служит и меткой workspace, и именем агента herdr, и именем сессии

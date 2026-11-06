@@ -13,7 +13,7 @@ description: Исполнитель крупной задачи в своём wo
 `HERDR_WORKSPACE_ID`, `HERDR_PANE_ID` — свой workspace и панель,
 `DUTY_PROJECT` — корень проекта,
 `DUTY_NAME` — имя задачи: имя агента и держатель реестра занятости,
-`DUTY_SYMBOL` — символ workspace (эмодзи; не задан, если символ выдал herdr, — тогда он в строке «символ workspace» служебного блока `brief.md`), `DUTY_MODEL` — модель задачи.
+`DUTY_SYMBOL` — символ workspace (эмодзи; не задан, если символ выдал herdr, — тогда его печатает `<плагин>/scripts/task-symbol.sh`: он читает строку «символ workspace» служебного блока `brief.md`), `DUTY_MODEL` — модель задачи.
 Каталог плагина и имя главной сессии — в служебном блоке `brief.md`; ниже `<плагин>` — путь из этого блока.
 
 ## Файлы задачи
@@ -159,7 +159,7 @@ description: Исполнитель крупной задачи в своём wo
    ```sh
    herdr workspace list | jq -e --arg w "$HERDR_WORKSPACE_ID" \
      '.result.workspaces[] | select(.workspace_id == $w) | .focused' >/dev/null \
-     || herdr notification show "$DUTY_SYMBOL $DUTY_NAME: вопрос" \
+     || herdr notification show "$(bash <плагин>/scripts/task-symbol.sh) $DUTY_NAME: вопрос" \
           --body '<суть вопроса / вариант 1 / вариант 2>' --sound request
    ```
 
@@ -321,8 +321,8 @@ description: Исполнитель крупной задачи в своём wo
 9. `SendMessage` главной сессии (имя — из служебного блока `brief.md`):
    три строки — что сделано, что осталось, что решить пользователю —
    и путь к `report.md`.
-10. `herdr notification show "$DUTY_SYMBOL $DUTY_NAME: готово" --body '<одна строка итога, до ~120 знаков>' --sound done`
-   (при передаче — `"$DUTY_SYMBOL $DUTY_NAME: передача"`).
+10. `herdr notification show "$(bash <плагин>/scripts/task-symbol.sh) $DUTY_NAME: готово" --body '<одна строка итога, до ~120 знаков>' --sound done`
+   (при передаче — `"$(bash <плагин>/scripts/task-symbol.sh) $DUTY_NAME: передача"`).
 11. Закрыть workspace: `herdr workspace close "$HERDR_WORKSPACE_ID"`.
    Не закрывать его только если в «Переданных» файла `rules.md` стоит
    указание оставить его открытым по решению пользователя (например,

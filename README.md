@@ -206,7 +206,7 @@ push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane 
 дочернему workspace по `[ui.workspace_symbols]` каталога родителя: после `workspace create --parent`
 читается `herdr workspace get` (`tokens.symbol`, `tokens.color`), символ идёт в подпись
 (`herdr workspace rename`) и в служебный блок, свой токен `symbol` не шлётся, `DUTY_SYMBOL` в окружении
-не задаётся (символ — в служебном блоке); herdr токенов не дал (старый herdr, нет записи каталога) — запасные
+не задаётся (символ — в служебном блоке; уведомления исполнителя берут его `scripts/task-symbol.sh`); herdr токенов не дал (старый herdr, нет записи каталога) — запасные
 `scripts/symbols.txt` и `scripts/colors.txt`, запасной цвет шлётся токеном `color`, запасной символ — нет; `herdr workspace create [--parent <workspace главной сессии>] --label "<символ> <имя> · <модель>"
 --env DUTY_ROLE=worker --env DUTY_TASK=<каталог> --env DUTY_NAME=<имя>
 --env DUTY_SYMBOL=<символ> --env DUTY_MODEL=<модель> --env DUTY_PROJECT=<корень проекта>

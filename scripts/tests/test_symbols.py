@@ -670,3 +670,35 @@ class SymbolsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaskSymbolTest(unittest.TestCase):
+    """scripts/task-symbol.sh: DUTY_SYMBOL, иначе символ из последнего служебного блока brief.md."""
+
+    SCRIPT = PLUGIN / "scripts" / "task-symbol.sh"
+
+    def run_script(self, brief: str | None, **env: str) -> str:
+        with tempfile.TemporaryDirectory() as d:
+            e = {k: v for k, v in os.environ.items() if not k.startswith("DUTY_")}
+            if brief is not None:
+                (Path(d) / "brief.md").write_text(brief, encoding="utf-8")
+                e["DUTY_TASK"] = d
+            e.update(env)
+            r = subprocess.run(
+                ["bash", str(self.SCRIPT)], env=e, capture_output=True, text=True
+            )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def test_env_symbol_wins(self) -> None:
+        self.assertEqual(self.run_script("- символ workspace: `🦄`\n", DUTY_SYMBOL="🦊"), "🦊")
+
+    def test_reads_symbol_given_by_herdr_from_brief(self) -> None:
+        self.assertEqual(self.run_script("# t\n\n- символ workspace: `🦄`\n- цвет: `#fff`\n"), "🦄")
+
+    def test_last_service_block_wins(self) -> None:
+        brief = "- символ workspace: `🦄`\n\n- символ workspace: `🐟`\n"
+        self.assertEqual(self.run_script(brief), "🐟")
+
+    def test_no_brief_prints_empty(self) -> None:
+        self.assertEqual(self.run_script(None), "")

@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import pwd
+import re
 import signal
 import ssl
 import subprocess
@@ -170,6 +171,78 @@ def cwd_users(path: Path) -> bool:
         except OSError:
             continue
     return False
+
+
+def open_paths() -> list[Path]:
+    """Текущие каталоги и открытые файлы всех доступных процессов (`/proc/<pid>/{cwd,fd}`).
+
+    Собирается один раз на перечень: обход `/proc` на каждый путь дорог.
+    Процессы других пользователей пропускаются (нет прав на чтение).
+    """
+    found: list[Path] = []
+    for p in Path("/proc").iterdir():
+        if not p.name.isdigit():
+            continue
+        try:
+            found.append(Path(os.readlink(p / "cwd")))
+            fds = list((p / "fd").iterdir())
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if target.startswith("/"):
+                found.append(Path(target.removesuffix(" (deleted)")))
+    return found
+
+
+# Признаки конца задачи — те же, что у `dispatch.sh stalled`: «завершено» или
+# «остановлена» в строке «Шаг:» либо в начале строки (после заголовка «# …»).
+_TASK_FINISHED = re.compile(
+    r"^(Шаг:.*|(# .*)?)(завершено|остановлена)", re.IGNORECASE | re.MULTILINE
+)
+_PID_LINE = re.compile(r"^pid: (\d+)$", re.MULTILINE)
+
+
+def tab_run_alive(run_dir: Path) -> bool:
+    """Прогон tab-run.sh без `done`, чей cmd.sh ещё работает (PID из meta.txt сверяется с командной строкой)."""
+    if (run_dir / "done").exists():
+        return False
+    try:
+        match = _PID_LINE.search((run_dir / "meta.txt").read_text(encoding="utf-8"))
+        if not match:
+            return False
+        cmdline = Path(f"/proc/{match.group(1)}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return str(run_dir / "cmd.sh").encode() in cmdline
+
+
+def live_reason(top: Path, opened: list[Path] | None = None) -> str:
+    """Почему каталог результатов (задачи или прогона) нельзя убирать; пустая строка — признаков нет.
+
+    Признаки: процесс с текущим каталогом или открытым файлом внутри
+    (серия стенда пишет журнал, итог `summary.json` появляется только
+    в конце); прогон tab-run.sh в `runs/*` без `done` с живым PID;
+    задача (`brief.md`) со `state.md`, где шаг не «завершено» и не
+    «остановлена» (признаки `dispatch.sh stalled`).
+    """
+    for path in open_paths() if opened is None else opened:
+        if path.is_relative_to(top):
+            return f"открыт файл процесса ({path})"
+    for meta in sorted(top.glob("runs/*/meta.txt")):
+        if tab_run_alive(meta.parent):
+            return f"прогон {meta.parent.name} без done с живым pid"
+    if (top / "brief.md").is_file():
+        try:
+            state = (top / "state.md").read_text(encoding="utf-8")
+        except OSError:
+            return ""  # без state.md задача не идёт — как у dispatch.sh stalled
+        if not _TASK_FINISHED.search(state):
+            return "задача не завершена (state.md без «завершено» или «остановлена» в шаге)"
+    return ""
 
 
 def active_sessions(home: Path | None = None) -> set[str]:

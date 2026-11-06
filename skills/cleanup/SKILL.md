@@ -50,7 +50,9 @@ allowed-tools: Bash, Read
      (`git -C <сабмодуль> worktree list --porcelain`); для scratchpad —
      нет процесса с текущим каталогом внутри
      (`ls -l /proc/*/cwd 2>/dev/null | grep -F <путь>` пуст); для
-     проектных строк из `.duty/cleanup.d/` — условие, которое строка называет
+     строк вида `results` — каталог прогона не живой
+     (`python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/cleanup-candidates.py" --live <каталог results/ верхнего уровня>`
+     печатает «не живой»); для проектных строк из `.duty/cleanup.d/` — условие, которое строка называет
      в колонке «Решение» или «Команда»; деревья из `cleanup.keep_trees`
      не трогать;
    - выполнить команду из колонки «Команда» без изменений; для ветви это

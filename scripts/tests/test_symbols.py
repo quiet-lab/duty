@@ -254,6 +254,8 @@ class SymbolsTest(unittest.TestCase):
             "падение — отчёт",
             "--read",
             "`CLAUDE.md`",
+            "--recall",
+            "не нужна — проба",
         )
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         task = self.results / "tsk"
@@ -302,6 +304,8 @@ class SymbolsTest(unittest.TestCase):
             "падение — отчёт",
             "--read",
             "`CLAUDE.md`",
+            "--recall",
+            "не нужна — проба",
             **env,
         )
 
@@ -594,6 +598,8 @@ class SymbolsTest(unittest.TestCase):
             "падение — отчёт",
             "--read",
             "`CLAUDE.md`",
+            "--recall",
+            "не нужна — проба",
         )
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         block = (self.results / "tsk" / "brief.md").read_text(encoding="utf-8")
@@ -616,6 +622,8 @@ class SymbolsTest(unittest.TestCase):
             "падение — отчёт",
             "--read",
             "`CLAUDE.md`",
+            "--recall",
+            "не нужна — проба",
         )
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("не проходит проверку", r.stderr)

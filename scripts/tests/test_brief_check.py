@@ -1,8 +1,12 @@
 """Проверки `scripts/brief_check.py`: форма записки и приглашения."""
 
+import os
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PLUGIN = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLUGIN / "scripts"))
@@ -27,6 +31,7 @@ FULL = """# Задача x
 
 - Правила задачи — `rules.md`.
 - Прочитанное при постановке: `CLAUDE.md`.
+- Справка: не нужна — проба.
 
 ## Служебное (заполняет dispatch.sh)
 
@@ -36,6 +41,14 @@ FULL = """# Задача x
 
 —
 """
+
+
+RECALL_OK = "\nСправка: не нужна — проба\n"
+
+
+def check_prompt(text: str) -> list[str]:
+    """Приглашение с годной строкой «Справка»: проверяются остальные строки."""
+    return brief_check.check_prompt(text + RECALL_OK)
 
 
 def without(text: str, name: str) -> str:
@@ -140,6 +153,7 @@ class CheckBriefTest(unittest.TestCase):
 - Правила задачи — `rules.md` рядом.
 - Прочитанное при постановке: `~/.claude/CLAUDE.md` (разделы «Постановка
   задачи», «Субагенты»); `CLAUDE.md` монорепозитория.
+- Справка: не нужна — готовая записка с решениями.
 
 ## Служебное (заполняет dispatch.sh)
 
@@ -193,12 +207,12 @@ class ReviewFindingsTest(unittest.TestCase):
             with self.subTest(value=value):
                 text = f"Критерий готовности: {value}\nУсловие остановки: падение теста"
                 self.assertEqual(
-                    brief_check.check_prompt(text), ["Критерий готовности"]
+                    check_prompt(text), ["Критерий готовности"]
                 )
 
     def test_value_with_placeholder_part_is_value(self) -> None:
         text = "Критерий готовности: wait-done.sh <каталог> зелёный\nУсловие остановки: падение теста"
-        self.assertEqual(brief_check.check_prompt(text), [])
+        self.assertEqual(check_prompt(text), [])
 
     def test_labeled_value_forms(self) -> None:
         cases = (
@@ -207,13 +221,13 @@ class ReviewFindingsTest(unittest.TestCase):
         )
         for text in cases:
             with self.subTest(text=text):
-                self.assertEqual(brief_check.check_prompt(text), [])
+                self.assertEqual(check_prompt(text), [])
 
     def test_label_followed_by_label_is_empty(self) -> None:
         text = "Критерий готовности:\nУсловие остановки: падение теста"
-        self.assertEqual(brief_check.check_prompt(text), ["Критерий готовности"])
+        self.assertEqual(check_prompt(text), ["Критерий готовности"])
         text = "Критерий готовности:\n<команда>\nУсловие остановки: падение теста"
-        self.assertEqual(brief_check.check_prompt(text), ["Критерий готовности"])
+        self.assertEqual(check_prompt(text), ["Критерий готовности"])
 
 
 class CheckPromptTest(unittest.TestCase):
@@ -222,42 +236,157 @@ class CheckPromptTest(unittest.TestCase):
 
     def test_both_lines(self) -> None:
         self.assertEqual(
-            brief_check.check_prompt(f"Сделай.\n{self.DONE}\n{self.STOP}\n"), []
+            check_prompt(f"Сделай.\n{self.DONE}\n{self.STOP}\n"), []
         )
 
     def test_missing_one(self) -> None:
-        self.assertEqual(brief_check.check_prompt(self.DONE), ["Условие остановки"])
-        self.assertEqual(brief_check.check_prompt(self.STOP), ["Критерий готовности"])
+        self.assertEqual(check_prompt(self.DONE), ["Условие остановки"])
+        self.assertEqual(check_prompt(self.STOP), ["Критерий готовности"])
 
     def test_none(self) -> None:
         self.assertEqual(
-            brief_check.check_prompt("Сделай."),
+            check_prompt("Сделай."),
             ["Критерий готовности", "Условие остановки"],
         )
 
     def test_case_bullets_and_bold(self) -> None:
         text = "- **критерий готовности:** `pytest`\n* УСЛОВИЕ ОСТАНОВКИ: стоп"
-        self.assertEqual(brief_check.check_prompt(text), [])
+        self.assertEqual(check_prompt(text), [])
 
     def test_headings(self) -> None:
         text = "## Критерий готовности\n\n`x` зелёный\n\n### Условие остановки\n\nПадение.\n"
-        self.assertEqual(brief_check.check_prompt(text), [])
+        self.assertEqual(check_prompt(text), [])
 
     def test_heading_with_empty_body(self) -> None:
         text = "## Критерий готовности\n\n## Условие остановки\n\nПадение.\n"
-        self.assertEqual(brief_check.check_prompt(text), ["Критерий готовности"])
+        self.assertEqual(check_prompt(text), ["Критерий готовности"])
 
     def test_empty_values(self) -> None:
         for value in ("", "—", "<команда и ожидаемый результат>", "-"):
             with self.subTest(value=value):
                 text = f"Критерий готовности: {value}\n{self.STOP}"
                 self.assertEqual(
-                    brief_check.check_prompt(text), ["Критерий готовности"]
+                    check_prompt(text), ["Критерий готовности"]
                 )
 
     def test_inside_code_block_counts(self) -> None:
         text = f"```text\n{self.DONE}\n{self.STOP}\n```"
-        self.assertEqual(brief_check.check_prompt(text), [])
+        self.assertEqual(check_prompt(text), [])
+
+
+class RecallLineTest(unittest.TestCase):
+    NOW = 1_800_000_000.0
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(os.path.realpath(self.tmp.name))
+        (self.root / "results").mkdir()
+        self.file = self.root / "results" / "topic-20261106-1200.md"
+        self.file.write_text("справка\n", encoding="utf-8")
+        self.touch(3600)
+
+    def touch(self, age_s: float) -> None:
+        stamp = self.NOW - age_s
+        os.utime(self.file, (stamp, stamp))
+
+    def brief(self, line: str) -> str:
+        return FULL.replace("- Справка: не нужна — проба.", line)
+
+    def check(self, line: str) -> list[str]:
+        return brief_check.check_brief(self.brief(line), root=self.root, now=self.NOW)
+
+    def test_missing_line(self) -> None:
+        self.assertEqual(self.check(""), [brief_check.LINKS_RECALL_VIOLATION])
+        self.assertEqual(
+            self.check("- Справка: {{RECALL}}"), ["Ссылки / Справка"]
+        )
+        self.assertEqual(self.check("- Справка: —"), ["Ссылки / Справка"])
+
+    def test_fresh_file_absolute_and_relative(self) -> None:
+        for value in (str(self.file), f"`{self.file}`", "results/topic-20261106-1200.md"):
+            with self.subTest(value=value):
+                self.assertEqual(self.check(f"- Справка: {value}"), [])
+
+    def test_old_file(self) -> None:
+        self.touch(25 * 3600)
+        self.assertEqual(
+            self.check(f"- Справка: {self.file}"), ["Ссылки / Справка (старше суток)"]
+        )
+        self.touch(23 * 3600)
+        self.assertEqual(self.check(f"- Справка: {self.file}"), [])
+
+    def test_missing_file(self) -> None:
+        for value in (str(self.root / "нет.md"), "results/нет.md", "results"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    self.check(f"- Справка: {value}"),
+                    ["Ссылки / Справка (файла нет)"],
+                )
+
+    def test_not_needed_with_reason(self) -> None:
+        for dash in ("—", "–", "-"):
+            with self.subTest(dash=dash):
+                self.assertEqual(
+                    self.check(f"- Справка: не нужна {dash} решения уже сверены"), []
+                )
+
+    def test_not_needed_without_reason(self) -> None:
+        for value in ("не нужна", "не нужна —", "не нужна — ...", "не нужна — <причина>"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    self.check(f"- Справка: {value}"), ["Ссылки / Справка"]
+                )
+
+    def test_relative_path_uses_environment_root(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "DUTY_PROJECT"}
+        env["CLAUDE_PROJECT_DIR"] = str(self.root)
+        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assertEqual(
+            brief_check.check_brief(
+                self.brief("- Справка: results/topic-20261106-1200.md"), now=self.NOW
+            ),
+            [],
+        )
+
+    def test_real_clock_by_default(self) -> None:
+        stamp = time.time() - 3600
+        os.utime(self.file, (stamp, stamp))
+        self.assertEqual(
+            brief_check.check_brief(self.brief(f"- Справка: {self.file}")), []
+        )
+
+    def test_prompt_recall_line(self) -> None:
+        base = "Критерий готовности: `x` зелёный\nУсловие остановки: падение\n"
+        got = lambda extra: brief_check.check_prompt(  # noqa: E731
+            base + extra, root=self.root, now=self.NOW
+        )
+        self.assertEqual(got(""), ["Справка"])
+        self.assertEqual(got(f"Справка: {self.file}\n"), [])
+        self.assertEqual(got("Справка: results/нет.md\n"), ["Справка (файла нет)"])
+        self.assertEqual(got("Справка: не нужна — проба\n"), [])
+        self.assertEqual(got("Справка: не нужна\n"), ["Справка"])
+        self.touch(30 * 3600)
+        self.assertEqual(
+            got(f"Справка: {self.file}\n"), ["Справка (старше суток)"]
+        )
+
+
+class CheckQuestionTest(unittest.TestCase):
+    def test_question_forms(self) -> None:
+        for text, ok in (
+            ("Что делать? По документам: решено в записи 0032.", True),
+            ("По документам:\nзаписей нет\nЧто делать?", True),
+            ("Что делать?", False),
+            ("Что делать? По документам:", False),
+            ("Что делать? По документам: <что найдено>", False),
+            ("Что делать? По документам: —", False),
+            ("по документам: решено", False),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(brief_check.check_question(text), ok)
 
 
 if __name__ == "__main__":

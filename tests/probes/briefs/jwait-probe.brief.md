@@ -45,3 +45,4 @@
 
 - Правила задачи — `rules.md` рядом; устройство плагина — `{{PLUGIN}}/agents/worker.md`.
 - Прочитанное при постановке: `{{PLUGIN}}/agents/worker.md`, `{{PLUGIN}}/reference/worker-rules.md`.
+- Справка: не нужна — проба

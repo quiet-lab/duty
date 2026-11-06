@@ -1,8 +1,10 @@
 """Ворота постановки в `scripts/dispatch.sh`: отказ до каталога задачи и до herdr."""
 
 import os
+import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -41,6 +43,7 @@ FULL = """# Задача t
 ## Ссылки
 
 - Прочитанное при постановке: `CLAUDE.md`.
+- Справка: не нужна — проба.
 """
 
 
@@ -111,7 +114,7 @@ class DispatchGateTest(unittest.TestCase):
             "Цель": "## Цель\n\nСделать.\n\n",
             "Критерий готовности": "## Критерий готовности\n\n`pytest -q` — зелёный.\n\n",
             "Условие остановки": "## Условие остановки\n\nПадение теста — отчёт.\n\n",
-            "Ссылки": "## Ссылки\n\n- Прочитанное при постановке: `CLAUDE.md`.\n",
+            "Ссылки": "## Ссылки\n\n- Прочитанное при постановке: `CLAUDE.md`.\n- Справка: не нужна — проба.\n",
         }
         for name, cut in cases.items():
             with self.subTest(name=name):
@@ -154,6 +157,7 @@ class DispatchGateTest(unittest.TestCase):
             "--done": "`true` зелёный",
             "--stop": "падение — отчёт",
             "--read": "`CLAUDE.md`",
+            "--recall": "не нужна — проба",
         }
         for missing in keys:
             with self.subTest(missing=missing):
@@ -165,7 +169,7 @@ class DispatchGateTest(unittest.TestCase):
 
     def test_goal_done_without_command_refused(self) -> None:
         r = self.dispatch(
-            "--goal", "Сделать", "--done", "всё готово", "--stop", "стоп", "--read", "x"
+            "--goal", "Сделать", "--done", "всё готово", "--stop", "стоп", "--read", "`CLAUDE.md`", "--recall", "не нужна — проба"
         )
         self.assert_refused(r, "не названа команда")
 
@@ -179,6 +183,8 @@ class DispatchGateTest(unittest.TestCase):
             "падение — отчёт",
             "--read",
             "`CLAUDE.md`",
+            "--recall",
+            "не нужна — проба",
         )
         self.assertNotIn("не проходит", r.stdout + r.stderr)
         text = (self.results / "gate" / "brief.md").read_text(encoding="utf-8")
@@ -187,9 +193,70 @@ class DispatchGateTest(unittest.TestCase):
             "`pytest -q` зелёный",
             "падение — отчёт",
             "Прочитанное при постановке: `CLAUDE.md`",
+            "Справка: не нужна — проба",
         ):
             self.assertIn(value, text)
         self.assertNotIn("{{", text.split("## Раздел для субагентов")[0])
+
+    def recall_file(self, age_s: float) -> Path:
+        path = self.root / "recall" / "topic-20261106-1200.md"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("справка\n", encoding="utf-8")
+        stamp = time.time() - age_s
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def brief_with_recall(self, line: str) -> Path:
+        return self.write_brief(FULL.replace("- Справка: не нужна — проба.", line))
+
+    def test_recall_line_required(self) -> None:
+        brief = self.brief_with_recall("")
+        self.assert_refused(self.dispatch("--brief", str(brief)), "Ссылки / Справка")
+
+    def test_recall_fresh_file_passes(self) -> None:
+        self.recall_file(3600)
+        for value in (
+            "recall/topic-20261106-1200.md",
+            str(self.root / "recall" / "topic-20261106-1200.md"),
+        ):
+            with self.subTest(value=value):
+                brief = self.brief_with_recall(f"- Справка: `{value}`")
+                r = self.dispatch("--brief", str(brief))
+                self.assertNotIn("не проходит", r.stdout + r.stderr)
+                self.assertTrue(self.log.exists(), r.stdout + r.stderr)
+                self.log.unlink()
+                shutil.rmtree(self.results / "gate")
+
+    def test_recall_old_file_refused(self) -> None:
+        self.recall_file(25 * 3600)
+        brief = self.brief_with_recall("- Справка: recall/topic-20261106-1200.md")
+        self.assert_refused(self.dispatch("--brief", str(brief)), "старше суток")
+
+    def test_recall_missing_file_refused(self) -> None:
+        brief = self.brief_with_recall("- Справка: recall/нет.md")
+        self.assert_refused(self.dispatch("--brief", str(brief)), "файла нет")
+
+    def test_recall_not_needed_without_reason_refused(self) -> None:
+        brief = self.brief_with_recall("- Справка: не нужна")
+        self.assert_refused(self.dispatch("--brief", str(brief)), "Ссылки / Справка")
+
+    def test_goal_recall_path_written_to_brief(self) -> None:
+        self.recall_file(60)
+        r = self.dispatch(
+            "--goal", "Сделать", "--done", "`true` зелёный", "--stop", "стоп",
+            "--read", "`CLAUDE.md`", "--recall", "recall/topic-20261106-1200.md",
+        )
+        self.assertNotIn("не проходит", r.stdout + r.stderr)
+        text = (self.results / "gate" / "brief.md").read_text(encoding="utf-8")
+        self.assertIn("- Справка: recall/topic-20261106-1200.md", text)
+
+    def test_goal_recall_old_file_refused(self) -> None:
+        self.recall_file(25 * 3600)
+        r = self.dispatch(
+            "--goal", "Сделать", "--done", "`true` зелёный", "--stop", "стоп",
+            "--read", "`CLAUDE.md`", "--recall", "recall/topic-20261106-1200.md",
+        )
+        self.assert_refused(r, "старше суток")
 
     def test_done_without_goal_is_usage_error(self) -> None:
         brief = self.write_brief(FULL)

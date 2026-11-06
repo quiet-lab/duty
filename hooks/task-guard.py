@@ -2,10 +2,11 @@
 """Хуки плагина duty: ворота постановки, сторожа сессии агента задачи.
 
 Ворота действуют во всех сессиях с плагином: `pre-tool` для `Agent`/`Task`
-отклоняет приглашение без строк «Критерий готовности» и «Условие остановки»
-(проверка — `scripts/brief_check.py`); пропускаются типы только для чтения,
-`duty:runner` и вызовы из навыка (по транскрипту сессии). Остальное ниже — только в сессии агента задачи
-(`DUTY_ROLE=worker`).
+отклоняет приглашение без строк «Критерий готовности», «Условие остановки» и
+«Справка»; `AskUserQuestion` — вопрос без фразы «По документам:» (проверка —
+`scripts/brief_check.py`); приглашение пропускается для типов только для чтения,
+`duty:runner` и вызовов из навыка (по транскрипту сессии). Остальное ниже — только
+в сессии агента задачи (`DUTY_ROLE=worker`).
 
 Причина: субагент ставил наблюдение и заканчивал ход, уведомление к нему
 не приходило, а координатор считал его работающим. Поэтому:
@@ -73,8 +74,16 @@ GATE_HINT = (
     "В приглашении не хватает: {missing}. Добавьте строки "
     "«Критерий готовности: <команда и ожидаемый результат>» и "
     "«Условие остановки: <сигнал, при котором работа прекращается и исполнитель "
-    "отчитывается>» (или заголовки с текстом под ними). Форма — "
+    "отчитывается>» (или заголовки с текстом под ними), а также "
+    "«Справка: <путь к итогу /duty:recall не старше суток>» или "
+    "«Справка: не нужна — <причина>». Форма — "
     "reference/brief-template.md плагина duty, раздел «Раздел для субагентов»."
+)
+ASK_TOOL = "AskUserQuestion"
+ASK_HINT = (
+    "Вопрос пользователю задаётся после справки по документам: сначала "
+    "/duty:recall <тема>; в вопрос — строку «По документам: <что найдено или "
+    "записей нет>». Нет строки в вопросах: {missing}."
 )
 
 
@@ -135,6 +144,37 @@ def last_turn_skill(transcript: object) -> str | None:
     return None
 
 
+def project_root() -> Path | None:
+    """Корень проекта по конфигурации плагина; None — `brief_check` берёт cwd."""
+    sys.path.insert(0, str(SCRIPTS))
+    import duty_config
+
+    return duty_config.find_root()
+
+
+def gate_question(data: dict[str, object]) -> bool:
+    """Ворота вопроса пользователю: True — вопрос отклонён."""
+    raw_input = data.get("tool_input")
+    questions = raw_input.get("questions") if isinstance(raw_input, dict) else None
+    sys.path.insert(0, str(SCRIPTS))
+    import brief_check
+
+    bad = [
+        str(index)
+        for index, item in enumerate(questions if isinstance(questions, list) else [], 1)
+        if not brief_check.check_question(
+            str(item.get("question", "")) if isinstance(item, dict) else ""
+        )
+    ]
+    if not bad:
+        return False
+    pre_tool_output(
+        permissionDecision="deny",
+        permissionDecisionReason=ASK_HINT.format(missing=", ".join(bad)),
+    )
+    return True
+
+
 def gate(data: dict[str, object]) -> bool:
     """Ворота постановки: True — поручение отклонено."""
     raw_input = data.get("tool_input")
@@ -144,7 +184,9 @@ def gate(data: dict[str, object]) -> bool:
     sys.path.insert(0, str(SCRIPTS))
     import brief_check
 
-    missing = brief_check.check_prompt(str(tool_input.get("prompt", "")))
+    missing = brief_check.check_prompt(
+        str(tool_input.get("prompt", "")), root=project_root()
+    )
     if not missing:
         return False
     if last_turn_skill(data.get("transcript_path")) is not None:
@@ -406,6 +448,12 @@ def main(argv: list[str]) -> int:
         if isinstance(data, dict):
             gated = argv[1] == "pre-tool" and data.get("tool_name") in SUBAGENT_TOOLS
             if gated and gate(data):
+                return 0
+            if (
+                argv[1] == "pre-tool"
+                and data.get("tool_name") == ASK_TOOL
+                and gate_question(data)
+            ):
                 return 0
             if worker:
                 handler(data)

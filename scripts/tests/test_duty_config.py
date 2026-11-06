@@ -799,5 +799,82 @@ class HelpersTest(Base):
         self.assertEqual(dutylib.active_sessions(self.home), {"live"})
 
 
+class ShellLaunchTest(Base):
+    """Сценарий, переданный оболочке (`bash duty_config.py get …`), не выполняет строки Python.
+
+    Без защиты bash исполняет докстринг и строки `import …`, а `import`
+    ImageMagick ждёт щелчка мыши по окну: команда не завершается.
+    Заглушка `import` в PATH повторяет это ожидание без X-сервера.
+    """
+
+    def stubs(self, import_body: str, python_body: str | None = None) -> Path:
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        bodies = {"import": import_body}
+        if python_body is not None:
+            bodies["python3"] = python_body
+        for name, body in bodies.items():
+            stub = bin_dir / name
+            stub.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
+            stub.chmod(0o755)
+        return bin_dir
+
+    def run_shell(
+        self, shell: str, script: Path, *args: str, path: str
+    ) -> tuple[int, str, str]:
+        proc = subprocess.Popen(
+            [shell, str(script), *args],
+            cwd=self.tmp,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**self.env, "PATH": path},
+            start_new_session=True,
+        )
+        try:
+            out, err = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, 9)
+            proc.communicate()
+            self.fail(f"{shell} {script.name} {' '.join(args)}: не завершился за 30 с")
+        return proc.returncode, out, err
+
+    def test_bash_get_does_not_wait_for_import(self) -> None:
+        root = self.repo(toml='schema = 1\n[docs]\ndecisions = "docs/decisions"\n')
+        # Заглушка ждёт без конца, как import ImageMagick до щелчка мыши.
+        bin_dir = self.stubs("exec tail -f /dev/null")
+        path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+        rc, out, err = self.run_shell(
+            "bash", SCRIPT, "--root", str(root), "get", "docs.decisions", path=path
+        )
+        self.assertEqual((rc, out, err), (0, "docs/decisions\n", ""))
+
+    def test_every_entry_script_hands_shell_launch_to_python(self) -> None:
+        marker = self.tmp / "import-called"
+        calls = self.tmp / "python-calls"
+        bin_dir = self.stubs(
+            f'echo "$0" >> "{marker}"', f'printf "%s\\n" "$*" >> "{calls}"'
+        )
+        scripts = [
+            p
+            for p in [*SCRIPTS.glob("*.py"), *(SCRIPTS.parent / "hooks").glob("*.py")]
+            if p.name != "dutylib.py"
+        ]
+        self.assertIn(SCRIPT, scripts)
+        for script in scripts:
+            for shell in ("bash", "sh"):
+                with self.subTest(script=script.name, shell=shell):
+                    rc, _, err = self.run_shell(
+                        shell, script, "--help", path=f"{bin_dir}{os.pathsep}/usr/bin:/bin"
+                    )
+                    self.assertEqual((rc, err), (0, ""))
+                    self.assertFalse(marker.exists(), "оболочка дошла до import")
+                    self.assertEqual(
+                        calls.read_text(encoding="utf-8").splitlines()[-1],
+                        f"-I {script} --help",
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()

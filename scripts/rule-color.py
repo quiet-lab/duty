@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Цвет задачи по правилу herdr ui.workspace_symbols.color_rule.
+" 2>/dev/null; exec python3 -I "$0" "$@" # файл, переданный оболочке (bash файл.py), запускается python3
 
 Запасной путь dispatch.sh, когда herdr цвета не выдал: оттенок из 36
 с шагом 10°, насыщенность 50–70 %, яркость 70–100 % (HSV), случайные.

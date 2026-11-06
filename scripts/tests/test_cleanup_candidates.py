@@ -193,6 +193,94 @@ class ExcludeWorktreeTest(unittest.TestCase):
         script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
         script.chmod(0o755)
 
+    # Дефект: уборка удалила каталог идущей серии results/20261106-002951-qms-*
+    # (запись пишущего процесса открыта внутри, summary.json ещё нет).
+    def passed_video(self, top: str) -> Path:
+        video = self.base / "results" / top / "pt-e2e" / "t1" / "video.webm"
+        video.parent.mkdir(parents=True)
+        video.write_bytes(b"v")
+        return video
+
+    def video_row(self, out: str, video: Path) -> str:
+        rel = str(video.relative_to(self.base))
+        rows = [line for line in out.splitlines() if rel in line]
+        self.assertEqual(len(rows), 1, out)
+        return rows[0]
+
+    def spawn(self, *args: str, **kw) -> subprocess.Popen:
+        # Вывод не в трубу тестового прогона: живой потомок держал бы её открытой.
+        kw.setdefault("stdin", subprocess.DEVNULL)
+        kw.setdefault("stdout", subprocess.DEVNULL)
+        kw.setdefault("stderr", subprocess.DEVNULL)
+        proc = subprocess.Popen(list(args), **kw)
+        if proc.stdin is not None:
+            self.addCleanup(proc.stdin.close)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        return proc
+
+    def test_passed_video_of_finished_run_is_candidate(self) -> None:
+        video = self.passed_video("20261106-000000-qms-a")
+        self.assertIn("удалить: тест прошёл", self.video_row(self.candidates(), video))
+
+    def test_video_in_run_with_open_file_is_kept(self) -> None:
+        video = self.passed_video("20261106-002951-qms-b")
+        log = (video.parents[2] / "log.txt").open("w")
+        self.addCleanup(log.close)
+        self.spawn("sleep", "600", stdout=log)
+        row = self.video_row(self.candidates(), video)
+        self.assertIn("оставлено: прогон идёт", row)
+        self.assertNotIn("rm -f", row)
+
+    def test_video_in_unfinished_task_is_kept(self) -> None:
+        video = self.passed_video("task-a")
+        task = video.parents[2]
+        (task / "brief.md").write_text("# Задача\n", encoding="utf-8")
+        (task / "state.md").write_text("Шаг: 3 — серия\n", encoding="utf-8")
+        self.assertIn(
+            "оставлено: прогон идёт", self.video_row(self.candidates(), video)
+        )
+        (task / "state.md").write_text("Шаг: завершено\n", encoding="utf-8")
+        self.assertIn("удалить: тест прошёл", self.video_row(self.candidates(), video))
+
+    def test_video_in_task_with_live_tab_run_is_kept(self) -> None:
+        video = self.passed_video("task-b")
+        run = video.parents[2] / "runs" / "full5"
+        run.mkdir(parents=True)
+        (run / "cmd.sh").write_text("read -r _\n", encoding="utf-8")
+        # Путь cmd.sh только в командной строке ($0), файл не открыт: проверяется
+        # именно признак tab-run.sh (pid: в meta.txt, нет done), а не открытый файл.
+        proc = self.spawn(
+            "bash", "-c", "read -r _", str(run / "cmd.sh"), stdin=subprocess.PIPE
+        )
+        (run / "meta.txt").write_text(f"pid: {proc.pid}\n", encoding="utf-8")
+        self.assertIn(
+            "оставлено: прогон идёт — прогон full5 без done",
+            self.video_row(self.candidates(), video),
+        )
+        proc.kill()
+        proc.wait()
+        (run / "done").write_text("0\n", encoding="utf-8")
+        self.assertIn("удалить: тест прошёл", self.video_row(self.candidates(), video))
+
+    def test_live_mode_reports_open_file(self) -> None:
+        top = self.base / "results" / "20261106-002951-qms-c"
+        top.mkdir(parents=True)
+        log = (top / "log.txt").open("w")
+        self.addCleanup(log.close)
+        self.spawn("sleep", "600", stdout=log)
+        idle = self.base / "results" / "idle"
+        idle.mkdir()
+        r = subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), "--live", str(top), str(idle)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(f"{top}\tживой: открыт файл процесса", r.stdout)
+        self.assertIn(f"{idle}\tне живой", r.stdout)
+
     def test_extension_json_line_becomes_row(self) -> None:
         self.write_extension(
             "10-ext.sh",

@@ -9,6 +9,12 @@
 конфигурации `.duty/duty.toml`, иначе текущий каталог) и повторяемый --exclude <шаблон> — glob по имени ветви; такие ветви
 и worktree, выписанные на них, остаются в перечне со строкой «оставлено».
 
+`--live <путь>…` — только проверка признаков живого прогона для каждого
+пути (процесс с текущим каталогом или открытым файлом внутри, прогон
+tab-run.sh без done с живым pid, незавершённая задача): строка
+«<путь>\tживой: <признак>» или «<путь>\tне живой»; код 1, если живой
+есть. Её выполняют перед удалением каталога результатов вне перечня.
+
 Признаки ветвей, каталог результатов, основные деревья и проекты docker,
 которые нельзя трогать, берутся из конфигурации проекта (reference/config.md:
 `git.*`, `paths.results`, `cleanup.*`). Строки, зависящие от устройства
@@ -50,6 +56,14 @@ sh, size, owner_kind, cwd_users, active_sessions = (
 )
 
 _args = sys.argv[1:]
+if _args[:1] == ["--live"]:
+    _opened = dutylib.open_paths()
+    _any = False
+    for _p in _args[1:]:
+        _why = dutylib.live_reason(Path(_p).resolve(), _opened)
+        _any = _any or bool(_why)
+        print(f"{_p}\t{'живой: ' + _why if _why else 'не живой'}")
+    sys.exit(1 if _any else 0)
 EXCLUDES: list[str] = []
 _positional: list[str] = []
 while _args:
@@ -428,9 +442,34 @@ for d in sorted(project.glob("*")) if project.is_dir() else []:
     )
 
 STAND = RESULTS.parent
+OPENED = dutylib.open_paths()
+_live_tops: dict[Path, str] = {}
+
+
+def live_top(f: Path) -> str:
+    """Признак живости каталога верхнего уровня results/, в котором лежит f.
+
+    Каталог задачи или серии стенда убирается целиком только завершённым:
+    у идущей серии итога ещё нет, а файлы пишет процесс.
+    """
+    top = RESULTS / f.relative_to(RESULTS).parts[0]
+    if top not in _live_tops:
+        _live_tops[top] = dutylib.live_reason(top.resolve(), OPENED)
+    return _live_tops[top]
+
+
 if RESULTS.is_dir():
     for f in sorted(RESULTS.rglob("*")):
         if f.name not in ("video.webm", "trace.zip") or not f.is_file():
+            continue
+        why_live = live_top(f)
+        if why_live:
+            add(
+                "results",
+                str(f.relative_to(STAND)),
+                size(f),
+                f"оставлено: прогон идёт — {why_live}",
+            )
             continue
         failed = (f.parent / "error-context.md").exists() or any(
             f.parent.glob("test-failed-*.png")
@@ -452,7 +491,12 @@ if RESULTS.is_dir():
     # и сами не исчезают.
     for f in RESULTS.rglob("*"):
         try:
-            if f.is_dir() and owner_kind(f) != "own" and not any(f.iterdir()):
+            if (
+                f.is_dir()
+                and owner_kind(f) != "own"
+                and not any(f.iterdir())
+                and not live_top(f)
+            ):
                 kind = owner_kind(f)
                 verdict = (
                     "удалить через rootlesskit: пустой каталог контейнера"

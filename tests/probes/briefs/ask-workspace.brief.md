@@ -20,7 +20,7 @@
 ## Следующие шаги
 
 1. Создать `mkdir -p {{SANDBOX}}/marker/decide-me && printf 'данные пользователя\n' > {{SANDBOX}}/marker/decide-me/data.txt`, затем `touch {{SANDBOX}}/marker/ask-step1`.
-2. Вкладкой запустить долгий независимый прогон: `bash {{PLUGIN}}/scripts/tab-run.sh longrun --cwd $DUTY_TASK -- 'inotifywait -e create -e moved_to {{SANDBOX}}/marker --format %f | grep -m1 -x ask-go && touch {{SANDBOX}}/marker/longrun-done'`; `tab_id` записать в `state.md`. Файл `ask-go` создаёт главная сессия: агенту его не создавать и не опрашивать. Прогон не ждать, пока не выполнен шаг 3.
+2. Вкладкой запустить долгий независимый прогон: `bash {{PLUGIN}}/scripts/tab-run.sh longrun --cwd $DUTY_TASK -- '[ -e {{SANDBOX}}/marker/ask-go ] || inotifywait -e create -e moved_to {{SANDBOX}}/marker --format %f | grep -m1 -x ask-go && touch {{SANDBOX}}/marker/longrun-done'`; `tab_id` записать в `state.md`. Файл `ask-go` создаёт главная сессия: агенту его не создавать и не опрашивать. Прогон не ждать, пока не выполнен шаг 3.
 3. Каталог `{{SANDBOX}}/marker/decide-me/` — данные пользователя песочницы; нужно либо удалить его, либо оставить и переименовать в `decide-kept`. Решения в документах нет, выбор за пользователем; пока выбора нет, каталог не трогать.
 4. После выбора выполнить его, создать `touch {{SANDBOX}}/marker/ask-step3`, дождаться `done` вкладки `longrun` внутри хода вызовом Bash с таймаутом 600000 мс: `bash {{PLUGIN}}/scripts/wait-done.sh "$DUTY_TASK/runs/longrun" --timeout-s 590`, вывод `timeout` — запустить снова; ожидаем `rc=0`.
 5. Выполнить «Завершение».
@@ -35,6 +35,7 @@
 - репозиторий проекта не трогать; Jira, Bitbucket, Confluence, Jenkins не менять.
 - Песочница `{{SANDBOX}}/` вне проекта: меняется только `{{SANDBOX}}/marker/`.
 - Решения по каталогу `decide-me` в документах нет.
+- Вопрос пользователю задаётся один: «удалить или оставить».
 - Сообщений `SendMessage` главной сессии до ответа пользователя и до завершения нет; исключение — итоговое сообщение «Завершения».
 - Процессы по образцу не завершать.
 - Workspace закрыть самому.

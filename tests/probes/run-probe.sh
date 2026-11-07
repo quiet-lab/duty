@@ -66,7 +66,7 @@ case $num in
     7) name=neighbours model= ;;
     9) name=ask-workspace model=sonnet ;;
     9b | 9б) name=ask-coordinator model=opus ;;
-    *) die "нет пробы $num (есть 2-7, 6b, 9 и 9b)" ;;
+    *) die "нет пробы $num (есть 2-7, 6b, 9 и 9b; проба 8 — push-wake/run.sh)" ;;
 esac
 
 render() { # источник приёмник

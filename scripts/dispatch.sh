@@ -76,6 +76,9 @@
 #      готовым (timeout) при исправной работе. Тогда экран читается через
 #      herdr pane read; приглашение в строке ввода или в транскрипте — шаг
 #      выполнен с предупреждением, имя агента закрепляется herdr agent rename
+#      (если agent_status панели уже working или blocked, агент запущен и
+#      работает: экран не читается, приглашение мог вытеснить его первый
+#      вызов инструмента; статус проверяется раньше экрана)
 #      (после timeout за именем агента нет); пока запуск не завершён, rename
 #      отвечает agent_launch_pending — это не отказ: herdr применяет имя
 #      из agent start сам, сценарий предупреждает и идёт дальше; другая
@@ -830,9 +833,21 @@ BLOCK
             *'"timeout"'* | *agent_not_ready*) ;;
             *) die "шаг 4: агент не запущен: $start_out; workspace $ws оставлен, экран: herdr pane read $pane --source recent-unwrapped" ;;
         esac
-        screen=$(herdr pane read "$pane" --source recent-unwrapped 2>&1 || true)
-        place=$(prompt_place "$screen" brief.md)
-        if [ "$place" = none ] && [[ $screen == *'--agent duty:worker'* ]]; then
+        # Сначала статус панели: агент, уже начавший работу (working, blocked),
+        # мог вытеснить текст приглашения с экрана первым вызовом инструмента
+        # (машина под нагрузкой), поэтому экран при таком статусе не решает.
+        status=$(agent_status "$pane")
+        screen=""
+        place=none
+        case $status in
+            working | blocked) ;;
+            *)
+                screen=$(herdr pane read "$pane" --source recent-unwrapped 2>&1 || true)
+                place=$(prompt_place "$screen" brief.md)
+                ;;
+        esac
+        if [ "$place" = none ] && [ "$status" != working ] && [ "$status" != blocked ] \
+            && [[ $screen == *'--agent duty:worker'* ]]; then
             # Команда застряла в строке ввода оболочки (ble.sh в режиме vi: Enter
             # не принимает неполный буфер). Esc g g d G очищает строку, i возвращает
             # в insert, ctrl+j (accept-line) принимает буфер.
@@ -850,9 +865,14 @@ BLOCK
             screen=$(herdr pane read "$pane" --source recent-unwrapped 2>&1 || true)
             place=$(prompt_place "$screen" brief.md)
         fi
-        [ "$place" != none ] \
-            || die "шаг 4: агент не готов, приглашения на экране нет: $start_out; workspace $ws оставлен, экран: herdr pane read $pane --source recent-unwrapped"
-        warn "herdr не подтвердил готовность агента (приглашение на экране: $place)"
+        case $status in
+            working | blocked) warn "herdr не подтвердил готовность агента (агент уже работает: $status)" ;;
+            *)
+                [ "$place" != none ] \
+                    || die "шаг 4: агент не готов, приглашения на экране нет: $start_out; workspace $ws оставлен, экран: herdr pane read $pane --source recent-unwrapped"
+                warn "herdr не подтвердил готовность агента (приглашение на экране: $place)"
+                ;;
+        esac
         # После timeout имя за агентом не закреплено (agent get по имени даёт
         # agent_not_found), а по панели агент виден: закрепляем имя сами, чтобы
         # wait, list и close находили его, как обычно.

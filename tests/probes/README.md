@@ -14,7 +14,7 @@
   один тест падает намеренно (`test_threshold_is_inclusive`: порог `>`
   вместо `>=`);
 - `origin.git` — голый репозиторий, `origin` для `repo`;
-- `marker/` — каталог файлов-отметок (пробы 2 и 3);
+- `marker/` — каталог файлов-отметок (пробы 2, 3, 9 и 9б);
 - `venv/` — окружение с pytest (в системном `python3` его нет).
 
 Песочница по умолчанию — `paths.sandbox` конфигурации
@@ -32,7 +32,7 @@ tests/probes/run-probe.sh <номер> [--sandbox <каталог>] [--main <и�
 и `{{PLUGIN}}` (каталог плагина) в `<песочница>/.render/`, вызывает
 `dispatch.sh <имя> <модель> --brief … --rules … --main …` и печатает
 команды проверки. С `--dry` только рендерит и печатает команду
-`dispatch.sh`. Порядок запуска: 3, 2, 6, 7, 5, 4.
+`dispatch.sh`. Порядок запуска: 3, 2, 6, 7, 5, 4, 9, 9б.
 
 В таблице `$SB` — песочница, `$TASK` — каталог задачи
 `<results>/<имя>/` (`paths.results`), `$DISPATCH` — `dispatch.sh` плагина.
@@ -47,6 +47,8 @@ tests/probes/run-probe.sh <номер> [--sandbox <каталог>] [--main <и�
 | 5 | `jwait-probe` | haiku | `jwait.sh` во вкладке (требует раздел `[jenkins]`) | номер сборки, результат, длительность; либо «сборок в ходу нет» | `cat $TASK/runs/jenkins/done`; `cat $TASK/runs/jenkins/meta.txt`; `head $TASK/report.md` |
 | 4 | `opus-subagents` | opus | субагент sonnet с явной моделью, таблица в отчёте | тесты зелёные, ветвь в `origin.git` | `git -C $SB/origin.git branch` (есть `probe/fix-pricing`); `cat $TASK/runs/tests2/done`; `grep -i sonnet $TASK/report.md` |
 | 8 | `push-wake` | haiku | толчок `done` в простаивающую и работающую сессию, отказ фона в субагенте, `SubagentStop`, блокировка `Stop`, агент отсутствует | все сценарии PASS, вкладки закрыты | `tests/probes/push-wake/run.sh <каталог> setup\|A\|B\|C\|D\|E\|F\|teardown`: сценарий сам печатает PASS или FAIL |
+| 9 | `ask-workspace` | sonnet | вопрос исполнителя пользователю в его workspace (`agents/worker.md`, п. 5); независимые шаги до ответа | до ответа панель `blocked`, диалог с «По документам:», `ask-step1` и `decide-me` есть, `ask-step3` нет, `longrun` идёт, сообщений главной сессии нет; после ответа — `ask-step3`, `longrun-done`, решение по `decide-me`, один вопрос в отчёте | `herdr agent list`; `herdr agent read $PANE --source detection --format text`; `ls $SB/marker/`; `cat $TASK/runs/longrun/done`; ответ — выбор в диалоге клавишами `herdr pane send-keys $PANE <клавиши>`, затем `touch $SB/marker/ask-go`; `grep -A3 'Заданные вопросы' $TASK/report.md`; `$DISPATCH list` |
+| 9б | `ask-coordinator` | opus | координатор переносит вопрос субагента пользователю в свой workspace, не ожидая другого субагента | до ответа панель `blocked`, диалог с «По документам:», `coord-b-step1` есть, `coord-a-done` и `done` вкладки `testsA` нет, сообщений главной сессии нет; после — `coord-a-done`, решение по `coord-decide`, отчёт с вопросом и моделями | то же с `coord-go`; `grep -A3 'Заданные вопросы' $TASK/report.md`; `grep -i 'Доля субагентов' $TASK/report.md`; `$DISPATCH list` |
 
 Записки и правила — `briefs/<имя>.brief.md`, `briefs/<имя>.rules.txt`.
 Имя для `dispatch.sh` совпадает с именем задачи в таблице, цифрового
@@ -57,7 +59,7 @@ tests/probes/run-probe.sh <номер> [--sandbox <каталог>] [--main <и�
 1. Закрыть оставшиеся workspace: `dispatch.sh close <имя>`.
 2. Удалить каталоги задач проб в каталоге результатов (`paths.results`): `tab-running`,
    `rules-midway`, `overflow-handoff`, `jwait-probe`,
-   `opus-subagents`.
+   `opus-subagents`, `ask-workspace`, `ask-coordinator`.
 3. Вернуть песочницу к исходному состоянию: `make-sandbox.sh <каталог>
    --reset` — удаляет ветви `probe/*` в `origin.git` и в `repo`, чистит
    `marker/` и `.render/`, восстанавливает рабочее дерево `repo` до `master`.

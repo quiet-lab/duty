@@ -8,8 +8,9 @@
 #
 # Номера: 2 rules-midway, 3 tab-running, 4 opus-subagents,
 # 5 jwait-probe, 6 overflow-handoff, 7 neighbours (только команды),
-# 6b — приглашение для продолжения пробы 6 (только текст).
-# Порядок запуска: 3, 2, 6, 7, 5, 4.
+# 6b — приглашение для продолжения пробы 6 (только текст),
+# 9 ask-workspace, 9b ask-coordinator.
+# Порядок запуска: 3, 2, 6, 7, 5, 4, 9, 9b.
 #
 # Записка и правила рендерятся в <песочница>/.render/: {{SANDBOX}} —
 # каталог песочницы, {{PLUGIN}} — каталог плагина. С --dry сценарий только
@@ -63,7 +64,9 @@ case $num in
     6) name=overflow-handoff model=haiku ;;
     6b | 6б) name=overflow-handoff model=haiku ;;
     7) name=neighbours model= ;;
-    *) die "нет пробы $num (есть 2-7 и 6b)" ;;
+    9) name=ask-workspace model=sonnet ;;
+    9b | 9б) name=ask-coordinator model=opus ;;
+    *) die "нет пробы $num (есть 2-7, 6b, 9 и 9b)" ;;
 esac
 
 render() { # источник приёмник
@@ -119,6 +122,34 @@ cat $task/runs/tests2/done
 grep -i sonnet $task/report.md
 CMD
             printf 'Ожидается: probe/fix-pricing в origin.git, tests2 с кодом 0, субагент sonnet в отчёте.\n' ;;
+        9) cat <<CMD
+# пока агент спрашивает (PANE — панель агента из вывода dispatch.sh):
+herdr agent list                                   # статус панели пробы: blocked
+herdr agent read \$PANE --source detection --format text   # «По документам:» и варианты
+ls $sandbox/marker/                                # ask-step1, decide-me, без ask-step3
+cat $task/runs/longrun/done                        # файла нет: прогон идёт
+# ответ: выбрать вариант в диалоге панели (herdr pane send-keys \$PANE <клавиши>), затем
+touch $sandbox/marker/ask-go
+ls $sandbox/marker/
+cat $task/runs/longrun/done
+grep -A3 'Заданные вопросы' $task/report.md
+bash $dispatch list
+CMD
+            printf 'Ожидается: до ответа blocked, ask-step3 нет, longrun идёт, от пробы в главной сессии сообщений нет; после — ask-step3, longrun-done, decide-me удалён или decide-kept, done=0, один вопрос с ответом, workspace закрыт.\n' ;;
+        9b | 9б) cat <<CMD
+# пока координатор спрашивает (PANE — панель координатора):
+herdr agent list                                   # статус панели: blocked
+herdr agent read \$PANE --source detection --format text   # «По документам:» и варианты
+ls $sandbox/marker/                                # coord-b-step1, coord-decide, без coord-a-done
+cat $task/runs/testsA/done                         # файла нет: субагент A идёт
+# ответ: выбрать вариант в диалоге панели (herdr pane send-keys \$PANE <клавиши>), затем
+touch $sandbox/marker/coord-go
+ls $sandbox/marker/
+grep -A3 'Заданные вопросы' $task/report.md
+grep -i 'Доля субагентов' $task/report.md
+bash $dispatch list
+CMD
+            printf 'Ожидается: до ответа blocked, coord-a-done и done testsA нет, сообщений в главной сессии нет; после — coord-a-done, coord-step3, решение по coord-decide, один вопрос от B в отчёте, таблица субагентов с моделями, workspace закрыт.\n' ;;
     esac
 }
 

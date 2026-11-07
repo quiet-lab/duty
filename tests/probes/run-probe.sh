@@ -141,7 +141,7 @@ CMD
 herdr agent list                                   # статус панели: blocked
 herdr agent read \$PANE --source detection --format text   # «По документам:» и варианты
 ls $sandbox/marker/                                # coord-b-step1, coord-decide, без coord-a-done
-cat $task/runs/testsA/done                         # файла нет: субагент A идёт
+cat $task/runs/tests-a/done                         # файла нет: субагент A идёт
 # ответ: выбрать вариант в диалоге панели (herdr pane send-keys \$PANE <клавиши>), затем
 touch $sandbox/marker/coord-go
 ls $sandbox/marker/
@@ -149,7 +149,7 @@ grep -A3 'Заданные вопросы' $task/report.md
 grep -i 'Доля субагентов' $task/report.md
 bash $dispatch list
 CMD
-            printf 'Ожидается: до ответа blocked, coord-a-done и done testsA нет, сообщений в главной сессии нет; после — coord-a-done, coord-step3, решение по coord-decide, один вопрос от B в отчёте, таблица субагентов с моделями, workspace закрыт.\n' ;;
+            printf 'Ожидается: до ответа blocked, coord-a-done и done tests-a нет, сообщений в главной сессии нет; после — coord-a-done, coord-step3, решение по coord-decide, один вопрос от B в отчёте, таблица субагентов с моделями, workspace закрыт.\n' ;;
     esac
 }
 

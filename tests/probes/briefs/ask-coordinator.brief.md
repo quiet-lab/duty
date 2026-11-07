@@ -21,7 +21,7 @@
 ## Следующие шаги
 
 1. Одним ходом запустить инструментом `Agent` двух субагентов с `model: sonnet`, одновременно:
-   - A (`Подзадача: probe-a`): `git clone {{SANDBOX}}/repo $DUTY_TASK/work`; вкладкой `bash {{PLUGIN}}/scripts/tab-run.sh testsA --cwd $DUTY_TASK/work -- '[ -e {{SANDBOX}}/marker/coord-go ] || inotifywait -e create -e moved_to {{SANDBOX}}/marker --format %f | grep -m1 -x coord-go; {{SANDBOX}}/venv/bin/python -m pytest -q'`; ждать `done` внутри хода (`wait-done.sh "$DUTY_TASK/runs/testsA" --timeout-s 590`, вывод `timeout` — запустить снова); ненулевой код ожидаем (один тест падает намеренно); затем `touch {{SANDBOX}}/marker/coord-a-done`. Файл `coord-go` создаёт главная сессия.
+   - A (`Подзадача: probe-a`): `git clone {{SANDBOX}}/repo $DUTY_TASK/work`; вкладкой `bash {{PLUGIN}}/scripts/tab-run.sh tests-a --cwd $DUTY_TASK/work -- '[ -e {{SANDBOX}}/marker/coord-go ] || inotifywait -e create -e moved_to {{SANDBOX}}/marker --format %f | grep -m1 -x coord-go; {{SANDBOX}}/venv/bin/python -m pytest -q'`; ждать `done` внутри хода (`wait-done.sh "$DUTY_TASK/runs/tests-a" --timeout-s 590`, вывод `timeout` — запустить снова); ненулевой код ожидаем (один тест падает намеренно); затем `touch {{SANDBOX}}/marker/coord-a-done`. Файл `coord-go` создаёт главная сессия.
    - B (`Подзадача: probe-b`): создать `mkdir -p {{SANDBOX}}/marker/coord-decide && printf 'данные пользователя\n' > {{SANDBOX}}/marker/coord-decide/data.txt` и `touch {{SANDBOX}}/marker/coord-b-step1`; затем каталог `{{SANDBOX}}/marker/coord-decide/` — данные пользователя песочницы, его нужно удалить или оставить и переименовать в `coord-kept`. Решения в документах нет, выбор за пользователем; субагент каталог не трогает и возвращает координатору вопрос с вариантами.
    - В поручение каждого субагента входят пути `$DUTY_TASK/brief.md` и `$DUTY_TASK/rules.md`, свои строки «Критерий готовности», «Условие остановки», «Приоритеты», «Справка» и блок из раздела «Раздел для субагентов» шаблона записки (`{{PLUGIN}}/reference/brief-template.md`).
 2. Вопрос от B координатор переносит пользователю, не дожидаясь завершения A.
@@ -31,7 +31,7 @@
 ## Команды проверки
 
 - `ls {{SANDBOX}}/marker/` — `coord-b-step1`, `coord-a-done`, `coord-step3` и либо нет `coord-decide`, либо есть `coord-kept`.
-- `cat $DUTY_TASK/runs/testsA/done` — код завершения вкладки A (не обязательно `0`).
+- `cat $DUTY_TASK/runs/tests-a/done` — код завершения вкладки A (не обязательно `0`).
 
 ## Принятые решения
 

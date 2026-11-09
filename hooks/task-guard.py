@@ -39,6 +39,7 @@ from pathlib import Path
 PLUGIN = Path(__file__).resolve().parent.parent
 SCRIPTS = PLUGIN / "scripts"
 TAG_RE = re.compile(r"^Подзадача: ([a-z0-9][a-z0-9_.-]{0,63})\s*$", re.MULTILINE)
+TAG_LINE_RE = re.compile(r"^Подзадача:", re.MULTILINE)
 SUBAGENT_TOOLS = {"Agent", "Task"}
 # Эти субагенты только читают и отвечают сразу: итог виден в их ответе.
 READ_ONLY_TYPES = {"Explore", "Plan", "claude-code-guide", "duty:inspector"}
@@ -60,12 +61,18 @@ DENY_WAIT = (
     "Субагент не ждёт в фоне: после конца хода уведомление к нему не придёт, "
     "и подзадача встанет. Жди внутри хода: `bash <плагин>/scripts/wait-done.sh "
     "<каталог прогона> --timeout-s 590` с таймаутом Bash 600000 мс, вывод timeout — "
-    "запустить снова; или `herdr pane wait-output <панель> --match 'DUTY-DONE <имя>'`. "
+    "запустить снова. "
     "Долгий прогон — забота координатора: верни ему итог и напиши, что запустить."
 )
 UNTAGGED = (
     "Подзадача без строки «Подзадача: <имя>» в приглашении: её остановка без итога "
     "не отслеживается (agents/worker.md, п. 3)."
+)
+BAD_TAG = (
+    "Строка «Подзадача:» в приглашении есть, но имя не подходит: допустима форма "
+    "[a-z0-9][a-z0-9_.-]* (до 64 знаков, строчные латинские буквы), например "
+    "«Подзадача: fx-duty». Остановка без итога не отслеживается "
+    "(agents/worker.md, п. 3)."
 )
 
 
@@ -271,7 +278,8 @@ def pre_tool(data: dict[str, object]) -> None:
             for suffix in (".stopped", ".done"):
                 (subtasks(task) / f"{tag.group(1)}{suffix}").unlink(missing_ok=True)
         elif tool_input.get("subagent_type") not in READ_ONLY_TYPES:
-            pre_tool_output(additionalContext=UNTAGGED)
+            has_line = TAG_LINE_RE.search(str(tool_input.get("prompt", "")))
+            pre_tool_output(additionalContext=BAD_TAG if has_line else UNTAGGED)
 
 
 def first_prompt(transcript: object) -> str:

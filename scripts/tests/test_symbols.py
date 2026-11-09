@@ -35,13 +35,16 @@ case "$1 $2" in
             fi ;;
         esac
         while [ $# -gt 0 ]; do [ "$1" = --label ] && label=$2; shift; done
+        rm -f "$FAKE_DIR/agent_gone"
         id=w$((9 + $(jq '.result.workspaces | length' "$FAKE_DIR/ws.json")))
         jq --arg l "$label" --arg i "$id" '.result.workspaces += [{workspace_id: $i, label: $l}]' "$FAKE_DIR/ws.json" > "$FAKE_DIR/ws.tmp"
         mv "$FAKE_DIR/ws.tmp" "$FAKE_DIR/ws.json"
         [ -z "${FAKE_HERDR_CREATE_WARN:-}" ] || echo "warning: something" >&2
         echo '{"result":{"workspace":{"workspace_id":"'"$id"'"},"root_pane":{"pane_id":"p9"}}}' ;;
     "agent get")
-        if [ "$3" = p9 ]; then
+        if [ -e "$FAKE_DIR/agent_gone" ]; then
+            exit 1
+        elif [ "$3" = p9 ]; then
             echo '{"result":{"agent":{"agent":"claude","agent_status":"working","tab_id":"t1"}}}'
         else
             exit 1
@@ -340,6 +343,25 @@ class SymbolsTest(unittest.TestCase):
             self.herdr_log(),
         )
         self.assertNotIn("report-metadata\t--help", self.herdr_log())
+
+    def test_resume_keeps_color_block_and_token(self) -> None:
+        self.project_config(["🦊"])
+        r = self.start_task()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        first = self.task_color_line("tsk")
+        (self.results / "tsk" / "state.md").write_text("Шаг: 1\n", encoding="utf-8")
+        # Агент прежнего workspace вышел; новый workspace создаётся с живым агентом.
+        (self.dir / "agent_gone").touch()
+        r = self.run_cmd("tsk", "sonnet", "--resume")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        brief_text = (self.results / "tsk" / "brief.md").read_text(encoding="utf-8")
+        colors = re.findall(
+            r"^- цвет workspace: `(#[0-9a-f]{6})`", brief_text, re.MULTILINE
+        )
+        self.assertTrue(colors and all(self.in_rule(c) for c in colors), brief_text)
+        self.assertEqual(colors[-1], self.color_tokens()[-1])
+        self.assertEqual(len(self.color_tokens()), 2)
+        self.assertEqual(colors[0], first)
 
     def test_start_color_skipped_on_upstream_herdr(self) -> None:
         self.project_config(["🦊"])

@@ -80,7 +80,17 @@ case "$1 $2" in
     "workspace close")
         jq --arg w "$3" '.result.workspaces |= map(select(.workspace_id != $w))' "$FAKE_DIR/ws.json" > "$FAKE_DIR/ws.tmp"
         mv "$FAKE_DIR/ws.tmp" "$FAKE_DIR/ws.json" ;;
-    "tab list") echo '{"result":{"tabs":[{"tab_id":"t1"}]}}' ;;
+    "tab list")
+        if [ -n "${FAKE_HERDR_EXTRA_TAB:-}" ] && [ ! -e "$FAKE_DIR/t2.closed" ]; then
+            echo '{"result":{"tabs":[{"tab_id":"t1"},{"tab_id":"t2"}]}}'
+        else
+            echo '{"result":{"tabs":[{"tab_id":"t1"}]}}'
+        fi ;;
+    "tab close")
+        # Вкладка закрылась сама между list и close: отметка есть, а close отвечает ошибкой.
+        : > "$FAKE_DIR/t2.closed"
+        [ -z "${FAKE_HERDR_TAB_GONE:-}" ] || exit 1
+        [ -z "${FAKE_HERDR_TAB_STUCK:-}" ] || { rm -f "$FAKE_DIR/t2.closed"; exit 1; } ;;
     "agent list") echo '{"result":{"agents":[]}}' ;;
     *) exit 0 ;;
 esac
@@ -589,6 +599,22 @@ class SymbolsTest(unittest.TestCase):
         r = self.run_cmd("close", "tsk")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("workspace=w1", r.stdout)
+
+    def test_close_ignores_tab_closed_by_itself(self) -> None:
+        self.task("tsk", "🦊", "🦊 tsk · sonnet", "w1", report=True)
+        r = self.run_cmd(
+            "close", "tsk", FAKE_HERDR_EXTRA_TAB="1", FAKE_HERDR_TAB_GONE="1"
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("workspace=w1", r.stdout)
+
+    def test_close_dies_when_tab_stays_open(self) -> None:
+        self.task("tsk", "🦊", "🦊 tsk · sonnet", "w1", report=True)
+        r = self.run_cmd(
+            "close", "tsk", FAKE_HERDR_EXTRA_TAB="1", FAKE_HERDR_TAB_STUCK="1"
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("вкладка t2 не закрыта", r.stdout + r.stderr)
 
     def test_start_general_mode_line(self) -> None:
         r = self.run_cmd(

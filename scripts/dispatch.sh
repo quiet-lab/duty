@@ -536,7 +536,12 @@ cmd_close() {
     [ -n "$agent_tab" ] || agent_tab=$(head -1 <<< "$tabs")
     for tab in $tabs; do
         [ "$tab" = "$agent_tab" ] && continue
-        herdr tab close "$tab" > /dev/null || die "вкладка $tab не закрыта"
+        # Вкладка команды закрывается сама по done: между list и close она могла
+        # исчезнуть, тогда ошибка закрытия не ошибка.
+        if ! herdr tab close "$tab" > /dev/null; then
+            herdr tab list --workspace "$ws" | jq -e --arg t "$tab" '.result.tabs[] | select(.tab_id == $t)' > /dev/null \
+                && die "вкладка $tab не закрыта"
+        fi
     done
 
     herdr workspace close "$ws" > /dev/null || die "workspace $ws не закрыт"

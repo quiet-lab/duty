@@ -88,14 +88,17 @@ rcmd="tail --pid=$pid -F -n 20 -- $rpath"
 
 ssh_pid=
 sleep_pid=
-# Поток ssh и пауза запущены этим сценарием, их PID известны.
-trap '[ -z "$ssh_pid" ] || kill "$ssh_pid" 2> /dev/null || true; [ -z "$sleep_pid" ] || kill "$sleep_pid" 2> /dev/null || true' EXIT
+# Поток ssh и пауза запущены этим сценарием, их PID известны; TERM мог прийти
+# между запуском паузы и записью её PID, поэтому снимаются все фоновые задачи.
+trap '[ -z "$ssh_pid" ] || kill "$ssh_pid" 2> /dev/null || true
+    kill $(jobs -p) 2> /dev/null || true' EXIT
 trap 'exit 143' TERM
 
 started=$SECONDS
 last=$SECONDS
 attempt=0
 while true; do
+    conn_lines=0
     exec {events}< <(exec ssh "${ssh_opts[@]}" -- "$host" "$rcmd")
     ssh_pid=$!
     while true; do
@@ -115,7 +118,10 @@ while true; do
             break
         fi
         last=$SECONDS
-        attempt=0  # связь восстановлена: строки идут
+        # tail при каждом подключении повторяет до 20 прежних строк: связь
+        # считается восстановленной, когда пришла строка сверх этого повтора.
+        conn_lines=$(( conn_lines + 1 ))
+        (( conn_lines <= 20 )) || attempt=0
         printf '%(%H:%M:%S)T %s\n' -1 "$line"
     done
     exec {events}<&-

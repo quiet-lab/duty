@@ -39,7 +39,7 @@ if [ -n "${FAKE_SSH_DROP:-}" ] && [ -e "$FAKE_SSH_DROP" ] && [[ $1 == tail* ]]; 
     # В файле — число оставшихся обрывов (пусто — один).
     left=$(< "$FAKE_SSH_DROP")
     if [ "${left:-1}" -le 1 ]; then rm -f "$FAKE_SSH_DROP"; else echo $((left - 1)) > "$FAKE_SSH_DROP"; fi
-    [ -n "${FAKE_SSH_QUIET:-}" ] || echo "до обрыва"
+    [ -n "${FAKE_SSH_QUIET:-}" ] || for ((i = 0; i < ${FAKE_SSH_LINES:-1}; i++)); do echo "до обрыва"; done
     [ -z "${FAKE_SSH_ERR:-}" ] || echo "ssh: connection refused" >&2
     exit 255
 fi
@@ -286,14 +286,24 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
     def drops(self, count: int) -> None:
         (self.tmp / "drop").write_text(f"{count}\n", encoding="utf-8")
 
-    def test_attempt_resets_after_lines_arrive(self) -> None:
-        # Два обрыва подряд, между ними строки журнала: счёт попыток начинается заново.
+    def test_attempt_resets_after_new_lines_arrive(self) -> None:
+        # Два обрыва подряд, между ними больше 20 строк (повтор tail их не даёт):
+        # счёт попыток начинается заново.
+        self.env["FAKE_SSH_LINES"] = "25"
         self.drops(2)
         sleeper = self.remote(2)
         proc = self.start(sleeper.pid, "--reconnect-s", "0", "--max-reconnects", "1")
         out, _ = proc.communicate(timeout=LIMIT_S)
         self.assertEqual(proc.returncode, 0, out)
         self.assertRegex(out, r"remote done")
+
+    def test_replayed_tail_does_not_reset_attempts(self) -> None:
+        # После каждого переподключения приходит одна повторная строка: счёт не сбрасывается.
+        self.drops(30)
+        sleeper = self.remote(15)
+        proc = self.start(sleeper.pid, "--reconnect-s", "0", "--max-reconnects", "1")
+        out, _ = proc.communicate(timeout=LIMIT_S)
+        self.assertEqual(proc.returncode, 3, out)
 
     def test_max_reconnects_exhausted_exit_3(self) -> None:
         self.env["FAKE_SSH_QUIET"] = "1"
@@ -358,20 +368,28 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
                 out, _ = proc.communicate(timeout=LIMIT_S)
                 self.assertRegex(out, r"\d\d:\d\d:\d\d в тильде")
 
-    def test_term_in_reconnect_pause_leaves_no_orphans(self) -> None:
+    def check_term_in_pause(self, *extra: str) -> None:
+        # Пауза — sleep с числом секунд, которого нет у других процессов.
+        pause = 5000 + os.getpid() % 1000
         self.env["FAKE_SSH_QUIET"] = "1"
         self.drops(1)
         sleeper = self.remote(15)
-        proc = self.start(sleeper.pid, "--timeout-s", "100", "--reconnect-s", "60")
+        proc = self.start(sleeper.pid, *extra, "--reconnect-s", str(pause))
         assert proc.stdout is not None
         self.assertIn("обрыв связи", proc.stdout.readline())
         proc.send_signal(signal.SIGTERM)
         proc.wait(timeout=LIMIT_S)
         self.assertEqual(proc.returncode, 143)
         left = subprocess.run(
-            ["pgrep", "-f", str(self.log)], check=False, capture_output=True
+            ["pgrep", "-fx", f"sleep {pause}"], check=False, capture_output=True
         )
         self.assertEqual(left.returncode, 1, left.stdout)
+
+    def test_term_in_reconnect_pause_leaves_no_orphans(self) -> None:
+        self.check_term_in_pause("--timeout-s", "100")
+
+    def test_term_in_reconnect_pause_without_timeout(self) -> None:
+        self.check_term_in_pause()
 
 
 @unittest.skipUnless(

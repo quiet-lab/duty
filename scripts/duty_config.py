@@ -27,6 +27,7 @@ import argparse
 import copy
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -52,9 +53,10 @@ REMOVED_KEYS = {"symbols.colors", "symbols.outside_colors"}
 # Ключи, которые допустимы только в пользовательском слое.
 USER_ONLY = {"paths.state", "symbols.outside"}
 
-# Типы значений схемы: str, int, bool, list (список строк) и записи вида
-# ("tables", {поле: тип}) — массив таблиц, у которого обязательны все поля.
-STR, INT, BOOL, LIST = "str", "int", "bool", "list"
+# Типы значений схемы: str, int, bool, list (список строк), map (таблица
+# «ключ → строка») и записи вида ("tables", {поле: тип}) — массив таблиц,
+# у которого обязательны все поля.
+STR, INT, BOOL, LIST, MAP = "str", "int", "bool", "list", "map"
 SCHEMA_KEYS: dict[str, dict[str, Any]] = {
     "project": {"name": STR},
     "paths": {
@@ -91,6 +93,23 @@ SCHEMA_KEYS: dict[str, dict[str, Any]] = {
         "feed_markers": LIST,
     },
     "jira": {"url": STR, "token_file": STR, "ticket": STR},
+    "tickets": {
+        "project": STR,
+        "jql": STR,
+        "labels": LIST,
+        "review_label": STR,
+        "unclear_labels": LIST,
+        "unclear_words": LIST,
+        "check_statuses": LIST,
+        "stale_days": INT,
+        "status_order": LIST,
+        "order": LIST,
+        "other_group": STR,
+        "desc_chars": INT,
+        "duplicate_links": LIST,
+        "groups": ("tables", {"name": STR, "pattern": STR}),
+        "overrides": MAP,
+    },
     "docs": {
         "rules": LIST,
         "rules_optional": LIST,
@@ -151,6 +170,23 @@ DEFAULTS: dict[str, Any] = {
         "openspec": [],
         "recall": ["docs/"],
         "post_change": [],
+    },
+    "tickets": {
+        "project": "",
+        "jql": "",
+        "labels": [],
+        "review_label": "",
+        "unclear_labels": [],
+        "unclear_words": [],
+        "check_statuses": [],
+        "stale_days": 14,
+        "status_order": [],
+        "order": [],
+        "other_group": "Прочее",
+        "desc_chars": 150,
+        "duplicate_links": ["Duplicate"],
+        "groups": [],
+        "overrides": {},
     },
     "busy": {"resources": []},
     "cleanup": {"keep_trees": [], "skip_trees": [], "docker_keep_projects": []},
@@ -533,10 +569,20 @@ def _type_ok(kind: str, value: Any) -> bool:
         return isinstance(value, int) and not isinstance(value, bool)
     if kind == BOOL:
         return isinstance(value, bool)
+    if kind == MAP:
+        return isinstance(value, dict) and all(
+            isinstance(v, str) for v in value.values()
+        )
     return isinstance(value, list) and all(isinstance(v, str) for v in value)
 
 
-_EXPECTED = {STR: "строка", INT: "целое", BOOL: "true или false", LIST: "список строк"}
+_EXPECTED = {
+    STR: "строка",
+    INT: "целое",
+    BOOL: "true или false",
+    LIST: "список строк",
+    MAP: "таблица строк",
+}
 
 
 def check_layer(
@@ -636,7 +682,26 @@ def check_config(cfg: Config) -> list[str]:
                     f"{src}: {section}.{key}: обязателен при наличии [{section}]"
                 )
     out += _check_symbols(cfg)
+    out += _check_ticket_patterns(cfg)
     out += _check_local_ignored(cfg)
+    return out
+
+
+def _check_ticket_patterns(cfg: Config) -> list[str]:
+    """Находки: `pattern` групп `[tickets]` не компилируется как регулярное выражение."""
+    src = _origin(cfg.layers, "tickets")
+    groups = cfg.get("tickets.groups", [])
+    if src is None or not isinstance(groups, list):
+        return []
+    out = []
+    for g in groups:
+        pattern = g.get("pattern", "") if isinstance(g, dict) else ""
+        if not isinstance(pattern, str) or not pattern:
+            continue
+        try:
+            re.compile(pattern)
+        except re.error as e:
+            out.append(f"{src}: tickets.groups «{g.get('name', '')}»: pattern: {e}")
     return out
 
 
@@ -795,6 +860,26 @@ name = {name}  # имя для подписей, статистики и кат�
 # url = "https://jira.example"
 # token_file = "~/.config/project/jira-token"
 # ticket = "PRJ-\\\\d+"           # образец ключа тикета в именах ветвей и заголовках
+
+# [tickets]                     # навык tickets: сводка открытых тикетов по группам (нужна [jira])
+# project = ""                  # ключ проекта Jira: условие project = … и выборка all
+# jql = ""                      # выборка по умолчанию (пусто — свои и «наши» без назначенного)
+# labels = []                   # метки «наших» тикетов для выборки по умолчанию
+# review_label = ""             # метка тикетов ревью: отдельная группа с функционалом находок
+# unclear_labels = []           # метки неясности: раздел «Для обсуждения»
+# unclear_words = []            # первые слова заголовка исследования или проверки
+# check_statuses = []           # статусы проверки: застрявшие дольше stale_days
+# stale_days = 14               # порог застревания, дни
+# status_order = []             # порядок статусов в таблицах и сводке
+# order = []                    # порядок групп в отчёте (пусто — порядок groups)
+# other_group = "Прочее"        # группа тикетов без совпадений
+# desc_chars = 150              # сколько знаков описания участвует в сопоставлении
+# duplicate_links = ["Duplicate"]  # типы связей Jira «дубль»
+# [[tickets.groups]]            # порядок — приоритет; pattern — регулярное выражение, "" — только overrides
+# name = "Интерфейс"
+# pattern = 'интерфейс|ui\\b'
+# [tickets.overrides]           # ключ тикета → группа (у тикета ревью — функционал находок)
+# "PRJ-1" = "Интерфейс"
 
 # [docs]
 # rules = ["CLAUDE.md"]         # файлы rules-lint сверх файлов плагина и .duty/*.md

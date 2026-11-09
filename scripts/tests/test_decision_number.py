@@ -23,6 +23,10 @@ from pathlib import Path
 root = Path(__file__).resolve().parent.parent
 log = root / "calls.log"
 log.open("a", encoding="utf-8").write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1:2] == ["--write-index"] and os.environ.get("FAKE_FAIL_INDEX"):
+    # Обрыв записи указателя после успешной вставки: указатель уже изменён.
+    (root / "docs" / "decisions" / "README.md").write_text("половина\n", encoding="utf-8")
+    raise OSError("обрыв указателя")
 if sys.argv[1:2] == ["insert"]:
     src = Path(sys.argv[-1])
     if os.environ.get("FAKE_FAIL"):
@@ -243,6 +247,24 @@ class DecisionNumberTest(unittest.TestCase):
         self.assertEqual(status, "")
         self.assertTrue(draft.exists())
         self.assertEqual(list((root / ".git").glob("decision-insert*")), [])
+
+    def test_failed_index_write_rolls_back(self) -> None:
+        subprocess.run([*GIT, "add", "-A"], cwd=self.root, check=True)
+        subprocess.run([*GIT, "commit", "-qm", "init"], cwd=self.root, check=True)
+        draft = Path(self.tmp.name) / "idx.md"
+        draft.write_text("# 0000. Указатель\n", encoding="utf-8")
+        self.env["FAKE_FAIL_INDEX"] = "1"
+        r = self.run_script(str(self.decisions / "02-code"), "--insert", str(draft))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("откат", r.stderr)
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "-uall"],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        self.assertEqual(status, "")
 
     def test_failed_insert_keeps_draft_inside_repo(self) -> None:
         draft = self.root / "draft-in-repo.md"

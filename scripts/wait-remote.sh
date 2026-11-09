@@ -21,7 +21,7 @@
 # умолчанию 5).
 #
 # Обрыв ssh при живом процессе — событие: одно обращение
-# `ssh <узел> kill -0 <pid>` выясняет, жив ли процесс, и при живом
+# `ssh <узел> [ -d /proc/<pid> ]` выясняет, жив ли процесс, и при живом
 # процессе соединение открывается снова не раньше чем через --reconnect-s
 # (по умолчанию 30 с) после обрыва. Это предел частоты реакции на обрыв,
 # а не такт опроса. Состояние ssh контролируют ключи keepalive самого ssh.
@@ -59,25 +59,44 @@ done
 if [ -n "$timeout_s" ] && [ -z "${WAIT_REMOTE_INNER:-}" ]; then
     inner=(bash "$0" "$host" "$pid" "$rlog" --reconnect-s "$reconnect_s" --max-reconnects "$max_reconnects")
     [ -z "$stall_s" ] || inner+=(--stall-s "$stall_s")
+    # timeout идёт в фоне, обёртка ждёт его через wait: ловушка TERM срабатывает
+    # сразу и передаёт сигнал дальше, сирот не остаётся.
+    WAIT_REMOTE_INNER=1 timeout "$timeout_s" "${inner[@]}" &
+    timeout_pid=$!
+    # Процесс запущен этим сценарием, его PID известен.
+    trap 'kill -TERM "$timeout_pid" 2> /dev/null || true' TERM INT
     rc=0
-    WAIT_REMOTE_INNER=1 timeout "$timeout_s" "${inner[@]}" || rc=$?
+    wait "$timeout_pid" || rc=$?
+    # Ловушка прервала wait: дождаться, пока завершится сам процесс.
+    if kill -0 "$timeout_pid" 2> /dev/null; then
+        wait "$timeout_pid" || rc=$?
+    fi
     [ "$rc" -ne 124 ] || echo timeout
     exit "$rc"
 fi
 
 ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
-printf -v rcmd 'tail --pid=%s -F -n 20 -- %q' "$pid" "$rlog"
+# Путь журнала для оболочки узла: «~/» в начале раскрывает узел, остальное —
+# в одинарных кавычках POSIX (чужая оболочка не обязана понимать %q).
+quote_posix() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+if [[ $rlog == '~/'* ]]; then
+    rpath="\"\$HOME\"/$(quote_posix "${rlog#\~/}")"
+else
+    rpath=$(quote_posix "$rlog")
+fi
+rcmd="tail --pid=$pid -F -n 20 -- $rpath"
 
 ssh_pid=
-# Поток ssh запущен этим сценарием, его PID известен.
-trap '[ -z "$ssh_pid" ] || kill "$ssh_pid" 2> /dev/null || true' EXIT
+sleep_pid=
+# Поток ssh и пауза запущены этим сценарием, их PID известны.
+trap '[ -z "$ssh_pid" ] || kill "$ssh_pid" 2> /dev/null || true; [ -z "$sleep_pid" ] || kill "$sleep_pid" 2> /dev/null || true' EXIT
 trap 'exit 143' TERM
 
 started=$SECONDS
 last=$SECONDS
 attempt=0
 while true; do
-    exec {events}< <(exec ssh "${ssh_opts[@]}" -- "$host" "$rcmd" 2>&1)
+    exec {events}< <(exec ssh "${ssh_opts[@]}" -- "$host" "$rcmd")
     ssh_pid=$!
     while true; do
         read_args=()
@@ -96,6 +115,7 @@ while true; do
             break
         fi
         last=$SECONDS
+        attempt=0  # связь восстановлена: строки идут
         printf '%(%H:%M:%S)T %s\n' -1 "$line"
     done
     exec {events}<&-
@@ -103,11 +123,11 @@ while true; do
     # Поток закончился: одно обращение выясняет, жив ли процесс.
     alive=0
     ssh_rc=0
-    ssh "${ssh_opts[@]}" -- "$host" "kill -0 $pid" > /dev/null 2>&1 || ssh_rc=$?
+    ssh "${ssh_opts[@]}" -- "$host" "[ -d /proc/$pid ]" > /dev/null 2>&1 || ssh_rc=$?
     if [ "$ssh_rc" -eq 0 ]; then
         alive=1
     elif [ "$ssh_rc" -ne 255 ]; then
-        alive=0  # kill -0 не нашёл процесс
+        alive=0  # /proc/<pid> на узле нет
     else
         alive=1  # связи нет, судьба процесса неизвестна
     fi
@@ -124,6 +144,10 @@ while true; do
     # WARNING: пауза без источника событий — предел частоты повторных подключений
     # после обрыва (событие обрыва есть, ожидание чужого узла после него — нет);
     # заменяется, если ssh получит уведомление о возвращении узла.
-    sleep "$reconnect_s"
+    # В фоне с wait: TERM не ждёт конца паузы.
+    sleep "$reconnect_s" &
+    sleep_pid=$!
+    wait "$sleep_pid" || true
+    sleep_pid=
     last=$SECONDS
 done

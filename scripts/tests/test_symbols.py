@@ -35,13 +35,16 @@ case "$1 $2" in
             fi ;;
         esac
         while [ $# -gt 0 ]; do [ "$1" = --label ] && label=$2; shift; done
+        rm -f "$FAKE_DIR/agent_gone"
         id=w$((9 + $(jq '.result.workspaces | length' "$FAKE_DIR/ws.json")))
         jq --arg l "$label" --arg i "$id" '.result.workspaces += [{workspace_id: $i, label: $l}]' "$FAKE_DIR/ws.json" > "$FAKE_DIR/ws.tmp"
         mv "$FAKE_DIR/ws.tmp" "$FAKE_DIR/ws.json"
         [ -z "${FAKE_HERDR_CREATE_WARN:-}" ] || echo "warning: something" >&2
         echo '{"result":{"workspace":{"workspace_id":"'"$id"'"},"root_pane":{"pane_id":"p9"}}}' ;;
     "agent get")
-        if [ "$3" = p9 ] && [ -n "${FAKE_HERDR_STUCK:-}" ]; then
+        if [ -e "$FAKE_DIR/agent_gone" ]; then
+            exit 1
+        elif [ "$3" = p9 ] && [ -n "${FAKE_HERDR_STUCK:-}" ]; then
             # Команда застряла в строке ввода оболочки: агента в панели нет,
             # пока dispatch.sh не примет буфер (ctrl+j); затем агент ждёт ввода.
             grep -q 'send-keys.*ctrl+j' "$FAKE_DIR/herdr.log" || exit 1
@@ -85,7 +88,17 @@ case "$1 $2" in
     "workspace close")
         jq --arg w "$3" '.result.workspaces |= map(select(.workspace_id != $w))' "$FAKE_DIR/ws.json" > "$FAKE_DIR/ws.tmp"
         mv "$FAKE_DIR/ws.tmp" "$FAKE_DIR/ws.json" ;;
-    "tab list") echo '{"result":{"tabs":[{"tab_id":"t1"}]}}' ;;
+    "tab list")
+        if [ -n "${FAKE_HERDR_EXTRA_TAB:-}" ] && [ ! -e "$FAKE_DIR/t2.closed" ]; then
+            echo '{"result":{"tabs":[{"tab_id":"t1"},{"tab_id":"t2"}]}}'
+        else
+            echo '{"result":{"tabs":[{"tab_id":"t1"}]}}'
+        fi ;;
+    "tab close")
+        # Вкладка закрылась сама между list и close: отметка есть, а close отвечает ошибкой.
+        : > "$FAKE_DIR/t2.closed"
+        [ -z "${FAKE_HERDR_TAB_GONE:-}" ] || exit 1
+        [ -z "${FAKE_HERDR_TAB_STUCK:-}" ] || { rm -f "$FAKE_DIR/t2.closed"; exit 1; } ;;
     "agent list") echo '{"result":{"agents":[]}}' ;;
     *) exit 0 ;;
 esac
@@ -335,6 +348,25 @@ class SymbolsTest(unittest.TestCase):
             self.herdr_log(),
         )
         self.assertNotIn("report-metadata\t--help", self.herdr_log())
+
+    def test_resume_keeps_color_block_and_token(self) -> None:
+        self.project_config(["🦊"])
+        r = self.start_task()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        first = self.task_color_line("tsk")
+        (self.results / "tsk" / "state.md").write_text("Шаг: 1\n", encoding="utf-8")
+        # Агент прежнего workspace вышел; новый workspace создаётся с живым агентом.
+        (self.dir / "agent_gone").touch()
+        r = self.run_cmd("tsk", "sonnet", "--resume")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        brief_text = (self.results / "tsk" / "brief.md").read_text(encoding="utf-8")
+        colors = re.findall(
+            r"^- цвет workspace: `(#[0-9a-f]{6})`", brief_text, re.MULTILINE
+        )
+        self.assertTrue(colors and all(self.in_rule(c) for c in colors), brief_text)
+        self.assertEqual(colors[-1], self.color_tokens()[-1])
+        self.assertEqual(len(self.color_tokens()), 2)
+        self.assertEqual(colors[0], first)
 
     def test_start_color_skipped_on_upstream_herdr(self) -> None:
         self.project_config(["🦊"])
@@ -594,6 +626,22 @@ class SymbolsTest(unittest.TestCase):
         r = self.run_cmd("close", "tsk")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("workspace=w1", r.stdout)
+
+    def test_close_ignores_tab_closed_by_itself(self) -> None:
+        self.task("tsk", "🦊", "🦊 tsk · sonnet", "w1", report=True)
+        r = self.run_cmd(
+            "close", "tsk", FAKE_HERDR_EXTRA_TAB="1", FAKE_HERDR_TAB_GONE="1"
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("workspace=w1", r.stdout)
+
+    def test_close_dies_when_tab_stays_open(self) -> None:
+        self.task("tsk", "🦊", "🦊 tsk · sonnet", "w1", report=True)
+        r = self.run_cmd(
+            "close", "tsk", FAKE_HERDR_EXTRA_TAB="1", FAKE_HERDR_TAB_STUCK="1"
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("вкладка t2 не закрыта", r.stdout + r.stderr)
 
     def test_start_general_mode_line(self) -> None:
         r = self.run_cmd(

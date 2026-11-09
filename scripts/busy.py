@@ -191,6 +191,9 @@ def cmd_claim(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
+    if args.ttl_min is not None and args.ttl_min < 1:
+        print("claim: --ttl-min — целое не меньше 1", file=sys.stderr)
+        return EXIT_USAGE
     if args.pid <= 0 or not pid_alive(args.pid):
         print(
             f"claim: процесс --pid {args.pid} не жив, отметка сразу устарела бы",
@@ -291,10 +294,12 @@ def cmd_list(args: argparse.Namespace) -> int:
     print("| ресурс | держатель | задача | заметка | pid жив | минут | срок, мин |")
     print("|---|---|---|---|---|---|---|")
     for m in marks:
+        ttl = m.get("ttl_min") if m.get("ttl_min") is not None else "—"
+        ttl_cell = f"{ttl} {m['overdue']}" if m["overdue"] else str(ttl)
         print(
             f"| {m['resource']} | {m.get('holder')} | {m.get('task') or ''} | {m.get('note') or ''} "
             f"| {'да' if m['alive'] else 'нет (устарела)'} | {m['minutes']} "
-            f"| {m.get('ttl_min') if m.get('ttl_min') is not None else '—'} {m['overdue']} |"
+            f"| {ttl_cell} |"
         )
     return 0
 

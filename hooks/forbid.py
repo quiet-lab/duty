@@ -125,32 +125,6 @@ NETWORK_COMMANDS = {
     "resolvectl",
 }
 KILL_COMMANDS = {"pkill", "killall"}
-READERS = {
-    "cat",
-    "less",
-    "more",
-    "head",
-    "tail",
-    "grep",
-    "egrep",
-    "fgrep",
-    "rg",
-    "sed",
-    "awk",
-    "gawk",
-    "mawk",
-    "bat",
-    "strings",
-    "base64",
-    "xxd",
-    "od",
-    "hexdump",
-    "tac",
-    "nl",
-    "cut",
-    "tr",
-}
-PRINTERS = {"echo", "printf", "print"}
 # Команды после «|», которые печатают свой ввод на экран.
 PIPE_PRINTERS = {
     "cat",
@@ -166,6 +140,23 @@ PIPE_PRINTERS = {
     "awk",
     "tr",
 }
+# Команды, читающие файл и печатающие его строки: печатающие ввод (кроме tee,
+# который читает только ввод) и читающие только файлы.
+READERS = (PIPE_PRINTERS - {"tee"}) | {
+    "grep",
+    "egrep",
+    "fgrep",
+    "rg",
+    "gawk",
+    "mawk",
+    "bat",
+    "strings",
+    "hexdump",
+    "tac",
+    "nl",
+    "cut",
+}
+PRINTERS = {"echo", "printf", "print"}
 PYTHON_RE = re.compile(r"python[0-9.]*")
 PYTHON_PRINT_RE = re.compile(r"\bprint\b|sys\.std(out|err)")
 GREP_QUIET_LONG = {
@@ -680,14 +671,76 @@ def check_rules(name: str, texts: list[str], cfg: Settings) -> str | None:
     return None
 
 
+# Длинные ключи grep и rg без значения; прочие длинные ключи без «=» могут
+# брать значение из следующего слова (в том числе сокращённые), и оно не ключ.
+GREP_PLAIN_LONG = GREP_QUIET_LONG | {
+    "--recursive",
+    "--dereference-recursive",
+    "--line-number",
+    "--ignore-case",
+    "--no-ignore-case",
+    "--no-messages",
+    "--extended-regexp",
+    "--fixed-strings",
+    "--perl-regexp",
+    "--invert-match",
+    "--word-regexp",
+    "--line-regexp",
+    "--with-filename",
+    "--no-filename",
+    "--only-matching",
+    "--null",
+    "--text",
+    "--byte-offset",
+    "--initial-tab",
+    "--null-data",
+    "--unbuffered",
+    "--no-heading",
+    "--hidden",
+}
+# Короткие ключи, берущие значение (остаток связки или следующее слово).
+GREP_VALUE_SHORT = "efmABCdD"
+RG_VALUE_SHORT = "efmABCdDgtTrMjE"
+# Запись sed в стандартный вывод: команда или флаг `w`/`W` в любой позиции.
+SED_WRITE_STDOUT = re.compile(
+    r"[wW][ \t]*(?:/dev/(?:stdout|stderr|tty|fd/[12])|/proc/[^/\s]+/fd/[12])"
+)
+
+
+def grep_flags(texts: list[str], value_short: str = GREP_VALUE_SHORT) -> list[str]:
+    """Ключи grep без значений ключей и без операндов после `--`; результат — `-x` по одному."""
+    flags: list[str] = []
+    skip = False
+    for t in texts:
+        if skip:
+            skip = False
+        elif t == "--":
+            break
+        elif t.startswith("--"):
+            if "=" in t:
+                continue
+            if t in GREP_PLAIN_LONG:
+                flags.append(t)
+            else:
+                skip = True
+        elif re.fullmatch(r"-[A-Za-z0-9]+", t):
+            for i, c in enumerate(t[1:], 1):
+                if c in value_short:
+                    skip = i == len(t) - 1
+                    break
+                flags.append("-" + c)
+    return flags
+
+
 def prints_nothing(name: str, texts: list[str]) -> bool:
     """Команда по ключам не выводит строки файла: счёт, имена, правка на месте."""
     short = [t for t in texts if re.fullmatch(r"-[A-Za-z]+.*", t)]
     if name in {"grep", "egrep", "fgrep", "rg"}:
-        if any(t in GREP_QUIET_LONG for t in texts):
-            return True
-        return any(re.fullmatch(r"-[A-Za-z]*[clLq][A-Za-z]*", t) for t in short)
+        flags = grep_flags(texts, RG_VALUE_SHORT if name == "rg" else GREP_VALUE_SHORT)
+        return any(t in GREP_QUIET_LONG or t in {"-c", "-l", "-L", "-q"} for t in flags)
     if name == "sed":
+        if any(SED_WRITE_STDOUT.search(t) for t in texts):
+            return False
         return "--in-place" in texts or any(
             t.startswith("--in-place=") or re.fullmatch(r"-[A-Za-z]*i.*", t)
             for t in short

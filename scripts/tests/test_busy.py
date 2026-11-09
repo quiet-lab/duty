@@ -391,6 +391,36 @@ class BusyTest(unittest.TestCase):
         )
         self.assertNotIn("просрочено", free_line)
 
+    def test_ttl_must_be_positive(self) -> None:
+        for value in ("0", "-5"):
+            code, out = run(
+                "claim",
+                "r-bad",
+                "--holder",
+                "a",
+                "--ttl-min",
+                value,
+                "--pid",
+                str(os.getpid()),
+            )
+            self.assertEqual(code, 2, out)
+            self.assertFalse((Path(self.tmp.name) / "r-bad.json").exists())
+
+    def test_list_has_no_trailing_space_in_ttl_cell(self) -> None:
+        run(
+            "claim",
+            "r-ttl",
+            "--holder",
+            "a",
+            "--ttl-min",
+            "10",
+            "--pid",
+            str(os.getpid()),
+        )
+        _, out = run("list")
+        line = next(x for x in out.splitlines() if x.startswith("| r-ttl "))
+        self.assertTrue(line.endswith("| 10 |"), repr(line))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -192,6 +192,30 @@ class GuardTest(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
         self.assertEqual(list(self.subtasks.iterdir()), [])
 
+    def test_agent_with_bad_tag_name(self) -> None:
+        r = self.hook(
+            "pre-tool",
+            {
+                "tool_name": "Agent",
+                "tool_input": {
+                    "prompt": "Подзадача: А3\n" + GATE_LINES + "Сделай.",
+                    "subagent_type": "general-purpose",
+                },
+            },
+        )
+        out = json.loads(r.stdout)["hookSpecificOutput"]
+        self.assertIn("имя не подходит", out["additionalContext"])
+        self.assertIn("[a-z0-9][a-z0-9_.-]*", out["additionalContext"])
+
+    def test_deny_wait_does_not_recommend_wait_output(self) -> None:
+        r = self.hook(
+            "pre-tool",
+            {"tool_name": "Monitor", "tool_input": {}, "agent_id": "id-1"},
+        )
+        reason = json.loads(r.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("wait-done.sh", reason)
+        self.assertNotIn("wait-output", reason)
+
     def test_agent_without_tag(self) -> None:
         r = self.hook(
             "pre-tool",

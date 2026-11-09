@@ -144,8 +144,8 @@ check`) и печатает строку предупреждения при н�
 (`git.forbid_add_all`), `git stash` (`git.forbid_stash`), принудительный
 push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane send`
 в обход `tab-run.sh` (`forbid.herdr_direct`), вывод содержимого файлов из
-`secrets.dirs` (чтение в переменные
-и правка на месте без вывода разрешены: `reference/worker-rules.md`), печать
+`secrets.dirs` (что разрешено —
+`reference/worker-rules.md`), печать
 окружения и секретных переменных, пароль литералом в `curl -u` и `sshpass -p`,
 а также образцы проекта из `[[forbid.rules]]`. Команда разбирается по
 словам и конвейерам; подстановки, `bash -c`, `eval` и команда после `--`

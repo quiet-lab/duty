@@ -30,8 +30,8 @@
 # по [ui.workspace_symbols] каталога родителя (токены в workspace get); herdr его
 # не дал — запасной scripts/symbols.txt, он токеном не шлётся.
 # Цвет заголовка назначает herdr по ui.workspace_symbols.color_rule (токен color
-# в workspace get), плагин его не шлёт; herdr цвета не дал — плагин считает цвет
-# сам по тому же правилу (scripts/rule-color.py) и шлёт токеном color.
+# в workspace get); herdr цвета не дал — плагин считает цвет сам по тому же
+# правилу (scripts/rule-color.py) и шлёт токеном color.
 # symbols.main — постоянный символ
 # главной сессии, задачам не выдаётся; по нему главная сессия и пользователь узнают задачу
 # в подписях herdr. Метка workspace и вкладки —
@@ -536,7 +536,12 @@ cmd_close() {
     [ -n "$agent_tab" ] || agent_tab=$(head -1 <<< "$tabs")
     for tab in $tabs; do
         [ "$tab" = "$agent_tab" ] && continue
-        herdr tab close "$tab" > /dev/null || die "вкладка $tab не закрыта"
+        # Вкладка команды закрывается сама по done: между list и close она могла
+        # исчезнуть, тогда ошибка закрытия не ошибка.
+        if ! herdr tab close "$tab" > /dev/null; then
+            herdr tab list --workspace "$ws" | jq -e --arg t "$tab" '.result.tabs[] | select(.tab_id == $t)' > /dev/null \
+                && die "вкладка $tab не закрыта"
+        fi
     done
 
     herdr workspace close "$ws" > /dev/null || die "workspace $ws не закрыт"
@@ -668,7 +673,6 @@ cmd_start() {
     # Свой набор символов (конфигурация проекта или symbols.outside) выбирает
     # символ сам и сообщает herdr токеном; без него символ выдаёт herdr при
     # создании дочернего workspace, запасной набор — когда herdr его не дал.
-    # Цвет назначает herdr; не дал — плагин считает по правилу (free_color).
     # Флаг symbols_own ставит load_symbols: в подоболочке $(…) его не видно,
     # поэтому загрузка — здесь.
     load_symbols

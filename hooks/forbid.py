@@ -125,32 +125,6 @@ NETWORK_COMMANDS = {
     "resolvectl",
 }
 KILL_COMMANDS = {"pkill", "killall"}
-READERS = {
-    "cat",
-    "less",
-    "more",
-    "head",
-    "tail",
-    "grep",
-    "egrep",
-    "fgrep",
-    "rg",
-    "sed",
-    "awk",
-    "gawk",
-    "mawk",
-    "bat",
-    "strings",
-    "base64",
-    "xxd",
-    "od",
-    "hexdump",
-    "tac",
-    "nl",
-    "cut",
-    "tr",
-}
-PRINTERS = {"echo", "printf", "print"}
 # Команды после «|», которые печатают свой ввод на экран.
 PIPE_PRINTERS = {
     "cat",
@@ -166,6 +140,23 @@ PIPE_PRINTERS = {
     "awk",
     "tr",
 }
+# Команды, читающие файл и печатающие его строки: печатающие ввод (кроме tee,
+# который читает только ввод) и читающие только файлы.
+READERS = (PIPE_PRINTERS - {"tee"}) | {
+    "grep",
+    "egrep",
+    "fgrep",
+    "rg",
+    "gawk",
+    "mawk",
+    "bat",
+    "strings",
+    "hexdump",
+    "tac",
+    "nl",
+    "cut",
+}
+PRINTERS = {"echo", "printf", "print"}
 PYTHON_RE = re.compile(r"python[0-9.]*")
 PYTHON_PRINT_RE = re.compile(r"\bprint\b|sys\.std(out|err)")
 GREP_QUIET_LONG = {
@@ -680,14 +671,44 @@ def check_rules(name: str, texts: list[str], cfg: Settings) -> str | None:
     return None
 
 
+# Ключи grep, за которыми идёт значение (оно не ключ даже со знаком «-»).
+GREP_VALUE_LONG = {"--regexp", "--file", "--max-count", "--after-context"}
+GREP_VALUE_LONG |= {"--before-context", "--context"}
+# Запись sed в стандартный вывод: команда или флаг `w /dev/stdout`.
+SED_WRITE_STDOUT = re.compile(r"\bw\s*/dev/(?:stdout|stderr|fd/[12])\b")
+
+
+def grep_flags(texts: list[str]) -> list[str]:
+    """Ключи grep без значений ключей `-e`, `-f`, `-m`, `-A`, `-B`, `-C` и без операндов после `--`."""
+    flags: list[str] = []
+    skip = False
+    for t in texts:
+        if skip:
+            skip = False
+        elif t == "--":
+            break
+        elif t.startswith("--"):
+            flags.append(t)
+            skip = t in GREP_VALUE_LONG
+        elif re.fullmatch(r"-[A-Za-z]+", t):
+            flags.append(t)
+            skip = t[-1] in "efmABC"
+        elif t.startswith("-"):
+            flags.append(t)
+    return flags
+
+
 def prints_nothing(name: str, texts: list[str]) -> bool:
     """Команда по ключам не выводит строки файла: счёт, имена, правка на месте."""
     short = [t for t in texts if re.fullmatch(r"-[A-Za-z]+.*", t)]
     if name in {"grep", "egrep", "fgrep", "rg"}:
-        if any(t in GREP_QUIET_LONG for t in texts):
+        flags = grep_flags(texts)
+        if any(t in GREP_QUIET_LONG for t in flags):
             return True
-        return any(re.fullmatch(r"-[A-Za-z]*[clLq][A-Za-z]*", t) for t in short)
+        return any(re.fullmatch(r"-[A-Za-z]*[clLq][A-Za-z]*", t) for t in flags)
     if name == "sed":
+        if any(SED_WRITE_STDOUT.search(t) for t in texts):
+            return False
         return "--in-place" in texts or any(
             t.startswith("--in-place=") or re.fullmatch(r"-[A-Za-z]*i.*", t)
             for t in short

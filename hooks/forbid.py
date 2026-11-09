@@ -671,15 +671,44 @@ def check_rules(name: str, texts: list[str], cfg: Settings) -> str | None:
     return None
 
 
-# Ключи grep, за которыми идёт значение (оно не ключ даже со знаком «-»).
-GREP_VALUE_LONG = {"--regexp", "--file", "--max-count", "--after-context"}
-GREP_VALUE_LONG |= {"--before-context", "--context"}
-# Запись sed в стандартный вывод: команда или флаг `w /dev/stdout`.
-SED_WRITE_STDOUT = re.compile(r"\bw\s*/dev/(?:stdout|stderr|fd/[12])\b")
+# Длинные ключи grep и rg без значения; прочие длинные ключи без «=» могут
+# брать значение из следующего слова (в том числе сокращённые), и оно не ключ.
+GREP_PLAIN_LONG = GREP_QUIET_LONG | {
+    "--recursive",
+    "--dereference-recursive",
+    "--line-number",
+    "--ignore-case",
+    "--no-ignore-case",
+    "--no-messages",
+    "--extended-regexp",
+    "--fixed-strings",
+    "--perl-regexp",
+    "--invert-match",
+    "--word-regexp",
+    "--line-regexp",
+    "--with-filename",
+    "--no-filename",
+    "--only-matching",
+    "--null",
+    "--text",
+    "--byte-offset",
+    "--initial-tab",
+    "--null-data",
+    "--unbuffered",
+    "--no-heading",
+    "--hidden",
+}
+# Короткие ключи, берущие значение (остаток связки или следующее слово).
+GREP_VALUE_SHORT = "efmABCdD"
+RG_VALUE_SHORT = "efmABCdDgtTrMjE"
+# Запись sed в стандартный вывод: команда или флаг `w`/`W` в любой позиции.
+SED_WRITE_STDOUT = re.compile(
+    r"[wW][ \t]*(?:/dev/(?:stdout|stderr|tty|fd/[12])|/proc/[^/\s]+/fd/[12])"
+)
 
 
-def grep_flags(texts: list[str]) -> list[str]:
-    """Ключи grep без значений ключей `-e`, `-f`, `-m`, `-A`, `-B`, `-C` и без операндов после `--`."""
+def grep_flags(texts: list[str], value_short: str = GREP_VALUE_SHORT) -> list[str]:
+    """Ключи grep без значений ключей и без операндов после `--`; результат — `-x` по одному."""
     flags: list[str] = []
     skip = False
     for t in texts:
@@ -688,13 +717,18 @@ def grep_flags(texts: list[str]) -> list[str]:
         elif t == "--":
             break
         elif t.startswith("--"):
-            flags.append(t)
-            skip = t in GREP_VALUE_LONG
-        elif re.fullmatch(r"-[A-Za-z]+", t):
-            flags.append(t)
-            skip = t[-1] in "efmABC"
-        elif t.startswith("-"):
-            flags.append(t)
+            if "=" in t:
+                continue
+            if t in GREP_PLAIN_LONG:
+                flags.append(t)
+            else:
+                skip = True
+        elif re.fullmatch(r"-[A-Za-z0-9]+", t):
+            for i, c in enumerate(t[1:], 1):
+                if c in value_short:
+                    skip = i == len(t) - 1
+                    break
+                flags.append("-" + c)
     return flags
 
 
@@ -702,10 +736,8 @@ def prints_nothing(name: str, texts: list[str]) -> bool:
     """Команда по ключам не выводит строки файла: счёт, имена, правка на месте."""
     short = [t for t in texts if re.fullmatch(r"-[A-Za-z]+.*", t)]
     if name in {"grep", "egrep", "fgrep", "rg"}:
-        flags = grep_flags(texts)
-        if any(t in GREP_QUIET_LONG for t in flags):
-            return True
-        return any(re.fullmatch(r"-[A-Za-z]*[clLq][A-Za-z]*", t) for t in flags)
+        flags = grep_flags(texts, RG_VALUE_SHORT if name == "rg" else GREP_VALUE_SHORT)
+        return any(t in GREP_QUIET_LONG or t in {"-c", "-l", "-L", "-q"} for t in flags)
     if name == "sed":
         if any(SED_WRITE_STDOUT.search(t) for t in texts):
             return False

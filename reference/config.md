@@ -124,9 +124,24 @@
 | `jenkins.fake_job` | строка | `""` | `week-stats.py` |
 | `jenkins.nodes` | список | `[]` | навыки `inspect` и `dispatch` (текст; сценарии ключ не читают) |
 | `jenkins.feed_markers` | список строк | `[]` (лент нет) | `gates.py`, `branches.py` (статус сборки — лента, если его ключ или имя содержит любую из подстрок; ленты не влияют на ворота) |
-| `jira.url` | строка | нет таблицы — тикеты не ведутся | `facts.sh`, навык `after-merge` |
+| `jira.url` | строка | нет таблицы — тикеты не ведутся | `facts.sh`, `tickets.py`, навык `after-merge` |
 | `jira.token_file` | строка | — | те же |
 | `jira.ticket` | строка | — | `branches.py`, навыки `gates` и `after-merge` |
+| `tickets.project` | строка | `""` | `tickets.py`: ключ проекта Jira — условие `project = …` выборки по умолчанию и выборка `all` (без ключа `all` не работает) |
+| `tickets.jql` | строка | `""` (тогда нерешённые тикеты, назначенные на текущего пользователя, и тикеты без назначенного, созданные им или с метками `tickets.labels`) | `tickets.py`: выборка навыка `tickets` без аргумента |
+| `tickets.labels` | список | `[]` | `tickets.py`: метки «наших» тикетов в выборке по умолчанию |
+| `tickets.review_label` | строка | `""` (группы ревью нет) | `tickets.py`: тикеты с меткой — группа «Замечания ревью (<метка>)» с колонкой функционала находок |
+| `tickets.unclear_labels` | список | `[]` | `tickets.py`: метки неясности — раздел «Для обсуждения» |
+| `tickets.unclear_words` | список | `[]` | `tickets.py`: первое слово заголовка исследования или проверки — раздел «Для обсуждения» |
+| `tickets.check_statuses` | список | `[]` | `tickets.py`: статусы проверки; тикет без обновления дольше `stale_days` — раздел «Для обсуждения» |
+| `tickets.stale_days` | целое | `14` | `tickets.py` |
+| `tickets.status_order` | список | `[]` (по имени) | `tickets.py`: порядок статусов в таблицах и сводке |
+| `tickets.order` | список | `[]` (порядок `groups`) | `tickets.py`: порядок разделов групп в отчёте; `other_group` и группа ревью — в конце |
+| `tickets.other_group` | строка | `"Прочее"` | `tickets.py`: группа тикетов без совпадений; её тикеты — в «Для обсуждения» как расплывчатые |
+| `tickets.desc_chars` | целое | `150` | `tickets.py`: сколько знаков начала описания сопоставляется вместе с заголовком |
+| `tickets.duplicate_links` | список | `["Duplicate"]` | `tickets.py`: имена типов связей Jira, по которым тикеты — вероятные дубли (вместе с совпадением нормализованных заголовков) |
+| `[[tickets.groups]]` | `name`, `pattern` — строки | `[]` (все тикеты — `other_group`) | `tickets.py`: регулярное выражение без учёта регистра по заголовку и началу описания, проверяется `duty_config.py check`; первая совпавшая группа по порядку; `pattern = ""` — группа только из `overrides`; одно имя у нескольких записей допустимо |
+| `tickets.overrides` | таблица строк | `{}` | `tickets.py`: ключ тикета → группа; у тикета ревью — текст колонки функционала находок |
 | `docs.rules` | список | `[]` | `rules-lint.py repeats`; правила проекта в агентах и навыках названы ссылкой на ключ |
 | `docs.rules_optional` | список | `[]` | `rules-lint.py repeats` |
 | `docs.review` | строка | `""` | `agents/worker.md`, навыки `dispatch` и `docs-sweep` (текст) |
@@ -151,7 +166,8 @@
 | `symbols.tasks` | список | `[]` (тогда символ задачи выдаёт herdr по `[ui.workspace_symbols]` каталога родителя — токен `symbol` в `workspace get`; herdr не дал — запасной `scripts/symbols.txt`) | `dispatch.sh symbol` и запуск (`load_symbols`, `free_symbol`): непустой набор — свой, выбранный символ шлётся herdr токеном `symbol` источника `duty` (главнее токена herdr), занятыми считаются подписи и токены `symbol` открытых workspace; `DUTY_SYMBOLS_FILE` перекрывает только этот ключ |
 | `symbols.outside` | список | `[]` (тогда символ от herdr, затем `scripts/symbols.txt`, как у `symbols.tasks`) | `dispatch.sh symbol` (`load_symbols`); только пользовательский слой: workspace вне репозиториев |
 
-У массивов таблиц обязательны все поля. Символ — ровно одна кодовая
+У массивов таблиц обязательны все поля; таблица строк — TOML-таблица,
+все значения которой строки. Символ — ровно одна кодовая
 точка (`len == 1`): флаг из нескольких точек вроде «🏳️‍🌈» и символ
 с селектором варианта не подходят. Символ не повторяется ни внутри
 набора, ни между `main`, `tasks` и `outside`.
@@ -258,6 +274,33 @@ feed_markers = ["pr-feed/", "Лента сборок PR-"]
 url = "https://jira.example"
 token_file = "~/.config/example/jira-pat"
 ticket = "PRJ-\\d+"
+
+[tickets]
+project = "PRJ"
+labels = ["agent"]
+review_label = "review-defects"
+unclear_labels = ["to_discuss", "investigate"]
+unclear_words = ["Исследовать", "Проверить"]
+check_statuses = ["To Test", "To Fix"]
+stale_days = 14
+status_order = ["В работе", "To Test", "To Fix", "Backlog"]
+order = ["Интерфейс", "Телефония", "Конвейер"]
+
+[[tickets.groups]]
+name = "Конвейер"
+pattern = 'jenkins|ворота|сборк'
+
+[[tickets.groups]]
+name = "Телефония"
+pattern = 'звонк|asterisk|софтфон'
+
+[[tickets.groups]]
+name = "Интерфейс"
+pattern = 'интерфейс|ui\b|дашборд'
+
+[tickets.overrides]
+"PRJ-101" = "Интерфейс"
+"PRJ-202" = "конвейер: кеши сборок"   # тикет ревью: функционал находок
 
 [docs]
 rules = ["CLAUDE.md", ".claude/rules/*.md", "docs/isolation.md",

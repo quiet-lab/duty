@@ -21,6 +21,7 @@
 |---|---|---|---|---|
 | `/duty:inspect [фокус]` | sonnet | `duty:inspector` | таблица задач: что трогают, с чем пересекаются, какой моделью, можно ли сейчас; перечень уборки; «Неделя в цифрах» | ничего |
 | `/duty:gates [now \| фильтр]` | haiku | `duty:inspector` | открытые pull request'ы пользователя: сборки, ворота Jenkins с этапами, готовность к слиянию, возраст; с `now` — что идёт на узлах Jenkins и чем заняты агенты; нужны разделы `[bitbucket]`, `[jenkins]` | ничего |
+| `/duty:tickets [all \| фильтр]` | haiku | `duty:inspector` | открытые тикеты Jira по группам функционала: сводка по статусам и группам, полный отчёт в `<paths.results>/tickets/` с разделом «Для обсуждения» (неясные, вероятные дубли, застрявшие в проверке); нужны разделы `[jira]`, `[tickets]` | только файл отчёта |
 | `/duty:branches [all \| репозиторий] [--mine]` | haiku | `duty:inspector` | таблица ветвей в `origin` с предложением по каждой: слить, удалить, оставить, решить | ничего |
 | `/duty:cleanup [apply]` | sonnet | `duty:runner` | кандидаты на уборку с размерами; с `apply` — удаление строго по перечню; файлы контейнеров rootless Docker (uid из `/etc/subuid`) — через `rootlesskit rm -rf` без sudo; кэш сборки Docker — только старше двух суток | только с `apply` |
 | `/duty:after-merge <репозиторий>#<номер>` | sonnet | `duty:runner` | ветвь в origin, тикет, задачи изменений спецификаций, местные worktree и ветвь после слияния; нужен раздел `[bitbucket]` | да |
@@ -58,6 +59,7 @@ agents/runner.md             рутина с правками по списку
 agents/worker.md             исполнитель задачи в своём workspace herdr
 scripts/gates.py             сводка pull request'ов (Bitbucket, Jenkins), режим now
 scripts/branches.py          таблица ветвей origin с предложениями
+scripts/tickets.py           сводка открытых тикетов Jira по группам функционала
 scripts/facts.sh             факты для /duty:inspect
 scripts/busy.py              реестр занятости общих ресурсов
 scripts/signals.py           именованные сигналы между задачами, ожидание по inotify
@@ -449,7 +451,7 @@ marketplace quiet-lab>`, затем `claude plugin install duty@quiet-lab`;
 значениями по умолчанию: результаты, реестр занятости и сигналы лежат в
 `~/.local/state/duty/<имя проекта>/`, защищённые ветви — `main`, `master`
 и ветвь `origin/HEAD`; навыки, которым нужен раздел конфигурации
-(`gates`, `after-merge`, Jenkins в `inspect`), печатают одну строку об
+(`gates`, `tickets`, `after-merge`, Jenkins в `inspect`), печатают одну строку об
 отсутствии раздела и заканчивают, а хук `SessionStart` один раз
 напоминает `duty_config.py init`.
 
@@ -672,6 +674,7 @@ python3 -I <плагин>/scripts/duty_config.py check      # схема .duty/d
 python3 -I <плагин>/scripts/gates.py                  # таблица pull request'ов ([bitbucket])
 python3 -I <плагин>/scripts/gates.py now              # узлы Jenkins, агенты, занятость
 python3 -I <плагин>/scripts/branches.py all --mine    # ветви origin
+python3 -I <плагин>/scripts/tickets.py                # тикеты Jira по группам ([jira], [tickets])
 python3 -I <плагин>/scripts/cleanup-candidates.py "$PWD"   # сухой перечень
 python3 -I <плагин>/scripts/week-stats.py --offline   # неделя в цифрах без сети
 for t in <плагин>/scripts/tests/test_*.py; do python3 -I "$t"; done

@@ -44,6 +44,11 @@ case "$1 $2" in
     "agent get")
         if [ -e "$FAKE_DIR/agent_gone" ]; then
             exit 1
+        elif [ "$3" = p9 ] && [ -n "${FAKE_HERDR_STUCK:-}" ]; then
+            # Команда застряла в строке ввода оболочки: агента в панели нет,
+            # пока dispatch.sh не примет буфер (ctrl+j); затем агент ждёт ввода.
+            grep -q 'send-keys.*ctrl+j' "$FAKE_DIR/herdr.log" || exit 1
+            echo '{"result":{"agent":{"agent":"claude","agent_status":"idle","tab_id":"t1"}}}'
         elif [ "$3" = p9 ]; then
             echo '{"result":{"agent":{"agent":"claude","agent_status":"working","tab_id":"t1"}}}'
         else

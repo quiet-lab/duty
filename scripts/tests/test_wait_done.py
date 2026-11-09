@@ -44,6 +44,19 @@ class WaitDoneStallTest(unittest.TestCase):
         self.assertRegex(r.stdout, rf"^stall \d+ {self.run_dir}$")
         self.assertGreaterEqual(time.monotonic() - t0, STALL_S - 0.2)
 
+    def test_stall_without_log_counts_from_meta(self) -> None:
+        """Журнала нет: отсчёт от started_ms прогона, а не от запуска ожидания."""
+        started = time.time_ns() // 1_000_000 - 5_000
+        (self.run_dir / "meta.txt").write_text(
+            f"cwd: /\nstarted_ms: {started}\n", encoding="utf-8"
+        )
+        t0 = time.monotonic()
+        r = self.wait("--log", str(self.log), "--stall-s", "3")
+        self.assertEqual(r.returncode, 125, r.stderr)
+        self.assertRegex(r.stdout, rf"^stall [5-9] {self.run_dir}$")
+        # Срок вышел до запуска: сторож срабатывает сразу, а не через 3 с.
+        self.assertLess(time.monotonic() - t0, 2.5)
+
     def test_stall_when_log_stops_growing(self) -> None:
         self.log.write_text("начало\n", encoding="utf-8")
         time.sleep(1.2)  # журнал старше порога: отсчёт от его mtime

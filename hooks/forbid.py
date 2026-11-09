@@ -13,10 +13,12 @@
 
 Запреты (названия — в `DENY`):
 
-- `network` — переключение туннеля и сети станции;
+- `network` — переключение туннеля и сети станции; чтение состояния туннеля
+  из перечня без пароля `~/.claude/CLAUDE.md`, «Повышение привилегий»
+  (`NETWORK_READS`), разрешено;
 - `kill` — завершение процессов по образцу;
-- `git` — `git add -A/-u`, `git stash`, принудительный push, push в защищённые
-  ветви (`git.protected`);
+- `git` — `git add -A/-u`, подкоманды записи `git stash`, принудительный push,
+  push в защищённые ветви (`git.protected`);
 - `herdr` — вкладки и ввод в панели в обход `scripts/tab-run.sh`;
 - `secret` — вывод содержимого каталогов секретов (`secrets.dirs`), печать
   окружения и секретов, пароль литералом в `curl -u` и `sshpass -p`;
@@ -43,7 +45,9 @@ DENY = {
         "Запрещено переключать туннель и сеть станции (nmcli, awg, wg, openvpn, "
         "amn-*, resolvectl, ip link set up/down, systemctl awg-quick@…): "
         "правила проекта (.duty/worker-rules.md) и ~/.claude/CLAUDE.md; "
-        "переключает сам пользователь. Состояние сети читай через ip addr show."
+        "переключает сам пользователь. Состояние читай через ip addr show, "
+        "awg show amn0 endpoints|latest-handshakes, amn-zones-update --count, "
+        "systemctl status awg-quick@amn0."
     ),
     "kill": (
         "Запрещено завершать процессы по образцу (pkill, killall, fuser -k, "
@@ -58,8 +62,10 @@ DENY = {
         "Вместо этого: git add <путь> …"
     ),
     "git-stash": (
-        "Запрещено git stash: стек общий для всех worktree "
-        "(правила проекта (.duty/worker-rules.md) и ~/.claude/CLAUDE.md). "
+        "Запрещено менять стек git stash (git stash без подкоманды, push, save, "
+        "pop, apply, drop, clear, branch, store): стек общий для всех worktree "
+        "(правила проекта (.duty/worker-rules.md) и ~/.claude/CLAUDE.md); "
+        "чтение (list, show) разрешено. "
         "Вместо этого: коммит WIP в своей ветви или копия в каталоге задачи."
     ),
     "git-force": (
@@ -98,8 +104,9 @@ DENY = {
         'Проверка наличия — test -n "$ИМЯ", без вывода значения.'
     ),
     "secret-echo": (
-        "Запрещено печатать значение переменной с PASS, TOKEN, SECRET, PAT, "
-        "KEY в имени (echo, printf, print): rules.md задач «пароли и токены "
+        "Запрещено печатать значение переменной, в имени которой есть часть "
+        "(через _) PASS, PASSWORD, TOKEN, SECRET, PAT, KEY и подобные "
+        "(echo, printf, print): rules.md задач «пароли и токены "
         "в вывод не попадают». Вместо этого: передача в stdin "
         "через printf '%s' \"$ИМЯ\" | команда."
     ),
@@ -123,6 +130,33 @@ NETWORK_COMMANDS = {
     "wg-quick",
     "openvpn",
     "resolvectl",
+}
+# Чтение состояния туннеля — перечень команд без пароля из ~/.claude/CLAUDE.md,
+# «Повышение привилегий» (записка Q22: ложный отказ дороже пропуска); остальные
+# вызовы команд NETWORK_COMMANDS отвергаются. Сравнение — по аргументам целиком.
+NETWORK_READS = {
+    ("awg", ("show", "amn0", "endpoints")),
+    ("awg", ("show", "amn0", "latest-handshakes")),
+    ("amn-zones-update", ("--count",)),
+}
+# Подкоманды git stash, которые меняют общий стек; `git stash` без подкоманды
+# и с ключом вместо неё (`-m`, `-p`, `--`) — тот же push.
+STASH_WRITES = {"push", "save", "pop", "apply", "drop", "clear", "branch", "store"}
+# Части имени переменной (через «_»), по которым она считается секретной.
+SECRET_PARTS = {
+    "PASS",
+    "PASSWD",
+    "PASSWORD",
+    "PASSWORDS",
+    "PASSPHRASE",
+    "TOKEN",
+    "TOKENS",
+    "SECRET",
+    "SECRETS",
+    "KEY",
+    "KEYS",
+    "APIKEY",
+    "PAT",
 }
 KILL_COMMANDS = {"pkill", "killall"}
 # Команды после «|», которые печатают свой ввод на экран.
@@ -541,14 +575,29 @@ def resolve(words: list[Word]) -> tuple[str, list[Word], bool]:
 
 
 def secret_name(name: str) -> bool:
-    up = name.upper()
-    return bool(re.search(r"PASS|TOKEN|SECRET|KEY", up)) or "PAT" in up.split("_")
+    """Имя секретное, если одна из его частей через «_» — из SECRET_PARTS.
+
+    Подстрока не годится: `PASSED`, `MONKEY`, `BYPASS_FLAG` давали ложный отказ.
+    """
+    return any(part in SECRET_PARTS for part in name.upper().split("_"))
+
+
+def systemctl_status(args: list[str]) -> bool:
+    """`systemctl [ключи] status …` — чтение состояния службы."""
+    verbs = [a for a in args if not a.startswith("-")]
+    return bool(verbs) and verbs[0] == "status"
 
 
 def check_network(name: str, args: list[str]) -> str | None:
+    if (name, tuple(args)) in NETWORK_READS:
+        return None
     if name in NETWORK_COMMANDS:
         return "network"
-    if name == "systemctl" and any("awg-quick@" in a for a in args):
+    if (
+        name == "systemctl"
+        and any("awg-quick@" in a for a in args)
+        and not systemctl_status(args)
+    ):
         return "network"
     if (
         name == "ip"
@@ -611,7 +660,11 @@ def push_destination(spec: str) -> str:
 def check_git(args: list[Word], cfg: Settings) -> str | None:
     sub, rest = git_subcommand([a.text for a in args])
     if sub == "stash":
-        return "git-stash" if cfg.forbid_stash else None
+        if not cfg.forbid_stash:
+            return None
+        if not rest or rest[0].startswith("-") or rest[0] in STASH_WRITES:
+            return "git-stash"
+        return None
     if sub == "add":
         if not cfg.forbid_add_all:
             return None

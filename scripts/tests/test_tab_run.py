@@ -35,7 +35,9 @@ BRIEF = """# Задача probe
 # Двойник herdr: журнал argv (поля через табуляцию); tab create и pane run —
 # как у вкладки: команда идёт в новой сессии, её PID записывается в pane.pid.
 # Управление отказами — файлами в $FAKE_DIR: get_missing (agent get отвечает
-# agent_not_found), blocked (первый prompt отвечает agent_blocked).
+# agent_not_found), blocked (первый prompt отвечает agent_blocked), FIFO
+# wait-ready (agent wait сообщает в него свой PID и ждёт без конца — агент
+# не выходит с диалога).
 FAKE_HERDR = r"""#!/usr/bin/env bash
 printf '%s\t' "$@" >> "$FAKE_DIR/herdr.log"
 printf '\n' >> "$FAKE_DIR/herdr.log"
@@ -47,6 +49,11 @@ case "$1 $2" in
     "pane run")
         setsid bash -c "$4" > /dev/null 2>&1 < /dev/null &
         echo $! > "$FAKE_DIR/pane.pid" ;;
+    "agent wait")
+        if [ -p "$FAKE_DIR/wait-ready" ]; then
+            echo $$ > "$FAKE_DIR/wait-ready"
+            read -r _ < "$FAKE_DIR/never"
+        fi ;;
     "agent get")
         if [ -e "$FAKE_DIR/get_missing" ]; then
             echo '{"error":{"code":"agent_not_found"}}'
@@ -204,6 +211,58 @@ class TabRunTest(unittest.TestCase):
         self.assertEqual((run_dir / "done").read_text().strip(), "129")
         (prompt,) = self.calls("agent", "prompt")
         self.assertEqual(prompt[3], f"done rc=129 {run_dir}")
+
+    def test_push_failure_notifies(self) -> None:
+        """Строка не принята (код 3) — уведомление herdr со звуком request."""
+        (self.fake / "get_missing").touch()
+        run_dir = self.tab_run("r1", "true")
+        waited = self.run_script(WAIT_DONE, str(run_dir), "--timeout-s", str(LIMIT_S))
+        self.assertEqual(waited.returncode, 0, waited.stderr)
+        self.assertTrue(wait_gone(self.pane_pid()))
+        shows = self.calls("notification", "show")
+        self.assertEqual(len(shows), 2, shows)
+        self.assertIn("агент не разбужен", shows[1][2])
+        self.assertEqual(shows[1][-2:], ["--sound", "request"])
+
+    def test_tab_closed_while_push_waits(self) -> None:
+        """Закрытие вкладки во время ожидания агента на диалоге снимает ожидание."""
+        (self.fake / "blocked").touch()
+        ready = self.fake / "wait-ready"
+        os.mkfifo(ready)
+        os.mkfifo(self.fake / "never")
+        reader = os.open(ready, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            run_dir = self.tab_run("r1", "true")
+            ok, _, _ = select.select([reader], [], [], LIMIT_S)
+            self.assertTrue(ok, "herdr agent wait не запустился")
+            waiter = int(os.read(reader, 64))
+        finally:
+            os.close(reader)
+        self.assertEqual((run_dir / "done").read_text().strip(), "0")
+        pid = self.pane_pid()
+        os.killpg(pid, signal.SIGHUP)
+        self.assertTrue(wait_gone(waiter), "herdr agent wait пережил закрытие вкладки")
+        self.assertTrue(wait_gone(pid), "cmd.sh пережил закрытие вкладки")
+
+    def test_tab_closed_mid_run_does_not_wait_agent(self) -> None:
+        (self.fake / "blocked").touch()
+        ready = self.root / "ready"
+        gate = self.root / "gate"
+        os.mkfifo(ready)
+        os.mkfifo(gate)
+        reader = os.open(ready, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            run_dir = self.tab_run("r1", f'echo up > "{ready}"; read -r _ < "{gate}"')
+            ok, _, _ = select.select([reader], [], [], LIMIT_S)
+            self.assertTrue(ok, "команда не запустилась")
+        finally:
+            os.close(reader)
+        pid = self.pane_pid()
+        os.killpg(pid, signal.SIGHUP)
+        self.assertTrue(wait_gone(pid))
+        self.assertEqual((run_dir / "done").read_text().strip(), "129")
+        self.assertEqual(len(self.calls("agent", "prompt")), 1)
+        self.assertEqual(self.calls("agent", "wait"), [])
 
     def test_push_retries_after_blocked(self) -> None:
         (self.fake / "blocked").touch()

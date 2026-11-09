@@ -2,7 +2,7 @@
 
 ## Цель
 
-Проверить вкладку `tab-run.sh` с долгой командой и ожидание `wait-done.sh`: вкладка идёт до отметки главной сессии, агент закрывает её сам.
+Проверить вкладку `tab-run.sh` с долгой командой и ожидание `wait-done.sh`: вкладка идёт до отметки главной сессии и закрывается сама по `done`, агент её не закрывает.
 
 ## Критерий готовности
 
@@ -19,14 +19,15 @@
 ## Следующие шаги
 
 1. Запустить вкладку: `bash {{PLUGIN}}/scripts/tab-run.sh waiter --cwd {{SANDBOX}} -- 'inotifywait -e create -e moved_to {{SANDBOX}}/marker'`. В ответе JSON с `tab_id`.
-2. Записать `$DUTY_TASK/state.md`: шаг 2, вкладка `waiter`, `tab_id`, следующий шаг — ждать `done`.
+2. Записать `$DUTY_TASK/state.md`: шаг 2, вкладка `waiter`, следующий шаг — ждать `done` (`tab_id` лежит в `runs/waiter/tab`, в `state.md` не записывается).
 3. Ждать внутри хода вызовом Bash с таймаутом 600000 мс: `bash {{PLUGIN}}/scripts/wait-done.sh "$DUTY_TASK/runs/waiter" --timeout-s 590`, вывод `timeout` — запустить снова. Файл-отметку в `{{SANDBOX}}/marker/` создаст главная сессия; самому её не создавать, не опрашивать, не использовать `sleep`.
-4. По `done rc=0` обновить `state.md` (вкладка закрывается сама).
+4. По `done rc=0` проверить, что вкладка закрылась сама: `herdr tab list --workspace "$HERDR_WORKSPACE_ID"` не содержит `tab_id` из `runs/waiter/tab`; `herdr tab close` для неё не вызывать. Обновить `state.md`.
 5. Выполнить «Завершение».
 
 ## Команды проверки
 
 - `cat $DUTY_TASK/runs/waiter/done` — `0`; `ls {{SANDBOX}}/marker` — файл есть.
+- `herdr tab list --workspace "$HERDR_WORKSPACE_ID"` — нет вкладки с `tab_id` из `runs/waiter/tab`.
 
 ## Принятые решения
 
@@ -38,7 +39,7 @@
 
 ## Ожидание в report.md
 
-Строка «done rc=0», `tab_id` закрытой вкладки, длительность из `runs/waiter/meta.txt`; вкладка закрыта агентом.
+Строка «done rc=0», `tab_id` вкладки, длительность из `runs/waiter/meta.txt`; строка «вкладка закрылась сама: в herdr tab list её нет, herdr tab close не вызывался».
 
 ## Завершение
 

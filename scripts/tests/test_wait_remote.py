@@ -43,6 +43,10 @@ if [ -n "${FAKE_SSH_DROP:-}" ] && [ -e "$FAKE_SSH_DROP" ] && [[ $1 == tail* ]]; 
     [ -z "${FAKE_SSH_ERR:-}" ] || echo "ssh: connection refused" >&2
     exit 255
 fi
+# Переподключение ждёт открытия FIFO FAKE_SSH_GATE (задержка соединения).
+if [ -n "${FAKE_SSH_GATE:-}" ] && [ -p "$FAKE_SSH_GATE" ] && [[ $1 == tail* ]]; then
+    read -r _ < "$FAKE_SSH_GATE"
+fi
 exec bash -c "$1"
 """
 
@@ -304,6 +308,35 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         proc = self.start(sleeper.pid, "--reconnect-s", "0", "--max-reconnects", "1")
         out, _ = proc.communicate(timeout=LIMIT_S)
         self.assertEqual(proc.returncode, 3, out)
+
+    def test_replayed_tail_does_not_reset_stall(self) -> None:
+        # До обрыва показаны 3 строки, после переподключения tail повторяет те же 3:
+        # журнал не рос, сторож считает от конца паузы, а не от повтора.
+        self.append("до обрыва\n" * 3)
+        self.env["FAKE_SSH_LINES"] = "3"
+        gate = self.tmp / "gate"
+        os.mkfifo(gate)
+        self.env["FAKE_SSH_GATE"] = str(gate)
+        self.drops(1)
+        sleeper = self.remote(15)
+        proc = self.start(sleeper.pid, "--reconnect-s", "0", "--stall-s", "3")
+        assert proc.stdout is not None
+        while "обрыв связи" not in proc.stdout.readline():
+            pass
+        t0 = time.monotonic()
+        # Соединение «устанавливается» 2 с: повтор приходит за 1 с до порога.
+        time.sleep(2)
+        fd = os.open(gate, os.O_RDWR)
+        try:
+            os.write(fd, b"\n")
+        finally:
+            os.close(fd)
+        out, _ = proc.communicate(timeout=LIMIT_S)
+        elapsed = time.monotonic() - t0
+        self.assertEqual(proc.returncode, 125, out)
+        self.assertEqual(out.count("до обрыва"), 3, out)  # повтор показан
+        # Прежнее поведение — сторож от повтора: 2 + 3 = 5 с.
+        self.assertLess(elapsed, 4.5)
 
     def test_max_reconnects_exhausted_exit_3(self) -> None:
         self.env["FAKE_SSH_QUIET"] = "1"

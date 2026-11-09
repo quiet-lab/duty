@@ -60,6 +60,10 @@ case "$1 $2" in
             exit 1
         fi ;;
     "agent prompt")
+        if [ -p "$FAKE_DIR/prompt-ready" ]; then
+            echo $$ > "$FAKE_DIR/prompt-ready"
+            read -r _ < "$FAKE_DIR/prompt-gate"
+        fi
         if [ -e "$FAKE_DIR/blocked" ] && [ ! -e "$FAKE_DIR/blocked.used" ]; then
             : > "$FAKE_DIR/blocked.used"
             echo '{"error":{"code":"agent_blocked"}}'
@@ -243,6 +247,38 @@ class TabRunTest(unittest.TestCase):
         os.killpg(pid, signal.SIGHUP)
         self.assertTrue(wait_gone(waiter), "herdr agent wait пережил закрытие вкладки")
         self.assertTrue(wait_gone(pid), "cmd.sh пережил закрытие вкладки")
+
+    def test_tab_closed_during_prompt_still_delivers(self) -> None:
+        """Закрытие вкладки во время herdr agent prompt не обрывает отправку."""
+        ready = self.fake / "prompt-ready"
+        gate = self.fake / "prompt-gate"
+        os.mkfifo(ready)
+        os.mkfifo(gate)
+        reader = os.open(ready, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            run_dir = self.tab_run("r1", "true")
+            ok, _, _ = select.select([reader], [], [], LIMIT_S)
+            self.assertTrue(ok, "herdr agent prompt не запустился")
+        finally:
+            os.close(reader)
+        pid = self.pane_pid()
+        os.killpg(pid, signal.SIGHUP)
+        fd = os.open(gate, os.O_RDWR)
+        try:
+            os.write(fd, b"\n")
+        finally:
+            os.close(fd)
+        self.assertTrue(wait_gone(pid))
+        self.assertIn("отправлено", (run_dir / "push.log").read_text())
+
+    def test_exit_129_with_open_tab_waits_agent(self) -> None:
+        """Код 129 самой команды — не закрытие вкладки: ожидание агента остаётся."""
+        (self.fake / "blocked").touch()
+        run_dir = self.tab_run("r1", "exit 129")
+        self.assertTrue(wait_gone(self.pane_pid()))
+        self.assertEqual((run_dir / "done").read_text().strip(), "129")
+        self.assertEqual(len(self.calls("agent", "wait")), 1)
+        self.assertEqual(len(self.calls("agent", "prompt")), 2)
 
     def test_tab_closed_mid_run_does_not_wait_agent(self) -> None:
         (self.fake / "blocked").touch()

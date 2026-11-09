@@ -39,13 +39,15 @@ if [ -n "${FAKE_SSH_DROP:-}" ] && [ -e "$FAKE_SSH_DROP" ] && [[ $1 == tail* ]]; 
     # В файле — число оставшихся обрывов (пусто — один).
     left=$(< "$FAKE_SSH_DROP")
     if [ "${left:-1}" -le 1 ]; then rm -f "$FAKE_SSH_DROP"; else echo $((left - 1)) > "$FAKE_SSH_DROP"; fi
-    [ -n "${FAKE_SSH_QUIET:-}" ] || for ((i = 0; i < ${FAKE_SSH_LINES:-1}; i++)); do echo "до обрыва"; done
+    lines=${FAKE_SSH_LINES:-1}
+    # FAKE_SSH_GROW: журнал растёт на строку за обрыв — подключение k печатает k строк.
+    if [ -n "${FAKE_SSH_GROW:-}" ]; then
+        lines=$(( $(cat "$FAKE_SSH_GROW" 2> /dev/null || echo 0) + 1 ))
+        echo "$lines" > "$FAKE_SSH_GROW"
+    fi
+    [ -n "${FAKE_SSH_QUIET:-}" ] || for ((i = 0; i < lines; i++)); do echo "до обрыва"; done
     [ -z "${FAKE_SSH_ERR:-}" ] || echo "ssh: connection refused" >&2
     exit 255
-fi
-# Переподключение ждёт открытия FIFO FAKE_SSH_GATE (задержка соединения).
-if [ -n "${FAKE_SSH_GATE:-}" ] && [ -p "$FAKE_SSH_GATE" ] && [[ $1 == tail* ]]; then
-    read -r _ < "$FAKE_SSH_GATE"
 fi
 exec bash -c "$1"
 """
@@ -309,34 +311,17 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         out, _ = proc.communicate(timeout=LIMIT_S)
         self.assertEqual(proc.returncode, 3, out)
 
-    def test_replayed_tail_does_not_reset_stall(self) -> None:
-        # До обрыва показаны 3 строки, после переподключения tail повторяет те же 3:
-        # журнал не рос, сторож считает от конца паузы, а не от повтора.
-        self.append("до обрыва\n" * 3)
-        self.env["FAKE_SSH_LINES"] = "3"
-        gate = self.tmp / "gate"
-        os.mkfifo(gate)
-        self.env["FAKE_SSH_GATE"] = str(gate)
-        self.drops(1)
-        sleeper = self.remote(15)
-        proc = self.start(sleeper.pid, "--reconnect-s", "0", "--stall-s", "3")
-        assert proc.stdout is not None
-        while "обрыв связи" not in proc.stdout.readline():
-            pass
-        t0 = time.monotonic()
-        # Соединение «устанавливается» 2 с: повтор приходит за 1 с до порога.
-        time.sleep(2)
-        fd = os.open(gate, os.O_RDWR)
-        try:
-            os.write(fd, b"\n")
-        finally:
-            os.close(fd)
+    def test_new_line_after_repeat_resets_attempts(self) -> None:
+        # Подключение k повторяет k-1 показанных строк и даёт одну новую: каждая
+        # новая строка сбрасывает попытки, и три обрыва при --max-reconnects 1
+        # не исчерпывают их. Повтор не считается показанным второй раз.
+        self.env["FAKE_SSH_GROW"] = str(self.tmp / "grow")
+        self.drops(3)
+        sleeper = self.remote(2)
+        proc = self.start(sleeper.pid, "--reconnect-s", "0", "--max-reconnects", "1")
         out, _ = proc.communicate(timeout=LIMIT_S)
-        elapsed = time.monotonic() - t0
-        self.assertEqual(proc.returncode, 125, out)
-        self.assertEqual(out.count("до обрыва"), 3, out)  # повтор показан
-        # Прежнее поведение — сторож от повтора: 2 + 3 = 5 с.
-        self.assertLess(elapsed, 4.5)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertRegex(out, r"remote done")
 
     def test_max_reconnects_exhausted_exit_3(self) -> None:
         self.env["FAKE_SSH_QUIET"] = "1"

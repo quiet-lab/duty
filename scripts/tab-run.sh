@@ -33,10 +33,10 @@
 # push-agent.sh: агента нет, он на диалоге или отказ herdr) — уведомление herdr
 # «агент не разбужен» со звуком request. Закрытие вкладки посреди прогона даёт
 # done с кодом 129, отправка тогда идёт без ожидания смены состояния агента
-# (--no-wait); закрытие вкладки во время отправки (SIGHUP) завершает
-# push-agent.sh и его herdr agent wait — ожидание кончается событием закрытия,
-# сирот не остаётся. Строка «pid:» в meta.txt — признак живого прогона для
-# хука Stop (hooks/task-guard.py).
+# (--no-wait). Закрытие вкладки во время отправки (SIGHUP) отправку не обрывает
+# (сценарий его игнорирует), а ожидание herdr agent wait в push-agent.sh
+# кончается: оно одно идёт с SIGHUP по умолчанию, сирот не остаётся. Строка
+# «pid:» в meta.txt — признак живого прогона для хука Stop (hooks/task-guard.py).
 #
 # Переменные DUTY_TASK, DUTY_NAME, DUTY_ROLE, DUTY_SYMBOL, DUTY_MODEL и DUTY_PROJECT
 # (корень проекта: по нему команда находит конфигурацию .duty/) вызывающего (если заданы)
@@ -110,18 +110,14 @@ duty_finish() {
     trap '' HUP INT TERM PIPE
     printf 'finished_ms: %s\ncode: %s\n' "$(date +%s%3N)" "$rc" >> "$run_dir/meta.txt"
     printf '%s\n' "$rc" > "$run_dir/.done.tmp" && mv -f "$run_dir/.done.tmp" "$run_dir/done"
-    # done записан: закрытие вкладки (HUP) теперь завершает сценарий. Обработчик,
-    # а не игнорирование: дочерние процессы получают HUP по умолчанию, и
-    # ожидание herdr agent wait в push-agent.sh кончается вместе с вкладкой.
-    trap "exit $rc" HUP
     if [ "${HERDR_ENV:-}" = 1 ]; then
         [ "$rc" = 0 ] || sound=request
         herdr notification show "Вкладка $run_name завершена" --body "$run_dir" --sound "$sound" > /dev/null 2>&1 || true
     fi
     printf 'DUTY-DONE %s rc=%s\n' "$run_name" "$rc" || true
     if [ -n "${DUTY_TASK:-}" ]; then
-        # 129 — вкладка уже закрыта: HUP больше не придёт, ждать агента нельзя.
-        [ "$rc" != 129 ] || no_wait=--no-wait
+        # Вкладка уже закрыта: HUP больше не придёт, ждать агента нельзя.
+        [ -z "${tab_closed:-}" ] || no_wait=--no-wait
         bash "$push" "$DUTY_TASK" "done rc=$rc $run_dir" $no_wait >> "$run_dir/push.log" 2>&1 || push_rc=$?
         if [ "$push_rc" = 3 ] && [ "${HERDR_ENV:-}" = 1 ]; then
             herdr notification show "${DUTY_NAME:-$run_name}: агент не разбужен" \
@@ -129,16 +125,15 @@ duty_finish() {
                 --sound request > /dev/null 2>&1 || true
         fi
     fi
-    # Последним действием: закрытие вкладки шлёт HUP этому сценарию и herdr
-    # tab close; done записан, HUP снова игнорируется, чтобы запрос дошёл.
-    trap '' HUP
+    # Последним действием: закрытие вкладки шлёт HUP этому сценарию, но done
+    # записан, а ловушки сняты выше.
     if [ "${HERDR_ENV:-}" = 1 ] && [ -f "$run_dir/tab" ]; then
         herdr tab close "$(cat "$run_dir/tab")" > /dev/null 2>&1 || true
     fi
     exit "$rc"
 }
 trap 'duty_finish 1' EXIT
-trap 'duty_finish 129' HUP
+trap 'tab_closed=1; duty_finish 129' HUP
 trap 'duty_finish 130' INT
 trap 'duty_finish 143' TERM
 FINISH

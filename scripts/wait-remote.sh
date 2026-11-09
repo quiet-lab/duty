@@ -130,8 +130,8 @@ while true; do
         if (( conn_lines > repeat )); then
             last=$SECONDS
             attempt=0
+            shown=$(( shown + 1 ))  # повтор уже посчитан при первом показе
         fi
-        shown=$(( shown + 1 ))
         printf '%(%H:%M:%S)T %s\n' -1 "$line"
     done
     exec {events}<&-

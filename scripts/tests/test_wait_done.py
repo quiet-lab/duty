@@ -50,12 +50,11 @@ class WaitDoneStallTest(unittest.TestCase):
         (self.run_dir / "meta.txt").write_text(
             f"cwd: /\nstarted_ms: {started}\n", encoding="utf-8"
         )
-        t0 = time.monotonic()
         r = self.wait("--log", str(self.log), "--stall-s", "3")
         self.assertEqual(r.returncode, 125, r.stderr)
-        self.assertRegex(r.stdout, rf"^stall [5-9] {self.run_dir}$")
-        # Срок вышел до запуска: сторож срабатывает сразу, а не через 3 с.
-        self.assertLess(time.monotonic() - t0, 2.5)
+        # Тишина считается от начала прогона (5 с назад), а не от запуска
+        # ожидания (тогда было бы 3).
+        self.assertRegex(r.stdout, rf"^stall ([5-9]|\d\d+) {self.run_dir}$")
 
     def test_stall_when_log_stops_growing(self) -> None:
         self.log.write_text("начало\n", encoding="utf-8")

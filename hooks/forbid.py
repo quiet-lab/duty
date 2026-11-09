@@ -157,6 +157,33 @@ SECRET_PARTS = {
     "KEYS",
     "APIKEY",
     "PAT",
+    "SSHPASS",
+    "PGPASS",
+}
+# Окончания слитных имён (PGPASSWORD, APITOKEN, dbPassword): у длинных слов
+# ложных совпадений почти нет; короткие PASS и KEY окончанием не берутся
+# (BYPASS, MONKEY).
+SECRET_SUFFIXES = ("PASSWORD", "PASSWD", "PASSPHRASE", "TOKEN", "SECRET")
+# Ключи systemctl со значением отдельным словом: значение — не глагол.
+SYSTEMCTL_VALUE_FLAGS = {
+    "-n",
+    "-o",
+    "-H",
+    "-M",
+    "-p",
+    "-P",
+    "-t",
+    "-s",
+    "--lines",
+    "--output",
+    "--host",
+    "--machine",
+    "--property",
+    "--type",
+    "--state",
+    "--signal",
+    "--kill-whom",
+    "--root",
 }
 KILL_COMMANDS = {"pkill", "killall"}
 # Команды после «|», которые печатают свой ввод на экран.
@@ -575,17 +602,22 @@ def resolve(words: list[Word]) -> tuple[str, list[Word], bool]:
 
 
 def secret_name(name: str) -> bool:
-    """Имя секретное, если одна из его частей через «_» — из SECRET_PARTS.
+    """Имя секретное, если часть через «_» — из SECRET_PARTS или кончается SECRET_SUFFIXES.
 
     Подстрока не годится: `PASSED`, `MONKEY`, `BYPASS_FLAG` давали ложный отказ.
     """
-    return any(part in SECRET_PARTS for part in name.upper().split("_"))
+    return any(
+        part in SECRET_PARTS or part.endswith(SECRET_SUFFIXES)
+        for part in name.upper().split("_")
+    )
 
 
 def systemctl_status(args: list[str]) -> bool:
     """`systemctl [ключи] status …` — чтение состояния службы."""
-    verbs = [a for a in args if not a.startswith("-")]
-    return bool(verbs) and verbs[0] == "status"
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in SYSTEMCTL_VALUE_FLAGS else 1
+    return i < len(args) and args[i] == "status"
 
 
 def check_network(name: str, args: list[str]) -> str | None:

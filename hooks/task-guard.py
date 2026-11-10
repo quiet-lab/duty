@@ -408,6 +408,8 @@ def run_waits(task: Path) -> list[tuple[str, int]]:
     dutylib = dutylib_module()
     found: list[tuple[str, int]] = []
     for run_dir in sorted(p for p in runs.iterdir() if p.is_dir()):
+        if (run_dir / "done").exists():
+            continue  # завершённый прогон: meta.txt не читается
         # meta.txt читается один раз на прогон: и для PID, и для начала.
         meta = dutylib.read_meta(run_dir)
         if dutylib.tab_run_alive(run_dir.resolve(), meta):

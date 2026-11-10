@@ -344,18 +344,43 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         ]
         self.assertEqual(shown, expected, out)
 
-    def test_restart_keeps_stall_from_log_mtime(self) -> None:
-        # Перезапуск ожидания при неподвижном журнале: отсчёт сторожа — от времени
-        # изменения журнала, а прежние строки первого подключения ростом не считаются.
-        self.append("старая\n")
-        old = time.time() - 120
+    def age_log(self, seconds: float) -> None:
+        old = time.time() - seconds
         os.utime(self.log, (old, old))
-        sleeper = self.remote(15)
-        proc = self.start(sleeper.pid, "--stall-s", "60")
+
+    def test_restart_keeps_stall_from_log_mtime(self) -> None:
+        # Перезапуск ожидания давно идущего процесса (pid 1) при неподвижном
+        # журнале: отсчёт сторожа — от времени изменения журнала, а прежние
+        # строки первого подключения ростом не считаются.
+        self.append("старая\n")
+        self.age_log(120)
+        proc = self.start(1, "--stall-s", "60")
         out, _ = proc.communicate(timeout=LIMIT_S)
         self.assertEqual(proc.returncode, 125, out)
         self.assertIn("старая", out)
         self.assertRegex(out, r"stall 1[12]\d localhost")
+
+    def test_old_log_of_new_process_is_not_stall(self) -> None:
+        # Журнал изменён вчера, процесс только что запущен и молчит: отсчёт —
+        # от запуска процесса, застоя нет, ожидание кончается по --timeout-s.
+        self.append("вчерашняя\n")
+        self.age_log(86400)
+        sleeper = self.remote(15)
+        proc = self.start(sleeper.pid, "--stall-s", "900", "--timeout-s", "2")
+        out, _ = proc.communicate(timeout=LIMIT_S)
+        self.assertEqual(proc.returncode, 124, out)
+        self.assertNotIn("stall", out)
+
+    def test_reconnects_do_not_reset_stall(self) -> None:
+        # Частые обрывы без роста журнала: пауза переподключения не обнуляет
+        # отсчёт сторожа, застой обнаруживается раньше, чем кончатся попытки
+        # (без исправления — код 3 после всех обрывов).
+        self.drops(*[0] * 10)
+        proc = self.start(
+            1, "--stall-s", "2", "--reconnect-s", "1", "--max-reconnects", "9"
+        )
+        out, _ = proc.communicate(timeout=LIMIT_S)
+        self.assertEqual(proc.returncode, 125, out)
 
     def test_foreign_process_is_alive_not_done(self) -> None:
         # pid 1 чужой (kill -0 даёт EPERM), но /proc/1 есть: процесс жив.

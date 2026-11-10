@@ -61,15 +61,7 @@ PAGE_STYLE = (
 )
 
 
-def parse_meta(text: str) -> dict[str, str]:
-    """Строки `ключ: значение` из meta.txt; прочие строки пропускаются."""
-    meta: dict[str, str] = {}
-    for line in text.splitlines():
-        key, sep, value = line.partition(":")
-        key = key.strip()
-        if sep and key:
-            meta[key] = value.strip()
-    return meta
+parse_meta = dutylib.parse_meta
 
 
 def parse_cmd(text: str) -> str:

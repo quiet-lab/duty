@@ -243,18 +243,40 @@ def task_finished(state: str) -> bool:
     return bool(match and _STEP_FINISHED.fullmatch(match.group(1).strip()))
 
 
-_PID_LINE = re.compile(r"^pid: (\d+)$", re.MULTILINE)
+def parse_meta(text: str) -> dict[str, str]:
+    """Строки `ключ: значение` из meta.txt прогона tab-run.sh; прочие строки пропускаются."""
+    meta: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        key = key.strip()
+        if sep and key:
+            meta[key] = value.strip()
+    return meta
+
+
+def read_meta(run_dir: Path) -> dict[str, str]:
+    """meta.txt прогона tab-run.sh; пустой словарь — файла нет или он не читается."""
+    try:
+        return parse_meta((run_dir / "meta.txt").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return {}
+
+
+def run_started_ms(run_dir: Path) -> int:
+    """Начало прогона tab-run.sh: строка `started_ms` в meta.txt; 0 — не прочитать."""
+    value = read_meta(run_dir).get("started_ms", "")
+    return int(value) if value.isascii() and value.isdigit() else 0
 
 
 def tab_run_alive(run_dir: Path) -> bool:
     """Прогон tab-run.sh без `done`, чей cmd.sh ещё работает (PID из meta.txt сверяется с командной строкой)."""
     if (run_dir / "done").exists():
         return False
+    pid = read_meta(run_dir).get("pid", "")
+    if not (pid.isascii() and pid.isdigit()):
+        return False
     try:
-        match = _PID_LINE.search((run_dir / "meta.txt").read_text(encoding="utf-8"))
-        if not match:
-            return False
-        cmdline = Path(f"/proc/{match.group(1)}/cmdline").read_bytes()
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError:
         return False
     return str(run_dir / "cmd.sh").encode() in cmdline

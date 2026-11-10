@@ -44,6 +44,15 @@ class StateWaitsTest(unittest.TestCase):
         now = calendar.timegm((2026, 11, 4, 0, 40, 0))
         self.assertEqual(state_waits.marks(text, now), ["⚠ просрочено +40 мин: ждём"])
 
+    def test_ttl_over_day_is_marked(self) -> None:
+        # Срок больше суток по времени без даты не проверить: строка помечается
+        # сразу, а не остаётся «непросроченной» по модулю суток.
+        text = (
+            "## Ожидания\n- долгое: pid 5 x, с 11:59, срок 1500 мин\n"
+            "- сутки: pid 6 x, с 11:59, срок 1440 мин\n"
+        )
+        self.assertEqual(state_waits.marks(text, NOW), ["⚠ срок больше суток: долгое"])
+
     def test_timeout_record_from_signals(self) -> None:
         text = "## Ожидания\n\nПросрочено: ожидание сигнала x (w), срок 5 мин истёк в 11:00 UTC; сигнала нет\n"
         self.assertEqual(len(state_waits.marks(text, NOW)), 1)

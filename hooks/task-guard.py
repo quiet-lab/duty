@@ -377,12 +377,12 @@ def stopped_without_result(task: Path) -> list[tuple[str, str, int]]:
     return pending
 
 
-def run_alive(run_dir: Path) -> bool:
-    """Прогон без `done`, чей cmd.sh ещё работает; реализация — `dutylib.tab_run_alive`."""
+def dutylib_module():
+    """Модуль scripts/dutylib.py плагина: прогоны tab-run.sh и их meta.txt."""
     sys.path.insert(0, str(SCRIPTS))
     import dutylib
 
-    return dutylib.tab_run_alive(run_dir)
+    return dutylib
 
 
 def json_lines(argv: list[str]) -> object:
@@ -400,26 +400,22 @@ def json_lines(argv: list[str]) -> object:
         return None
 
 
-STARTED_RE = re.compile(r"(?m)^started_ms: (\d+)$")
-
-
-def run_started_ms(run_dir: Path) -> int:
-    """Начало прогона tab-run.sh: строка `started_ms` в meta.txt; 0 — не прочитать."""
-    try:
-        found = STARTED_RE.search((run_dir / "meta.txt").read_text(encoding="utf-8"))
-    except OSError:
-        return 0
-    return int(found.group(1)) if found else 0
-
-
-def registered_waits(task: Path) -> list[tuple[str, int]]:
-    """Ожидания, которые разбудят координатора сами: (что, начало в мс)."""
-    found: list[tuple[str, int]] = []
+def run_waits(task: Path) -> list[tuple[str, int]]:
+    """Живые прогоны tab-run.sh задачи: (что, начало в мс)."""
     runs = task / "runs"
-    if runs.is_dir():
-        for run_dir in sorted(p for p in runs.iterdir() if p.is_dir()):
-            if run_alive(run_dir.resolve()):
-                found.append((f"прогон {run_dir.name}", run_started_ms(run_dir)))
+    if not runs.is_dir():
+        return []
+    dutylib = dutylib_module()
+    return [
+        (f"прогон {run_dir.name}", dutylib.run_started_ms(run_dir))
+        for run_dir in sorted(p for p in runs.iterdir() if p.is_dir())
+        if dutylib.tab_run_alive(run_dir.resolve())
+    ]
+
+
+def signal_waits(task: Path) -> list[tuple[str, int]]:
+    """Живые ожидания сигналов этой задачи в signals.py: (что, начало в мс)."""
+    found: list[tuple[str, int]] = []
     holder = os.environ.get("DUTY_NAME") or task.name
     waits = json_lines([str(SCRIPTS / "signals.py"), "list", "--waits", "--json"])
     if isinstance(waits, dict):
@@ -440,12 +436,18 @@ def registered_waits(task: Path) -> list[tuple[str, int]]:
 
 
 def uncovered(task: Path) -> list[tuple[str, str, int]]:
-    """Остановившиеся подзадачи, после остановки которых не начато ни одно ожидание."""
+    """Остановившиеся подзадачи, после остановки которых не начато ни одно ожидание.
+
+    Ожидания, которые разбудят координатора сами, — живые прогоны и сигналы;
+    signals.py вызывается, только если прогоны покрыли не все остановки.
+    """
     pending = stopped_without_result(task)
-    if not pending:
-        return []
-    starts = [start for _, start in registered_waits(task)]
-    return [item for item in pending if not any(s >= item[2] for s in starts)]
+    for source in (run_waits, signal_waits):
+        if not pending:
+            break
+        starts = [start for _, start in source(task)]
+        pending = [item for item in pending if not any(s >= item[2] for s in starts)]
+    return pending
 
 
 def stop(data: dict[str, object]) -> None:

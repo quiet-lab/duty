@@ -784,5 +784,40 @@ class GuardTest(unittest.TestCase):
         )
 
 
+class UncoveredTest(unittest.TestCase):
+    """signals.py вызывается, только если прогоны покрыли не все остановки."""
+
+    def setUp(self) -> None:
+        import importlib.util
+        from unittest import mock
+
+        spec = importlib.util.spec_from_file_location("task_guard", HOOK)
+        assert spec and spec.loader
+        self.tg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.tg)
+        self.mock = mock
+        self.task = Path("/нет")
+
+    def check(self, runs: list[tuple[str, int]], expect_signals: bool) -> list:
+        pending = [("a1", "id-1", 100), ("a2", "id-2", 200)]
+        with (
+            self.mock.patch.object(
+                self.tg, "stopped_without_result", return_value=pending
+            ),
+            self.mock.patch.object(self.tg, "run_waits", return_value=runs),
+            self.mock.patch.object(self.tg, "signal_waits", return_value=[]) as sig,
+        ):
+            left = self.tg.uncovered(self.task)
+        self.assertEqual(sig.called, expect_signals)
+        return left
+
+    def test_runs_cover_all_skip_signals(self) -> None:
+        self.assertEqual(self.check([("прогон r1", 300)], False), [])
+
+    def test_partial_cover_asks_signals(self) -> None:
+        left = self.check([("прогон r1", 150)], True)
+        self.assertEqual([name for name, _, _ in left], ["a2"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -87,6 +87,26 @@ class DutylibConfigTest(unittest.TestCase):
         self.assertTrue(dutylib.ssl_context(_Cfg()).check_hostname)
 
 
+class RunMetaTest(unittest.TestCase):
+    """meta.txt прогона tab-run.sh читается одним помощником для хука и runs-web."""
+
+    def test_started_ms_and_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            self.assertEqual(dutylib.read_meta(run_dir), {})
+            self.assertEqual(dutylib.run_started_ms(run_dir), 0)
+            (run_dir / "meta.txt").write_text(
+                "cwd: C:/x\nstarted_ms: 1700000000123\npid: 42\nшум\n",
+                encoding="utf-8",
+            )
+            meta = dutylib.read_meta(run_dir)
+            self.assertEqual((meta["cwd"], meta["pid"]), ("C:/x", "42"))
+            self.assertEqual(dutylib.run_started_ms(run_dir), 1700000000123)
+            (run_dir / "meta.txt").write_text("started_ms: ²\n", encoding="utf-8")
+            self.assertEqual(dutylib.run_started_ms(run_dir), 0)
+            self.assertFalse(dutylib.tab_run_alive(run_dir))
+
+
 class TaskFinishedTest(unittest.TestCase):
     """Признак завершения задачи по строке «Шаг:» в state.md — один на плагин."""
 

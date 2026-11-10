@@ -113,12 +113,15 @@ class GuardTest(unittest.TestCase):
     def prompts(self) -> list[list[str]]:
         return [c for c in self.herdr_calls() if c[:2] == ["agent", "prompt"]]
 
-    def write_stopped(self, name: str, agent_id: str = "id-1") -> Path:
+    def write_stopped(
+        self, name: str, agent_id: str = "id-1", at_ms: int | None = None
+    ) -> Path:
         self.subtasks.mkdir(exist_ok=True)
         path = self.subtasks / f"{name}.stopped"
-        path.write_text(
-            json.dumps({"agent_id": agent_id, "last": "жду"}), encoding="utf-8"
-        )
+        record: dict[str, object] = {"agent_id": agent_id, "last": "жду"}
+        if at_ms is not None:
+            record["at_ms"] = at_ms
+        path.write_text(json.dumps(record), encoding="utf-8")
         return path
 
     def transcript(self, content: object) -> str:
@@ -238,18 +241,45 @@ class GuardTest(unittest.TestCase):
         )
         self.assertEqual((r.returncode, r.stdout), (0, ""))
 
-    def test_send_message_clears_stopped(self) -> None:
+    @staticmethod
+    def sent(to: str, success: object = True) -> dict:
+        return {
+            "tool_name": "SendMessage",
+            "tool_input": {"to": to},
+            "tool_response": {"success": success, "message": "queued"},
+        }
+
+    def test_send_message_clears_stopped_after_success(self) -> None:
         mine = self.write_stopped("a1", "ag-77")
         other = self.write_stopped("a2", "ag-88")
-        self.hook(
+        # До вызова отметка остаётся: отправка ещё может не удаться.
+        r = self.hook(
             "pre-tool", {"tool_name": "SendMessage", "tool_input": {"to": "ag-77"}}
         )
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        self.assertTrue(mine.exists())
+        r = self.hook("post-tool", self.sent("ag-77"))
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
         self.assertFalse(mine.exists())
         self.assertTrue(other.exists())
-        self.hook(
-            "pre-tool", {"tool_name": "SendMessage", "tool_input": {"to": "stranger"}}
-        )
+        self.hook("post-tool", self.sent("stranger"))
         self.assertTrue(other.exists())
+
+    def test_send_message_failure_keeps_stopped(self) -> None:
+        mine = self.write_stopped("a1", "ag-77")
+        for response in (
+            {"success": False, "message": "no such agent"},
+            "ошибка",
+            None,
+        ):
+            with self.subTest(response=response):
+                data = self.sent("ag-77")
+                data["tool_response"] = response
+                self.hook("post-tool", data)
+                self.assertTrue(mine.exists())
+        # Субагент шлёт сообщение сам: отметки координатора не трогаются.
+        self.hook("post-tool", {**self.sent("ag-77"), "agent_id": "id-9"})
+        self.assertTrue(mine.exists())
 
     # --- subagent-stop ---
 
@@ -326,7 +356,9 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(len(shows), 1)
         self.assertIn("a1", shows[0][4])
 
-    def start_run(self, name: str = "r1") -> tuple[Path, int]:
+    def start_run(
+        self, name: str = "r1", started_ms: int | None = None
+    ) -> tuple[Path, int]:
         """Прогон: cmd.sh ждёт строку из FIFO, пока тест её не напишет."""
         run_dir = self.task / "runs" / name
         run_dir.mkdir(parents=True)
@@ -337,7 +369,10 @@ class GuardTest(unittest.TestCase):
         proc = subprocess.Popen(["bash", str(cmd)], stdin=subprocess.DEVNULL)
         self.procs.append(proc)
         self.addCleanup(self.open_gate, fifo)
-        (run_dir / "meta.txt").write_text(f"pid: {proc.pid}\n", encoding="utf-8")
+        start = time.time_ns() // 1_000_000 if started_ms is None else started_ms
+        (run_dir / "meta.txt").write_text(
+            f"cwd: /\nstarted_ms: {start}\npid: {proc.pid}\n", encoding="utf-8"
+        )
         return run_dir, proc.pid
 
     @staticmethod
@@ -357,6 +392,21 @@ class GuardTest(unittest.TestCase):
         (run_dir / "done").write_text("0\n", encoding="utf-8")
         r = self.hook("stop", {})
         self.assertEqual(json.loads(r.stdout)["decision"], "block")
+
+    def test_stop_run_started_before_stop_is_not_wait(self) -> None:
+        now = time.time_ns() // 1_000_000
+        self.write_stopped("a1", at_ms=now)
+        self.write_stopped("a2", "id-2", at_ms=now - 60_000)
+        self.start_run(started_ms=now - 1_000)
+        r = self.hook("stop", {})
+        out = json.loads(r.stdout)
+        self.assertEqual(out["decision"], "block")
+        # Прогон начат после остановки a2, но раньше остановки a1.
+        self.assertIn("a1", out["reason"])
+        self.assertNotIn("a2", out["reason"])
+        self.start_run("r2", started_ms=now + 1)
+        r = self.hook("stop", {})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
 
     def test_stop_foreign_pid_is_not_wait(self) -> None:
         self.write_stopped("a1")
@@ -699,7 +749,7 @@ class GuardTest(unittest.TestCase):
                     env=env,
                 )
                 self.assertEqual((r.returncode, r.stdout), (0, ""))
-        for event in ("subagent-stop", "stop"):
+        for event in ("subagent-stop", "stop", "post-tool"):
             r = self.hook(event, {"agent_id": "id-1"}, env=env)
             self.assertEqual((r.returncode, r.stdout), (0, ""))
 
@@ -711,8 +761,12 @@ class GuardTest(unittest.TestCase):
         gate = entries["Agent|Task|AskUserQuestion"]["hooks"][0]["command"]
         self.assertNotIn("DUTY_ROLE", gate)
         self.assertIn("task-guard.py", gate)
-        guard = entries["Monitor|Bash|SendMessage"]["hooks"][0]["command"]
+        guard = entries["Monitor|Bash"]["hooks"][0]["command"]
         self.assertIn("DUTY_ROLE", guard)
+        (post,) = config["hooks"]["PostToolUse"]
+        self.assertEqual(post["matcher"], "SendMessage")
+        self.assertIn("DUTY_ROLE", post["hooks"][0]["command"])
+        self.assertTrue(post["hooks"][0]["command"].endswith("post-tool"))
 
     # --- испорченный ввод ---
 

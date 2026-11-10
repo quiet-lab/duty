@@ -830,7 +830,7 @@ name = {name}  # имя для подписей, статистики и кат�
 # default_parent = "main"       # родитель по умолчанию (origin/HEAD, иначе master)
 # parent_key = "parent"         # ключ .gitmodules с родителем сабмодуля
 # forbid_add_all = true         # хук отвергает git add -A и git add -u
-# forbid_stash = true           # хук отвергает git stash
+# forbid_stash = true           # хук отвергает изменение стека git stash
 
 # [secrets]
 # dirs = ["~/.config/project"]  # каталоги доступов: вывод их содержимого запрещён

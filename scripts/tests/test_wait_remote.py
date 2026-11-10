@@ -39,7 +39,13 @@ if [ -n "${FAKE_SSH_DROP:-}" ] && [ -e "$FAKE_SSH_DROP" ] && [[ $1 == tail* ]]; 
     # В файле — число оставшихся обрывов (пусто — один).
     left=$(< "$FAKE_SSH_DROP")
     if [ "${left:-1}" -le 1 ]; then rm -f "$FAKE_SSH_DROP"; else echo $((left - 1)) > "$FAKE_SSH_DROP"; fi
-    [ -n "${FAKE_SSH_QUIET:-}" ] || for ((i = 0; i < ${FAKE_SSH_LINES:-1}; i++)); do echo "до обрыва"; done
+    lines=${FAKE_SSH_LINES:-1}
+    # FAKE_SSH_GROW: журнал растёт на строку за обрыв — подключение k печатает k строк.
+    if [ -n "${FAKE_SSH_GROW:-}" ]; then
+        lines=$(( $(cat "$FAKE_SSH_GROW" 2> /dev/null || echo 0) + 1 ))
+        echo "$lines" > "$FAKE_SSH_GROW"
+    fi
+    [ -n "${FAKE_SSH_QUIET:-}" ] || for ((i = 0; i < lines; i++)); do echo "до обрыва"; done
     [ -z "${FAKE_SSH_ERR:-}" ] || echo "ssh: connection refused" >&2
     exit 255
 fi
@@ -304,6 +310,18 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         proc = self.start(sleeper.pid, "--reconnect-s", "0", "--max-reconnects", "1")
         out, _ = proc.communicate(timeout=LIMIT_S)
         self.assertEqual(proc.returncode, 3, out)
+
+    def test_new_line_after_repeat_resets_attempts(self) -> None:
+        # Подключение k повторяет k-1 показанных строк и даёт одну новую: каждая
+        # новая строка сбрасывает попытки, и три обрыва при --max-reconnects 1
+        # не исчерпывают их. Повтор не считается показанным второй раз.
+        self.env["FAKE_SSH_GROW"] = str(self.tmp / "grow")
+        self.drops(3)
+        sleeper = self.remote(2)
+        proc = self.start(sleeper.pid, "--reconnect-s", "0", "--max-reconnects", "1")
+        out, _ = proc.communicate(timeout=LIMIT_S)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertRegex(out, r"remote done")
 
     def test_max_reconnects_exhausted_exit_3(self) -> None:
         self.env["FAKE_SSH_QUIET"] = "1"

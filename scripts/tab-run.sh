@@ -29,9 +29,14 @@
 #
 # Вместе с done вкладка будит агента задачи: push-agent.sh отправляет в его
 # панель строку «done rc=<код> <каталог прогона>» (итог отправки — push.log
-# в каталоге прогона). Без DUTY_TASK отправки нет. Закрытие вкладки посреди
-# прогона даёт done с кодом 129, строка «pid:» в meta.txt — признак живого
-# прогона для хука Stop (hooks/task-guard.py).
+# в каталоге прогона). Без DUTY_TASK отправки нет. Строка не принята (код 3
+# push-agent.sh: агента нет, он на диалоге или отказ herdr) — уведомление herdr
+# «агент не разбужен» со звуком request. Закрытие вкладки посреди прогона даёт
+# done с кодом 129, отправка тогда идёт без ожидания смены состояния агента
+# (--no-wait). Закрытие вкладки во время отправки (SIGHUP) отправку не обрывает
+# (сценарий его игнорирует), а ожидание herdr agent wait в push-agent.sh
+# кончается: оно одно идёт с SIGHUP по умолчанию, сирот не остаётся. Строка
+# «pid:» в meta.txt — признак живого прогона для хука Stop (hooks/task-guard.py).
 #
 # Переменные DUTY_TASK, DUTY_NAME, DUTY_ROLE, DUTY_SYMBOL, DUTY_MODEL и DUTY_PROJECT
 # (корень проекта: по нему команда находит конфигурацию .duty/) вызывающего (если заданы)
@@ -100,7 +105,7 @@ cwd=$(realpath "$cwd")
     # bash выполняет после конца конвейера, поэтому done не опережает команду.
     cat << 'FINISH'
 duty_finish() {
-    local rc=$1 sound=done
+    local rc=$1 sound=done push_rc=0 no_wait=
     trap - EXIT HUP INT TERM
     trap '' HUP INT TERM PIPE
     printf 'finished_ms: %s\ncode: %s\n' "$(date +%s%3N)" "$rc" >> "$run_dir/meta.txt"
@@ -111,7 +116,14 @@ duty_finish() {
     fi
     printf 'DUTY-DONE %s rc=%s\n' "$run_name" "$rc" || true
     if [ -n "${DUTY_TASK:-}" ]; then
-        bash "$push" "$DUTY_TASK" "done rc=$rc $run_dir" >> "$run_dir/push.log" 2>&1 || true
+        # Вкладка уже закрыта: HUP больше не придёт, ждать агента нельзя.
+        [ -z "${tab_closed:-}" ] || no_wait=--no-wait
+        bash "$push" "$DUTY_TASK" "done rc=$rc $run_dir" $no_wait >> "$run_dir/push.log" 2>&1 || push_rc=$?
+        if [ "$push_rc" = 3 ] && [ "${HERDR_ENV:-}" = 1 ]; then
+            herdr notification show "${DUTY_NAME:-$run_name}: агент не разбужен" \
+                --body "прогон $run_name rc=$rc: строка не принята, $run_dir/push.log" \
+                --sound request > /dev/null 2>&1 || true
+        fi
     fi
     # Последним действием: закрытие вкладки шлёт HUP этому сценарию, но done
     # записан, а ловушки сняты выше.
@@ -121,7 +133,7 @@ duty_finish() {
     exit "$rc"
 }
 trap 'duty_finish 1' EXIT
-trap 'duty_finish 129' HUP
+trap 'tab_closed=1; duty_finish 129' HUP
 trap 'duty_finish 130' INT
 trap 'duty_finish 143' TERM
 FINISH

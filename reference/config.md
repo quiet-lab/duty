@@ -109,9 +109,9 @@
 | `git.default_parent` | строка | ветвь `origin/HEAD`, иначе `master` | `branches.py`, `cleanup-candidates.py` |
 | `git.parent_key` | строка | `"parent"` | `cleanup-candidates.py`, `branches.py` |
 | `git.forbid_add_all` | логическое | `true` | `hooks/forbid.py` |
-| `git.forbid_stash` | логическое | `true` | `hooks/forbid.py` |
+| `git.forbid_stash` | логическое | `true` | `hooks/forbid.py`: подкоманды, меняющие стек (`git stash` без подкоманды, `push`, `save`, `pop`, `apply`, `drop`, `clear`, `branch`, `store`); `list` и `show` разрешены |
 | `secrets.dirs` | список | `[]` | `hooks/forbid.py` (вывод содержимого) |
-| `forbid.network` | логическое | `true` | `hooks/forbid.py` |
+| `forbid.network` | логическое | `true` | `hooks/forbid.py`: переключение туннеля и сети; чтение состояния туннеля (`NETWORK_READS`, `systemctl status`) разрешено |
 | `forbid.herdr_direct` | логическое | `true` | `hooks/forbid.py` |
 | `[[forbid.rules]]` | `words` — список, `reason` — строка | `[]` | `hooks/forbid.py` |
 | `bitbucket.url` | строка | нет таблицы — без Bitbucket | `gates.py` (его используют `branches.py` и `week-stats.py`), навык `after-merge` |

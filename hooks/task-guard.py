@@ -13,14 +13,19 @@
 не приходило, а координатор считал его работающим. Поэтому:
 
 - `pre-tool` отвергает `Monitor` и `Bash` с `run_in_background` в субагенте
-  (поле `agent_id` есть только там), снимает отметку остановки при возобновлении
-  и перезапуске подзадачи;
+  (поле `agent_id` есть только там) и снимает отметки подзадачи при её
+  перезапуске (`Agent`: `SubagentStop` субагента на переднем плане пишет
+  `.stopped` раньше `PostToolUse`, поэтому снятие — до вызова);
+- `post-tool` снимает отметку остановки после успешного `SendMessage`
+  (возобновление): неудачная отправка отметку не теряет;
 - `subagent-stop` по метке `Подзадача: <имя>` в приглашении субагента проверяет
   отметку итога `subtasks/<имя>.done`; её нет — пишет `subtasks/<имя>.stopped`
   и шлёт координатору строку «возобнови или перезапусти»;
-- `stop` блокирует конец хода координатора, пока есть остановившиеся подзадачи
-  без итога и нет ни одного зарегистрированного ожидания: прогона во вкладке
-  без `done`, ожидания `signals.py wait`. Повторная
+- `stop` блокирует конец хода координатора, пока есть остановившаяся подзадача
+  без итога, для которой нет ожидания, начатого после её остановки: прогона
+  во вкладке без `done` (`started_ms` в `meta.txt`), ожидания `signals.py wait`
+  (`since_ms`). Ожидание, начатое раньше, к остановке подзадачи отношения
+  не имеет и ход не отпускает. Повторная
   остановка (`stop_hook_active`) пропускается с уведомлением herdr: условие
   может не разрешиться, а цикл блокировок расходует ход за ходом.
 
@@ -269,9 +274,7 @@ def pre_tool(data: dict[str, object]) -> None:
     task = task_dir()
     if task is None:
         return
-    if tool == "SendMessage":
-        forget_stopped(task, str(tool_input.get("to", "")))
-    elif tool in SUBAGENT_TOOLS:
+    if tool in SUBAGENT_TOOLS:
         tag = TAG_RE.search(str(tool_input.get("prompt", "")))
         if tag:
             # Перезапуск под тем же именем: прежние отметки к нему не относятся.
@@ -280,6 +283,23 @@ def pre_tool(data: dict[str, object]) -> None:
         elif tool_input.get("subagent_type") not in READ_ONLY_TYPES:
             has_line = TAG_LINE_RE.search(str(tool_input.get("prompt", "")))
             pre_tool_output(additionalContext=BAD_TAG if has_line else UNTAGGED)
+
+
+def post_tool(data: dict[str, object]) -> None:
+    """Успешный `SendMessage` возобновил подзадачу: отметка остановки снимается."""
+    if data.get("agent_id") or data.get("tool_name") != "SendMessage":
+        return
+    task = task_dir()
+    if task is None:
+        return
+    response = data.get("tool_response")
+    # Ответ SendMessage — объект с полем success; ложное значение — отправка
+    # не удалась, подзадача стоит, отметка остаётся.
+    if not isinstance(response, dict) or response.get("success") is not True:
+        return
+    raw_input = data.get("tool_input")
+    tool_input = raw_input if isinstance(raw_input, dict) else {}
+    forget_stopped(task, str(tool_input.get("to", "")))
 
 
 def first_prompt(transcript: object) -> str:
@@ -336,15 +356,25 @@ def subagent_stop(data: dict[str, object]) -> None:
     )
 
 
-def stopped_without_result(task: Path) -> list[tuple[str, str]]:
+def stopped_without_result(task: Path) -> list[tuple[str, str, int]]:
+    """Подзадачи с `.stopped` без `.done`: имя, agent_id, время остановки (мс)."""
     directory = subtasks(task)
     if not directory.is_dir():
         return []
-    return [
-        (path.stem, str(read_record(path).get("agent_id", "?")))
-        for path in sorted(directory.glob("*.stopped"))
-        if not (directory / f"{path.stem}.done").exists()
-    ]
+    pending = []
+    for path in sorted(directory.glob("*.stopped")):
+        if (directory / f"{path.stem}.done").exists():
+            continue
+        record = read_record(path)
+        at_ms = record.get("at_ms")
+        if not isinstance(at_ms, int):
+            # Отметка без времени: остановка не позже изменения файла.
+            try:
+                at_ms = path.stat().st_mtime_ns // 1_000_000
+            except OSError:
+                at_ms = 0
+        pending.append((path.stem, str(record.get("agent_id", "?")), at_ms))
+    return pending
 
 
 def run_alive(run_dir: Path) -> bool:
@@ -370,34 +400,62 @@ def json_lines(argv: list[str]) -> object:
         return None
 
 
-def registered_wait(task: Path) -> str | None:
-    """Первое ожидание, которое разбудит координатора само; None — таких нет."""
+STARTED_RE = re.compile(r"(?m)^started_ms: (\d+)$")
+
+
+def run_started_ms(run_dir: Path) -> int:
+    """Начало прогона tab-run.sh: строка `started_ms` в meta.txt; 0 — не прочитать."""
+    try:
+        found = STARTED_RE.search((run_dir / "meta.txt").read_text(encoding="utf-8"))
+    except OSError:
+        return 0
+    return int(found.group(1)) if found else 0
+
+
+def registered_waits(task: Path) -> list[tuple[str, int]]:
+    """Ожидания, которые разбудят координатора сами: (что, начало в мс)."""
+    found: list[tuple[str, int]] = []
     runs = task / "runs"
     if runs.is_dir():
         for run_dir in sorted(p for p in runs.iterdir() if p.is_dir()):
             if run_alive(run_dir.resolve()):
-                return f"прогон {run_dir.name}"
+                found.append((f"прогон {run_dir.name}", run_started_ms(run_dir)))
     holder = os.environ.get("DUTY_NAME") or task.name
     waits = json_lines([str(SCRIPTS / "signals.py"), "list", "--waits", "--json"])
     if isinstance(waits, dict):
         for wait in waits.get("waits", []):
+            since = wait.get("since_ms")
             if (
                 wait.get("holder") == holder
                 and wait.get("alive")
                 and not wait.get("given")
             ):
-                return f"сигнал {wait.get('name')}"
-    return None
+                found.append(
+                    (
+                        f"сигнал {wait.get('name')}",
+                        since if isinstance(since, int) else 0,
+                    )
+                )
+    return found
+
+
+def uncovered(task: Path) -> list[tuple[str, str, int]]:
+    """Остановившиеся подзадачи, после остановки которых не начато ни одно ожидание."""
+    pending = stopped_without_result(task)
+    if not pending:
+        return []
+    starts = [start for _, start in registered_waits(task)]
+    return [item for item in pending if not any(s >= item[2] for s in starts)]
 
 
 def stop(data: dict[str, object]) -> None:
     task = task_dir()
     if task is None:
         return
-    pending = stopped_without_result(task)
-    if not pending or registered_wait(task):
+    pending = uncovered(task)
+    if not pending:
         return
-    names = ", ".join(name for name, _ in pending)
+    names = ", ".join(name for name, _, _ in pending)
     if data.get("stop_hook_active"):
         subprocess.run(
             [
@@ -415,12 +473,13 @@ def stop(data: dict[str, object]) -> None:
             check=False,
         )
         return
-    lines = "; ".join(f"{name} (agent_id {agent})" for name, agent in pending)
+    lines = "; ".join(f"{name} (agent_id {agent})" for name, agent, _ in pending)
     emit(
         {
             "decision": "block",
             "reason": (
-                f"Подзадачи остановились без итога и ожидания нет: {lines}. Каждую возобнови "
+                f"Подзадачи остановились без итога, и после их остановки не начато ни одно "
+                f"ожидание: {lines}. Каждую возобнови "
                 "(SendMessage), перезапусти или, если итог уже снят или подзадача снята, "
                 f"запиши отметку {subtasks(task)}/<имя>.done с одной строкой итога."
             ),
@@ -428,7 +487,12 @@ def stop(data: dict[str, object]) -> None:
     )
 
 
-HANDLERS = {"pre-tool": pre_tool, "subagent-stop": subagent_stop, "stop": stop}
+HANDLERS = {
+    "pre-tool": pre_tool,
+    "post-tool": post_tool,
+    "subagent-stop": subagent_stop,
+    "stop": stop,
+}
 
 
 def main(argv: list[str]) -> int:

@@ -10,13 +10,23 @@
 # agent_not_found на панели без агента и в оболочку ничего не набирает.
 # Агент ждёт ответа на диалог (agent_blocked) — отправка повторяется после
 # смены его состояния по событию herdr agent wait; с --no-wait (хуки, которым
-# нельзя ждать) повтора нет. Коды: 0 — строка принята, 3 — некому или
-# не принято, 2 — ошибка вызова. Записки с блоком нет — не задача duty,
+# нельзя ждать) повтора нет. Ожидание herdr agent wait срока не имеет: его
+# конец — смена состояния агента либо закрытие вкладки, из которой идёт
+# отправка: tab-run.sh игнорирует SIGHUP, а ожидание запускается с SIGHUP
+# по умолчанию (env --default-signal) и кончается вместе с вкладкой.
+# Коды: 0 — строка принята, 3 — некому или не принято (tab-run.sh показывает
+# уведомление herdr), 2 — ошибка вызова. Записки с блоком нет — не задача duty,
 # код 0 без отправки.
 
 set -uo pipefail
 
 die() { printf 'push-agent.sh: %s\n' "$*" >&2; exit 2; }
+
+# SIGHUP по умолчанию только для ожидания: остальная отправка закрытием
+# вкладки не обрывается. env без --default-signal (coreutils до 8.31) —
+# ожидание как есть.
+default_hup=()
+env --default-signal=HUP true 2> /dev/null && default_hup=(env --default-signal=HUP)
 
 [ $# -ge 2 ] || die 'вызов: push-agent.sh <каталог задачи> <строка> [--no-wait]'
 task=$1 text=$2
@@ -51,7 +61,7 @@ for _ in 1 2 3 4 5 6 7 8; do
     case $out in
         *agent_blocked*)
             [ "$wait_blocked" = 1 ] || { printf 'агент %s ждёт ответа на диалог, строка не отправлена: %s\n' "$target" "$text"; exit 3; }
-            herdr agent wait "$target" --until idle --until working --until "done" > /dev/null 2>&1 \
+            ${default_hup[@]+"${default_hup[@]}"} herdr agent wait "$target" --until idle --until working --until "done" > /dev/null 2>&1 \
                 || { printf 'ожидание агента %s оборвалось: %s\n' "$target" "$text"; exit 3; }
             ;;
         *) printf 'herdr agent prompt %s: %s\n' "$target" "$out"; exit 3 ;;

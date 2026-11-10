@@ -65,7 +65,7 @@ rc=${PIPESTATUS[0]}
 
 class ParseTest(unittest.TestCase):
     def test_meta(self) -> None:
-        meta = rw.parse_meta(
+        meta = rw.dutylib.parse_meta(
             "cwd: /a b\nstarted_ms: 5\nkind: tests\nмусор\nfinished_ms: 9\ncode: 0\n"
         )
         self.assertEqual(
@@ -80,7 +80,7 @@ class ParseTest(unittest.TestCase):
         )
 
     def test_meta_value_with_colon(self) -> None:
-        self.assertEqual(rw.parse_meta("cwd: C:/x\n")["cwd"], "C:/x")
+        self.assertEqual(rw.dutylib.parse_meta("cwd: C:/x\n")["cwd"], "C:/x")
 
     def test_cmd(self) -> None:
         self.assertEqual(rw.parse_cmd(CMD_SH), "echo one\necho two | cat")
@@ -348,7 +348,7 @@ class TabRunKindTest(unittest.TestCase):
             if l.startswith(("run_dir=", 'printf "cwd', 'printf "kind'))
         )
         subprocess.run(["bash", "-c", script], check=True, cwd=meta_dir)
-        meta = rw.parse_meta((run_dir / "meta.txt").read_text())
+        meta = rw.dutylib.parse_meta((run_dir / "meta.txt").read_text())
         self.assertEqual(meta["kind"], "tests")
         self.assertIn("started_ms", meta)
 

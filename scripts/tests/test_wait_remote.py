@@ -35,13 +35,20 @@ while [ $# -gt 0 ]; do
     esac
 done
 shift
+# Вывод оболочки узла до команды (.bashrc): строка перед шапкой.
+[[ -z "${FAKE_SSH_NOISE:-}" || $1 != *"exec tail --pid"* ]] || echo "$FAKE_SSH_NOISE"
 if [ -n "${FAKE_SSH_DROP:-}" ] && [ -e "$FAKE_SSH_DROP" ] && [[ $1 == *"exec tail --pid"* ]]; then
     # В файле — строка на подключение с обрывом: «<строк до обрыва>[+<дописать>]»;
-    # дописанные строки попадают в журнал FAKE_SSH_LOG до запуска команды.
+    # дописанные строки попадают в журнал FAKE_SSH_LOG до запуска команды;
+    # «!» вместо «+» — журнал перед этим усекается; «-» в конце — последняя
+    # строка до обрыва передаётся без перевода строки.
     mapfile -t spec < "$FAKE_SSH_DROP"
     if [ "${#spec[@]}" -le 1 ]; then rm -f "$FAKE_SSH_DROP"; else printf '%s
 ' "${spec[@]:1}" > "$FAKE_SSH_DROP"; fi
     cur=${spec[0]:-0}
+    cut=0
+    if [[ $cur == *- ]]; then cut=1; cur=${cur%-}; fi
+    if [[ $cur == *'!'* ]]; then : > "$FAKE_SSH_LOG"; cur=${cur/'!'/+}; fi
     lines=${cur%%+*}
     if [[ $cur == *+* ]]; then
         for ((i = 0; i < ${cur#*+}; i++)); do echo "дописано $i" >> "$FAKE_SSH_LOG"; done
@@ -50,7 +57,10 @@ if [ -n "${FAKE_SSH_DROP:-}" ] && [ -e "$FAKE_SSH_DROP" ] && [[ $1 == *"exec tai
     exec 3< <(exec bash -c "$1")
     remote=$!
     IFS= read -r line <&3 && echo "$line"
-    for ((i = 0; i < lines; i++)); do IFS= read -r line <&3 || break; echo "$line"; done
+    for ((i = 0; i < lines; i++)); do
+        IFS= read -r line <&3 || break
+        if (( cut && i == lines - 1 )); then printf '%s' "$line"; else echo "$line"; fi
+    done
     kill "$remote" 2> /dev/null
     [ -z "${FAKE_SSH_ERR:-}" ] || echo "ssh: connection refused" >&2
     exit 255
@@ -323,6 +333,7 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         out, _ = proc.communicate(timeout=LIMIT_S)
         self.assertEqual(proc.returncode, 3, out)
         self.assertEqual(out.count("одна"), 1, out)
+        self.assertIn("связь с localhost потеряна, попыток 1", out)
 
     def test_lines_after_drop_continue_without_repeat(self) -> None:
         # Показано 20 из 100 строк, обрыв, в журнале +5 строк: после
@@ -343,6 +354,78 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
             f"дописано {i}" for i in range(5)
         ]
         self.assertEqual(shown, expected, out)
+
+    def test_truncated_log_after_drop_shown_from_start(self) -> None:
+        # Показаны последние 20 из 30 строк, обрыв, журнал усечён и в нём
+        # 3 новые строки: после переподключения приходят ровно они.
+        self.append("".join(f"строка {i}\n" for i in range(1, 31)))
+        self.drops(20, "3!3")
+        sleeper = self.remote(2)
+        proc = self.start(sleeper.pid, "--reconnect-s", "0", "--max-reconnects", "1")
+        out, _ = proc.communicate(timeout=LIMIT_S)
+        self.assertEqual(proc.returncode, 0, out)
+        shown = [
+            line.split(" ", 1)[1]
+            for line in out.splitlines()
+            if " строка " in line or " дописано " in line
+        ]
+        expected = [f"строка {i}" for i in range(11, 31)] + [
+            f"дописано {i}" for i in range(3)
+        ]
+        self.assertEqual(shown, expected, out)
+        self.assertIn("журнал усечён", out)
+
+    def test_partial_line_on_drop_printed_once(self) -> None:
+        # Обрыв посреди строки при живом процессе: обрывок не печатается,
+        # после переподключения строка приходит целиком один раз.
+        self.append("первая\nобрывок\n")
+        self.drops("2-")
+        sleeper = self.remote(2)
+        proc = self.start(sleeper.pid, "--reconnect-s", "0")
+        out, _ = proc.communicate(timeout=LIMIT_S)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(out.count("обрывок"), 1, out)
+        self.assertRegex(out, r"\d\d:\d\d:\d\d обрывок\n")
+
+    def test_partial_last_line_printed_when_process_ends(self) -> None:
+        # Последняя строка журнала без перевода строки не теряется.
+        self.append("первая\nхвост")
+        sleeper = self.remote(1.5)
+        proc = self.start(sleeper.pid)
+        out, _ = proc.communicate(timeout=LIMIT_S)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(out.count("хвост"), 1, out)
+        self.assertRegex(out, r"\d\d:\d\d:\d\d хвост\nremote done")
+
+    def test_shell_output_before_header_is_not_log(self) -> None:
+        # Строка оболочки узла до шапки не занимает её место: шапка не печатается
+        # строкой журнала, после обрыва повтора нет, оболочка — в stderr.
+        self.env["FAKE_SSH_NOISE"] = "привет из bashrc"
+        self.append("одна\n")
+        self.drops(1)
+        sleeper = self.remote(2)
+        proc = subprocess.Popen(
+            [
+                "bash",
+                str(WAIT_REMOTE),
+                "localhost",
+                str(sleeper.pid),
+                str(self.log),
+                "--reconnect-s",
+                "0",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self.env,
+        )
+        self.addCleanup(proc.kill)
+        out, err = proc.communicate(timeout=LIMIT_S)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertNotIn("wait-remote", out)
+        self.assertNotIn("привет из bashrc", out)
+        self.assertIn("вывод оболочки узла: привет из bashrc", err)
+        self.assertEqual(out.count("одна"), 1, out)
 
     def age_log(self, seconds: float) -> None:
         old = time.time() - seconds

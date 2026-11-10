@@ -6,11 +6,14 @@
 #                  [--reconnect-s <секунды>] [--max-reconnects <число>]
 #
 # Один ssh печатает на узле строку-шапку «wait-remote <первая строка>
-# <строк в журнале> <время изменения журнала> <время узла> <секунд от
-# запуска процесса>» и выполняет
+# <строк в журнале> <inode журнала> <время изменения журнала> <время узла>
+# <секунд от запуска процесса>» и выполняет
 # `tail --pid=<pid> -F -n +<первая строка> <журнал>`: при первом подключении
 # с последних 20 строк, после обрыва — со строки, следующей за последней
-# показанной, поэтому повтора нет. Строки журнала идут на экран вкладки
+# показанной, поэтому повтора нет; если журнал за время обрыва усечён или
+# заменён (другой inode, строк меньше показанных) — с первой строки, и все
+# его строки считаются новыми. Строки потока до шапки (вывод оболочки узла)
+# идут в stderr, журналом не считаются. Строки журнала идут на экран вкладки
 # (при запуске через tab-run.sh — и в out.log) с префиксом времени
 # «ЧЧ:ММ:СС» по мере появления; tail сам заканчивается, когда процесс <pid>
 # завершился. Опроса нет: ожидание —
@@ -88,25 +91,29 @@ ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o Ser
 # Путь журнала для оболочки узла: «~/» в начале раскрывает узел, остальное —
 # в одинарных кавычках POSIX (чужая оболочка не обязана понимать %q).
 quote_posix() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+# shellcheck disable=SC2088 # тильда сравнивается буквально, раскрывает её узел
 if [[ $rlog == '~/'* ]]; then
     rpath="\"\$HOME\"/$(quote_posix "${rlog#\~/}")"
 else
     rpath=$(quote_posix "$rlog")
 fi
 # Удалённая команда: шапка и tail с первой строки <начало>; «first» — с последних
-# 20 строк журнала (первое подключение).
+# 20 строк журнала (первое подключение). После обрыва второй аргумент — inode
+# журнала из прежней шапки: другой inode или строк меньше показанных — журнал
+# усечён или заменён, tail идёт с первой строки.
 remote_cmd() {
-    local from
+    local start
     if [ "$1" = first ]; then
         # shellcheck disable=SC2016 # выражение раскрывает оболочка узла
-        from='$(( n > 20 ? n - 19 : 1 ))'
+        start='s=$(( n > 20 ? n - 19 : 1 ));'
     else
-        from=$1
+        start="s=$1; [ \"\$i\" = '$2' ] && [ \"\$n\" -ge $(( $1 - 1 )) ] || s=1;"
     fi
-    printf '%s' "n=\$(wc -l 2> /dev/null < $rpath) || n=0; s=$from;" \
-        " m=\$(stat -c %Y -- $rpath 2> /dev/null) || m=-;" \
+    printf '%s' "n=\$(wc -l 2> /dev/null < $rpath) || n=0;" \
+        " im=\$(stat -c '%i %Y' -- $rpath 2> /dev/null) || im='- -'; i=\${im% *};" \
+        " $start" \
         " e=\$(ps -o etimes= -p $pid 2> /dev/null | tr -d ' '); [ -n \"\$e\" ] || e=-;" \
-        " printf 'wait-remote %s %s %s %s %s\\n' \"\$s\" \"\$n\" \"\$m\" \"\$(date +%s)\" \"\$e\";" \
+        " printf 'wait-remote %s %s %s %s %s\\n' \"\$s\" \"\$n\" \"\$im\" \"\$(date +%s)\" \"\$e\";" \
         " exec tail --pid=$pid -F -n +\"\$s\" -- $rpath"
 }
 
@@ -122,38 +129,56 @@ started=$SECONDS
 last=$SECONDS
 attempt=0
 # next — номер следующей строки журнала, old — последняя строка, которая уже
-# была в журнале до первого подключения (показывается, но ростом не считается).
+# была в журнале до первого подключения (показывается, но ростом не считается),
+# ino — inode журнала из последней шапки, partial — строка без перевода строки,
+# на которой кончился поток.
 next=
 old=0
+ino=-
+partial=
+# Обрывок последней строки печатается только при выходе: после переподключения
+# tail пришлёт её целиком с того же номера.
+flush_partial() { [ -z "$partial" ] || printf '%(%H:%M:%S)T %s\n' -1 "$partial"; }
 while true; do
     header=1
-    exec {events}< <(exec ssh "${ssh_opts[@]}" -- "$host" "$(remote_cmd "${next:-first}")")
+    partial=
+    exec {events}< <(exec ssh "${ssh_opts[@]}" -- "$host" "$(remote_cmd "${next:-first}" "$ino")")
     ssh_pid=$!
     while true; do
         read_args=()
         left=
-        # Шапка и прежние строки первого подключения приходят сразу: сторож
-        # проверяет застой после них — по отсчёту из шапки и с прежними строками
-        # на экране; подключение без ответа ограничивают ключи ssh.
-        if [ -n "$stall_s" ] && (( ! header )) && { [ -z "$next" ] || (( next > old )); }; then
+        # Сторож включается после шапки (подключение без ответа ограничивают
+        # ключи ssh). Прежние строки первого подключения приходят сразу: пока
+        # они идут, срок ставится, только если он ещё не истёк, — прежние строки
+        # показываются и при давно неподвижном журнале, а усечение журнала
+        # до их прихода не оставляет ожидание без сторожа.
+        if [ -n "$stall_s" ] && (( ! header )); then
             left=$(( last + stall_s - SECONDS ))
-            (( left > 0 )) || { printf 'stall %s %s\n' "$(( SECONDS - last ))" "$host"; exit 125; }
-            read_args=(-t "$left")
+            if (( left > 0 )); then
+                read_args=(-t "$left")
+            elif (( next > old )); then
+                printf 'stall %s %s\n' "$(( SECONDS - last ))" "$host"
+                exit 125
+            fi
         fi
         rc=0
         IFS= read -r "${read_args[@]}" line <&"$events" || rc=$?
         if [ "$rc" -gt 128 ]; then
-            continue  # истёк срок read -t: сторож проверит застой в начале цикла
+            # Истёк срок сторожа: read -t сохраняет начатую строку в line.
+            partial=$line
+            flush_partial
+            printf 'stall %s %s\n' "$(( SECONDS - last ))" "$host"
+            exit 125
         elif [ "$rc" -ne 0 ]; then
-            # Строка без перевода строки при обрыве: после переподключения tail
-            # пришлёт её целиком с того же номера.
-            [ -z "$line" ] || printf '%(%H:%M:%S)T %s\n' -1 "$line"
+            partial=$line
             break
         fi
         if (( header )); then
-            header=0
-            read -r tag h_from h_lines h_mtime h_now h_age <<< "$line"
+            read -r tag h_from h_lines h_ino h_mtime h_now h_age <<< "$line"
             if [[ $tag == wait-remote && $h_from =~ ^[0-9]+$ && $h_lines =~ ^[0-9]+$ ]]; then
+                header=0
+                [[ $h_ino =~ ^[0-9]+$ ]] || h_ino=-
+                ino=$h_ino
                 # Тишина — секунд от более позднего из моментов на узле: изменение
                 # журнала, запуск процесса (часы узла); неизвестно — пусто.
                 quiet=
@@ -166,21 +191,30 @@ while true; do
                 if [ -z "$next" ]; then
                     old=$h_lines
                     [ -z "$quiet" ] || last=$(( SECONDS - quiet ))
-                elif [ -n "$quiet" ] && (( SECONDS - quiet > last )); then
-                    last=$(( SECONDS - quiet ))  # журнал рос во время обрыва
+                else
+                    if (( h_from < next )); then
+                        old=0  # все строки нового журнала — рост
+                        printf 'журнал усечён или заменён, показ с первой строки\n'
+                    fi
+                    if [ -n "$quiet" ] && (( SECONDS - quiet > last )); then
+                        last=$(( SECONDS - quiet ))  # журнал рос во время обрыва
+                    fi
                 fi
                 next=$h_from
-                continue
+            else
+                # Шапку печатает та же команда перед tail: строки до неё выводит
+                # оболочка узла (.bashrc и подобные), это не журнал.
+                printf 'wait-remote.sh: вывод оболочки узла: %s\n' "$line" >&2
             fi
+            continue
         fi
         # Связь считается восстановленной и журнал выросшим, когда пришла новая
-        # строка, а не одна из прежних строк первого подключения; без шапки
-        # номер строки неизвестен, и каждая строка считается новой.
-        if [ -z "$next" ] || (( next > old )); then
+        # строка, а не одна из прежних строк первого подключения.
+        if (( next > old )); then
             last=$SECONDS
             attempt=0
         fi
-        [ -z "$next" ] || next=$(( next + 1 ))
+        next=$(( next + 1 ))
         printf '%(%H:%M:%S)T %s\n' -1 "$line"
     done
     exec {events}<&-
@@ -197,11 +231,13 @@ while true; do
         alive=1  # связи нет, судьба процесса неизвестна
     fi
     if [ "$alive" -eq 0 ]; then
+        flush_partial  # последняя строка журнала без перевода строки
         printf 'remote done pid=%s %s за %s мин\n' "$pid" "$host" "$(( (SECONDS - started + 30) / 60 ))"
         exit 0
     fi
     attempt=$(( attempt + 1 ))
     if (( attempt > max_reconnects )); then
+        flush_partial
         printf 'связь с %s потеряна, попыток %s\n' "$host" "$max_reconnects"
         exit 3
     fi

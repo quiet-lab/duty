@@ -106,6 +106,17 @@ class RunMetaTest(unittest.TestCase):
             self.assertEqual(dutylib.run_started_ms(run_dir), 0)
             self.assertFalse(dutylib.tab_run_alive(run_dir))
 
+    def test_broken_byte_keeps_keys(self) -> None:
+        # Испорченный байт не лишает хук ключей: runs-web.py показывает тот же meta.txt.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "meta.txt").write_bytes(
+                b"cwd: /a\xff\nstarted_ms: 1700000000123\npid: 42\n"
+            )
+            meta = dutylib.read_meta(run_dir)
+            self.assertEqual((meta["started_ms"], meta["pid"]), ("1700000000123", "42"))
+            self.assertEqual(dutylib.run_started_ms(run_dir, meta), 1700000000123)
+
 
 class TaskFinishedTest(unittest.TestCase):
     """Признак завершения задачи по строке «Шаг:» в state.md — один на плагин."""

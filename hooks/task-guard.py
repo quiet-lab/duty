@@ -406,11 +406,15 @@ def run_waits(task: Path) -> list[tuple[str, int]]:
     if not runs.is_dir():
         return []
     dutylib = dutylib_module()
-    return [
-        (f"прогон {run_dir.name}", dutylib.run_started_ms(run_dir))
-        for run_dir in sorted(p for p in runs.iterdir() if p.is_dir())
-        if dutylib.tab_run_alive(run_dir.resolve())
-    ]
+    found: list[tuple[str, int]] = []
+    for run_dir in sorted(p for p in runs.iterdir() if p.is_dir()):
+        # meta.txt читается один раз на прогон: и для PID, и для начала.
+        meta = dutylib.read_meta(run_dir)
+        if dutylib.tab_run_alive(run_dir.resolve(), meta):
+            found.append(
+                (f"прогон {run_dir.name}", dutylib.run_started_ms(run_dir, meta))
+            )
+    return found
 
 
 def signal_waits(task: Path) -> list[tuple[str, int]]:

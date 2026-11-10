@@ -61,9 +61,6 @@ PAGE_STYLE = (
 )
 
 
-parse_meta = dutylib.parse_meta
-
-
 def parse_cmd(text: str) -> str:
     """Команда пользователя из cmd.sh, записанного tab-run.sh: между `{` и `} 2>&1 | tee`."""
     lines = text.splitlines()
@@ -104,7 +101,7 @@ def run_state(run_dir: Path) -> tuple[str, int | None]:
 
 
 def describe_run(run_dir: Path) -> dict[str, object]:
-    meta = parse_meta(read_text(run_dir / "meta.txt"))
+    meta = dutylib.read_meta(run_dir)
     state, code = run_state(run_dir)
     try:
         mtime = (run_dir / "out.log").stat().st_mtime_ns // 1_000_000

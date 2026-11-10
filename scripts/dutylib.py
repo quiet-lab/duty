@@ -255,24 +255,31 @@ def parse_meta(text: str) -> dict[str, str]:
 
 
 def read_meta(run_dir: Path) -> dict[str, str]:
-    """meta.txt прогона tab-run.sh; пустой словарь — файла нет или он не читается."""
+    """meta.txt прогона tab-run.sh; испорченные байты заменяются; пустой словарь — файла нет или он не читается."""
     try:
-        return parse_meta((run_dir / "meta.txt").read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError):
+        text = (run_dir / "meta.txt").read_text(encoding="utf-8", errors="replace")
+    except OSError:
         return {}
+    return parse_meta(text)
 
 
-def run_started_ms(run_dir: Path) -> int:
-    """Начало прогона tab-run.sh: строка `started_ms` в meta.txt; 0 — не прочитать."""
-    value = read_meta(run_dir).get("started_ms", "")
+def run_started_ms(run_dir: Path, meta: dict[str, str] | None = None) -> int:
+    """Начало прогона tab-run.sh: строка `started_ms` в meta.txt; 0 — не прочитать.
+
+    meta — уже прочитанный `read_meta(run_dir)`, чтобы не читать файл повторно.
+    """
+    value = (read_meta(run_dir) if meta is None else meta).get("started_ms", "")
     return int(value) if value.isascii() and value.isdigit() else 0
 
 
-def tab_run_alive(run_dir: Path) -> bool:
-    """Прогон tab-run.sh без `done`, чей cmd.sh ещё работает (PID из meta.txt сверяется с командной строкой)."""
+def tab_run_alive(run_dir: Path, meta: dict[str, str] | None = None) -> bool:
+    """Прогон tab-run.sh без `done`, чей cmd.sh ещё работает (PID из meta.txt сверяется с командной строкой).
+
+    meta — уже прочитанный `read_meta(run_dir)`, чтобы не читать файл повторно.
+    """
     if (run_dir / "done").exists():
         return False
-    pid = read_meta(run_dir).get("pid", "")
+    pid = (read_meta(run_dir) if meta is None else meta).get("pid", "")
     if not (pid.isascii() and pid.isdigit()):
         return False
     try:

@@ -78,7 +78,8 @@ scripts/dispatch.sh          запуск, перечень и закрытие 
 scripts/tab-run.sh           длинная команда в новой вкладке: cmd.sh, out.log, done
 scripts/runs-web.py          duty-runs-web: веб-просмотр прогонов tab-run.sh, живой out.log по SSE и inotify
 scripts/wait-done.sh         ожидание файла done по inotify со сроком, сторожем прогресса и показом хода журнала (`--follow`)
-scripts/wait-remote.sh       ожидание удалённого процесса по ssh (`tail --pid`) с показом хода журнала
+scripts/wait-remote.sh       ожидание удалённого процесса по ssh с показом хода журнала
+scripts/wait-remote-node.sh  часть wait-remote.sh на узле: наблюдатель журнала по inotify, спул
 scripts/state-waits.py       просроченные ожидания из раздела «Ожидания» state.md
 scripts/push-agent.sh        сообщение агенту задачи в панель herdr
 hooks/task-guard.py          сторожа сессии агента задачи

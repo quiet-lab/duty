@@ -16,6 +16,10 @@
   (поле `agent_id` есть только там) и снимает отметки подзадачи при её
   перезапуске (`Agent`: `SubagentStop` субагента на переднем плане пишет
   `.stopped` раньше `PostToolUse`, поэтому снятие — до вызова);
+- `pre-tool` при запуске подзадачи пишет отметку `subtasks/<имя>.started`;
+  `.started` без `.done` — запущена и ещё без итога (`launched_without_result`),
+  `Stop` называет такие подзадачи в причине блокировки, а `SubagentStop`
+  помечает `registered: false` в `.stopped`, если запуска не видел;
 - `post-tool` снимает отметку остановки после успешного `SendMessage`
   (возобновление): неудачная отправка отметку не теряет;
 - `subagent-stop` по метке `Подзадача: <имя>` в приглашении субагента проверяет
@@ -280,9 +284,30 @@ def pre_tool(data: dict[str, object]) -> None:
             # Перезапуск под тем же именем: прежние отметки к нему не относятся.
             for suffix in (".stopped", ".done"):
                 (subtasks(task) / f"{tag.group(1)}{suffix}").unlink(missing_ok=True)
+            mark_started(task, tag.group(1))
         elif tool_input.get("subagent_type") not in READ_ONLY_TYPES:
             has_line = TAG_LINE_RE.search(str(tool_input.get("prompt", "")))
             pre_tool_output(additionalContext=BAD_TAG if has_line else UNTAGGED)
+
+
+def mark_started(task: Path, name: str) -> None:
+    """Запуск подзадачи регистрируется отметкой `<имя>.started` со временем (мс)."""
+    directory = subtasks(task)
+    directory.mkdir(parents=True, exist_ok=True)
+    record = {"at_ms": time.time_ns() // 1_000_000}
+    (directory / f"{name}.started").write_text(json.dumps(record), encoding="utf-8")
+
+
+def launched_without_result(task: Path) -> list[str]:
+    """Запущенные подзадачи без итога `.done` (сверка `.started` с `.done`)."""
+    directory = subtasks(task)
+    if not directory.is_dir():
+        return []
+    return [
+        path.stem
+        for path in sorted(directory.glob("*.started"))
+        if not (directory / f"{path.stem}.done").exists()
+    ]
 
 
 def post_tool(data: dict[str, object]) -> None:
@@ -345,7 +370,13 @@ def subagent_stop(data: dict[str, object]) -> None:
     agent_id = str(data.get("agent_id", ""))
     last = one_line(data.get("last_assistant_message"))
     directory.mkdir(parents=True, exist_ok=True)
-    record = {"agent_id": agent_id, "last": last, "at_ms": time.time_ns() // 1_000_000}
+    record = {
+        "agent_id": agent_id,
+        "last": last,
+        "at_ms": time.time_ns() // 1_000_000,
+        # Остановка подзадачи, запуск которой хук не видел (нет `.started`).
+        "registered": (directory / f"{name}.started").exists(),
+    }
     (directory / f"{name}.stopped").write_text(
         json.dumps(record, ensure_ascii=False), encoding="utf-8"
     )
@@ -482,6 +513,10 @@ def stop(data: dict[str, object]) -> None:
         )
         return
     lines = "; ".join(f"{name} (agent_id {agent})" for name, agent, _ in pending)
+    stopped = {name for name, _, _ in pending}
+    running = [n for n in launched_without_result(task) if n not in stopped]
+    if running:
+        lines += f". Запущены и ещё без итога: {', '.join(running)}"
     emit(
         {
             "decision": "block",

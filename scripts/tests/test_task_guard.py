@@ -193,7 +193,46 @@ class GuardTest(unittest.TestCase):
             },
         )
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
-        self.assertEqual(list(self.subtasks.iterdir()), [])
+        self.assertEqual([p.name for p in self.subtasks.iterdir()], ["a1.started"])
+
+    def test_agent_with_tag_writes_started_and_stop_names_it(self) -> None:
+        r = self.hook(
+            "pre-tool",
+            {
+                "tool_name": "Agent",
+                "tool_input": {
+                    "prompt": "Подзадача: a2\n" + GATE_LINES + "Сделай.",
+                    "subagent_type": "general-purpose",
+                },
+            },
+        )
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        record = json.loads((self.subtasks / "a2.started").read_text(encoding="utf-8"))
+        self.assertIsInstance(record["at_ms"], int)
+        # Запущена без итога и не остановлена: ход не блокируется.
+        r = self.hook("stop", {})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        # Рядом остановилась другая подзадача: причина называет и запущенную.
+        self.write_stopped("a1")
+        r = self.hook("stop", {})
+        reason = json.loads(r.stdout)["reason"]
+        self.assertIn("a1", reason)
+        self.assertIn("Запущены и ещё без итога: a2", reason)
+        # Итог записан: подзадача из перечня запущенных уходит.
+        (self.subtasks / "a2.done").write_text("итог\n", encoding="utf-8")
+        reason = json.loads(self.hook("stop", {}).stdout)["reason"]
+        self.assertNotIn("Запущены", reason)
+
+    def test_subagent_stop_marks_registered(self) -> None:
+        transcript = self.transcript("Подзадача: a1\nСделай.")
+        r = self.hook("subagent-stop", self.stop_data(agent_transcript_path=transcript))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        record = json.loads((self.subtasks / "a1.stopped").read_text(encoding="utf-8"))
+        self.assertIs(record["registered"], False)
+        (self.subtasks / "a1.started").write_text("{}", encoding="utf-8")
+        self.hook("subagent-stop", self.stop_data(agent_transcript_path=transcript))
+        record = json.loads((self.subtasks / "a1.stopped").read_text(encoding="utf-8"))
+        self.assertIs(record["registered"], True)
 
     def test_agent_with_bad_tag_name(self) -> None:
         r = self.hook(

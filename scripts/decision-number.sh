@@ -8,10 +8,11 @@
 #   decision-number.sh <каталог записей> --insert <файл> [--after <номер>] [--root <корень>]
 #       вставляет запись командой проекта docs.decision_insert из .duty/duty.toml
 #       (к ней дописывается --catalog <NN> --last <файл> или --after <номер> <файл>):
-#       последующие записи сдвигаются, ссылки на них переписываются; затем
-#       указатель порождается заново командой docs.decision_index. Команды
-#       выполняются в корне проекта: надпроект git каталога записей или --root.
-#       Ключи не заданы — отказ с подсказкой (reference/config.md).
+#       последующие записи сдвигаются, ссылки на них переписываются, указатель
+#       порождается заново — одной транзакцией команды вставки, которая сама
+#       откатывает свои шаги при сбое или сигнале. Команда выполняется в корне
+#       проекта: надпроект git каталога записей или --root. Ключ не задан —
+#       отказ с подсказкой (reference/config.md).
 #       Печатает путь записи. Имя файла — тема латиницей через дефис
 #       (<тема>.md или NNNN-<тема>.md), номер ставит сценарий.
 #
@@ -72,18 +73,21 @@ slug=$(basename "$insert" .md)
 slug=${BASH_REMATCH[2]}
 root=$(git -C "$decisions" rev-parse --show-toplevel 2> /dev/null) || die "$decisions не в git-репозитории"
 
-# Команды вставки и указателя — из конфигурации проекта (reference/config.md).
+# Команда вставки — из конфигурации проекта (reference/config.md).
 if [ -z "$project" ]; then
     project=$(git -C "$decisions" rev-parse --show-superproject-working-tree 2> /dev/null || true)
     [ -n "$project" ] || project=$root
 fi
 config_get() { python3 -I "$(dirname "${BASH_SOURCE[0]}")/duty_config.py" get "$1" --root "$project" --default ''; }
 insert_cmd=$(config_get docs.decision_insert) || die "не прочитана конфигурация проекта $project"
-index_cmd=$(config_get docs.decision_index) || die "не прочитана конфигурация проекта $project"
 [ -n "$insert_cmd" ] || die 'задайте docs.decision_insert в .duty/duty.toml'
-[ -n "$index_cmd" ] || die 'задайте docs.decision_index в .duty/duty.toml'
 eval "insert_argv=($insert_cmd)"
-eval "index_argv=($index_cmd)"
+
+# До начала вставки сигнал просто прерывает сценарий: дерево ещё не менялось.
+for sig in INT TERM HUP; do
+    # shellcheck disable=SC2064 # имя сигнала подставляется при установке ловушки
+    trap "die 'получен сигнал $sig, вставка не начата'" "$sig"
+done
 
 # WARNING: замок на вставку в одном рабочем дереве. Почему иначе нельзя:
 # вставка переименовывает записи и переписывает ссылки во многих файлах
@@ -120,69 +124,78 @@ if [ -n "$after" ]; then
     target=$(dirname "$anchor")
 fi
 
-# Файл записи с другой файловой системы (scratchpad на tmpfs) сценарий
-# перенумерации перенести переименованием не может (EXDEV): копия кладётся
-# в каталог git репозитория, исходный файл удаляется после успешной вставки.
+# Команда вставки получает копию черновика в каталоге git репозитория,
+# исходный файл удаляется после успешной вставки: процесс, убитый без
+# возможности отката (SIGKILL), или незавершённый откат не уносят
+# единственный экземпляр записи. Файл с другой файловой системы (scratchpad
+# на tmpfs) команда вставки переносит копированием.
 gitdir=$(git -C "$decisions" rev-parse --path-format=absolute --git-dir)
-source_file=''
-# Черновик внутри репозитория тоже копируется: откат не должен удалять
-# единственный экземпляр, который перенумерация успела переместить.
-if [ "$(stat -c %d "$insert")" != "$(stat -c %d "$decisions")" ] || [[ $insert == "$root"/* ]]; then
-    source_file=$insert
-    copy_dir=$(mktemp -d "$gitdir/decision-insert-src.XXXXXX")
-    insert=$copy_dir/$(basename "$source_file")
-    cp -- "$source_file" "$insert"
-    trap 'rmdir "$lock" 2> /dev/null || true; rm -rf "$copy_dir"' EXIT
-fi
-
-# Откат при обрыве вставки: перенумерация переименовывает записи через
-# временные имена и при ошибке оставляет каталог разобранным. До вставки
-# запоминаются изменённые пути; после ошибки пути, изменённые вставкой,
-# возвращаются к состоянию HEAD (отслеживаемые) или удаляются (новые).
-# Пути, изменённые до вставки, не трогаются.
-changed_paths() { git -C "$root" status --porcelain=v1 -z --no-renames -uall | tr '\0' '\n' | sed 's/^...//' | sort -u; }
-before=$(changed_paths)
-rollback() {
-    local path failed=0 reason=${1:-вставка оборвалась}
-    # Во время отката сигналы игнорируются: прерванный откат оставил бы
-    # дерево наполовину возвращённым.
-    trap '' INT TERM HUP
-    printf 'decision-number.sh: %s, откат изменений\n' "$reason" >&2
-    while IFS= read -r path; do
-        [ -n "$path" ] || continue
-        grep -qxF -- "$path" <<< "$before" && continue
-        if git -C "$root" cat-file -e "HEAD:$path" 2> /dev/null; then
-            git -C "$root" checkout -q HEAD -- "$path" || {
-                failed=$((failed + 1))
-                printf 'decision-number.sh: не возвращён: %s\n' "$path" >&2
-            }
-        else
-            git -C "$root" rm -q --cached --ignore-unmatch -- "$path" 2> /dev/null || true
-            rm -f -- "$root/$path" || {
-                failed=$((failed + 1))
-                printf 'decision-number.sh: не удалён: %s\n' "$path" >&2
-            }
-        fi
-    done < <(changed_paths)
-    if [ "$failed" -gt 0 ]; then
-        die "$reason; откат не завершён, не возвращено путей: $failed, дерево требует ручной проверки (git status)"
-    fi
-    die "$reason; вставка не выполнена, дерево возвращено в исходное состояние"
-}
-# Сигнал прерывания приходит после завершения текущей команды вставки
-# (оболочка выполняет ловушку после дочернего процесса): откат делается
-# тем же образом, что при ошибке, с названием сигнала в сообщении.
-trap 'rollback "получен сигнал INT"' INT
-trap 'rollback "получен сигнал TERM"' TERM
-trap 'rollback "получен сигнал HUP"' HUP
+source_file=$insert
+copy_dir=$(mktemp -d "$gitdir/decision-insert-src.XXXXXX")
+trap 'rmdir "$lock" 2> /dev/null || true; rm -rf "$copy_dir"' EXIT
+insert=$copy_dir/$(basename "$source_file")
+cp -- "$source_file" "$insert"
 
 if [ -n "$after" ]; then
-    (cd "$project" && "${insert_argv[@]}" --after "$((10#$after))" "$insert") >&2 || rollback
+    where=(--after "$((10#$after))")
 else
-    (cd "$project" && "${insert_argv[@]}" --catalog "$nn" --last "$insert") >&2 || rollback
+    where=(--catalog "$nn" --last)
 fi
-(cd "$project" && "${index_argv[@]}") >&2 || rollback
-[ -z "$source_file" ] || rm -f -- "$source_file"
+
+# Откат вставки целиком на журнале команды вставки (renumber-decisions.py
+# apply_all): она возвращает ровно то, что изменила сама, и не трогает ни
+# правки, сделанные до вставки, ни параллельные. Сценарий своего отката
+# не ведёт и состояние дерева по git status не разбирает.
+#
+# Сигнал сценарию передаётся команде вставки как TERM, чтобы она откатила
+# свои шаги. Команда запускается в фоне: встроенная wait прерывается
+# пойманным сигналом, а ожидание переднего плана отложило бы ловушку до
+# конца вставки. Фоновый процесс неинтерактивной оболочки игнорирует INT,
+# поэтому и INT передаётся как TERM.
+signal_name='' signals=0 child=''
+forward() {
+    signal_name=$1
+    signals=$((signals + 1))
+    [ -z "$child" ] || kill -s TERM "$child" 2> /dev/null || true
+}
+trap 'forward INT' INT
+trap 'forward TERM' TERM
+trap 'forward HUP' HUP
+(cd "$project" && exec "${insert_argv[@]}" "${where[@]}" "$insert") >&2 &
+child=$!
+[ -z "$signal_name" ] || kill -s TERM "$child" 2> /dev/null || true
+while :; do
+    seen=$signals code=0
+    wait "$child" || code=$?
+    # Процесс жив — wait прервал сигнал, ждём дальше.
+    if kill -0 "$child" 2> /dev/null; then
+        continue
+    fi
+    # Сигнал пришёл во время wait, а процесс успел завершиться: его код
+    # ещё не получен. Повторная wait возвращает его, а для уже полученного
+    # кода отвечает 127, и тогда остаётся прежний.
+    if [ "$signals" != "$seen" ]; then
+        again=0
+        wait "$child" || again=$?
+        [ "$again" = 127 ] || code=$again
+    fi
+    break
+done
+child=''
+trap '' INT TERM HUP
+
+reason='вставка оборвалась'
+[ -z "$signal_name" ] || reason="получен сигнал $signal_name"
+if [ "$code" != 0 ]; then
+    # Итог отката сообщила команда вставки выше; сценарий не утверждает,
+    # что дерево возвращено, а проверяет только своё: цел ли черновик.
+    if [ -e "$insert" ]; then
+        die "$reason; вставка не выполнена (код $code), черновик цел; итог отката — в сообщении команды вставки выше"
+    fi
+    die "$reason; вставка не выполнена (код $code), копии черновика на месте нет: дерево требует ручной проверки (git status), исходный файл сохранён: $source_file"
+fi
+[ -z "$signal_name" ] || printf 'decision-number.sh: %s после завершения вставки, запись вставлена\n' "$reason" >&2
+rm -f -- "$source_file"
 
 found=$(find "$target" -maxdepth 1 -type f -name "[0-9][0-9][0-9][0-9]-$slug.md" | head -1)
 [ -n "$found" ] || die "запись $slug после вставки не найдена"

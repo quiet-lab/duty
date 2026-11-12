@@ -67,8 +67,9 @@ def build(
 class WeekStatsTest(unittest.TestCase):
     def test_jenkins_walk_is_parallel(self) -> None:
         # Сборки двух заданий запрашиваются одновременно: двойник отвечает
-        # на запрос сборок, только когда пришли оба (барьер; предел — предохранитель).
-        barrier = threading.Barrier(2, timeout=20)
+        # на запрос сборок, только когда пришли оба (барьер без срока: обход
+        # по одному зависает, его ловит внешний предел прогона целиком).
+        barrier = threading.Barrier(2)
         folders = {
             "http://j/": {"jobs": [{"name": "d", "url": "http://j/d/"}]},
             "http://j/d/": {

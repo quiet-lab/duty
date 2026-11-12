@@ -42,6 +42,8 @@ class BusyTest(unittest.TestCase):
             "a",
             "--note",
             "прогон",
+            "--ttl-min",
+            "30",
             "--pid",
             str(os.getpid()),
         )
@@ -61,7 +63,14 @@ class BusyTest(unittest.TestCase):
 
     def test_claim_with_dead_pid_is_usage_error(self) -> None:
         code, out = run(
-            "claim", "dev-stand-1", "--holder", "a", "--pid", str(dead_pid())
+            "claim",
+            "dev-stand-1",
+            "--holder",
+            "a",
+            "--ttl-min",
+            "30",
+            "--pid",
+            str(dead_pid()),
         )
         self.assertEqual(code, 2)
         self.assertIn("не жив", out)
@@ -75,10 +84,21 @@ class BusyTest(unittest.TestCase):
             "a",
             "--note",
             "замер",
+            "--ttl-min",
+            "30",
             "--pid",
             str(os.getpid()),
         )
-        code, out = run("claim", "station", "--holder", "b", "--pid", str(os.getpid()))
+        code, out = run(
+            "claim",
+            "station",
+            "--holder",
+            "b",
+            "--ttl-min",
+            "30",
+            "--pid",
+            str(os.getpid()),
+        )
         self.assertEqual(code, 3)
         self.assertIn("занято: a, замер", out)
         self.assertEqual(run("check", "station")[0], 3)
@@ -98,7 +118,14 @@ class BusyTest(unittest.TestCase):
         )
         self.assertEqual(run("check", "db-main")[0], 0)
         code, out = run(
-            "claim", "db-main", "--holder", "new", "--pid", str(os.getpid())
+            "claim",
+            "db-main",
+            "--holder",
+            "new",
+            "--ttl-min",
+            "30",
+            "--pid",
+            str(os.getpid()),
         )
         self.assertEqual(code, 0)
         self.assertIn("устаревшая", out)
@@ -108,7 +135,16 @@ class BusyTest(unittest.TestCase):
         self.assertEqual(data["holder"], "new")
 
     def test_release_foreign_needs_force(self) -> None:
-        run("claim", "dev-stand-2", "--holder", "a", "--pid", str(os.getpid()))
+        run(
+            "claim",
+            "dev-stand-2",
+            "--holder",
+            "a",
+            "--ttl-min",
+            "30",
+            "--pid",
+            str(os.getpid()),
+        )
         code, _ = run("release", "dev-stand-2", "--holder", "b")
         self.assertEqual(code, 3)
         self.assertTrue((Path(self.tmp.name) / "dev-stand-2.json").exists())
@@ -118,7 +154,16 @@ class BusyTest(unittest.TestCase):
         self.assertFalse((Path(self.tmp.name) / "dev-stand-2.json").exists())
 
     def test_release_own(self) -> None:
-        run("claim", "station", "--holder", "a", "--pid", str(os.getpid()))
+        run(
+            "claim",
+            "station",
+            "--holder",
+            "a",
+            "--ttl-min",
+            "30",
+            "--pid",
+            str(os.getpid()),
+        )
         self.assertEqual(run("release", "station", "--holder", "a")[0], 0)
         self.assertEqual(run("check", "station")[0], 0)
 
@@ -131,6 +176,8 @@ class BusyTest(unittest.TestCase):
             "a",
             "--task",
             "t.md",
+            "--ttl-min",
+            "30",
             "--pid",
             str(os.getpid()),
         )
@@ -186,6 +233,8 @@ class BusyTest(unittest.TestCase):
                         "res",
                         "--holder",
                         f"h{i}",
+                        "--ttl-min",
+                        "30",
                         "--pid",
                         str(os.getpid()),
                     ],
@@ -236,7 +285,16 @@ class BusyTest(unittest.TestCase):
 
         busy.read_mark = read  # type: ignore[assignment]
         self.addCleanup(setattr, busy, "read_mark", real_read)
-        code, _ = run("claim", "res", "--holder", "x", "--pid", str(os.getpid()))
+        code, _ = run(
+            "claim",
+            "res",
+            "--holder",
+            "x",
+            "--ttl-min",
+            "30",
+            "--pid",
+            str(os.getpid()),
+        )
         self.assertEqual(code, busy.EXIT_BUSY)
         self.assertEqual(json.loads(path.read_text(encoding="utf-8")), fresh)
 
@@ -253,7 +311,16 @@ class BusyTest(unittest.TestCase):
 
         busy.json.dump = dump  # type: ignore[assignment]
         self.addCleanup(setattr, busy.json, "dump", real_dump)
-        code, _ = run("claim", "res", "--holder", "a", "--pid", str(os.getpid()))
+        code, _ = run(
+            "claim",
+            "res",
+            "--holder",
+            "a",
+            "--ttl-min",
+            "30",
+            "--pid",
+            str(os.getpid()),
+        )
         self.assertEqual(code, 0)
         self.assertEqual(seen, [None])
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["holder"], "a")
@@ -263,7 +330,16 @@ class BusyTest(unittest.TestCase):
         """release читает и удаляет под замком: сосед, снимающий устаревшую
         отметку, в это время замок получить не может."""
         root = Path(self.tmp.name)
-        run("claim", "res", "--holder", "a", "--pid", str(os.getpid()))
+        run(
+            "claim",
+            "res",
+            "--holder",
+            "a",
+            "--ttl-min",
+            "30",
+            "--pid",
+            str(os.getpid()),
+        )
         real_read = busy.read_mark
         got: list[bool] = []
 
@@ -301,7 +377,16 @@ class BusyTest(unittest.TestCase):
         busy.LOCK_WAIT_S = 0.05
         self.addCleanup(setattr, busy, "LOCK_WAIT_S", real)
         for argv in (
-            ("claim", "res", "--holder", "x", "--pid", str(os.getpid())),
+            (
+                "claim",
+                "res",
+                "--holder",
+                "x",
+                "--ttl-min",
+                "30",
+                "--pid",
+                str(os.getpid()),
+            ),
             ("release", "res"),
         ):
             code, out = run(*argv)
@@ -322,7 +407,16 @@ class BusyTest(unittest.TestCase):
                 encoding="utf-8",
             )
             cmds = [
-                ["claim", "res", "--holder", f"h{i}", "--pid", str(os.getpid())]
+                [
+                    "claim",
+                    "res",
+                    "--holder",
+                    f"h{i}",
+                    "--ttl-min",
+                    "30",
+                    "--pid",
+                    str(os.getpid()),
+                ]
                 for i in range(4)
             ] + [["release", "res", "--holder", "a"]]
             procs = [
@@ -352,7 +446,16 @@ class BusyTest(unittest.TestCase):
         busy.json.dump = dump  # type: ignore[assignment]
         self.addCleanup(setattr, busy.json, "dump", real_dump)
         with self.assertRaises(OSError):
-            run("claim", "res", "--holder", "a", "--pid", str(os.getpid()))
+            run(
+                "claim",
+                "res",
+                "--holder",
+                "a",
+                "--ttl-min",
+                "30",
+                "--pid",
+                str(os.getpid()),
+            )
         self.assertEqual(list(root.glob(".*.tmp")), [])
         self.assertFalse((root / "res.json").exists())
 
@@ -375,7 +478,16 @@ class BusyTest(unittest.TestCase):
             "--pid",
             str(os.getpid()),
         )
-        run("claim", "r-free", "--holder", "a", "--pid", str(os.getpid()))
+        run(
+            "claim",
+            "r-free",
+            "--holder",
+            "a",
+            "--ttl-min",
+            "60",
+            "--pid",
+            str(os.getpid()),
+        )
         path = Path(self.tmp.name) / "r-ttl.json"
         data = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(data["ttl_min"], 10)
@@ -390,6 +502,44 @@ class BusyTest(unittest.TestCase):
             line for line in out.splitlines() if line.startswith("| r-free ")
         )
         self.assertNotIn("просрочено", free_line)
+
+    def test_claim_without_ttl_is_rejected(self) -> None:
+        code, out = run("claim", "r-nottl", "--holder", "a", "--pid", str(os.getpid()))
+        self.assertEqual(code, 2, out)
+        self.assertIn("--ttl-min", out)
+        self.assertIn("обязателен", out)
+        self.assertFalse((Path(self.tmp.name) / "r-nottl.json").exists())
+
+    def test_claim_with_positive_ttl_is_accepted(self) -> None:
+        code, out = run(
+            "claim",
+            "r-ok",
+            "--holder",
+            "a",
+            "--ttl-min",
+            "1",
+            "--pid",
+            str(os.getpid()),
+        )
+        self.assertEqual(code, 0, out)
+        data = json.loads((Path(self.tmp.name) / "r-ok.json").read_text("utf-8"))
+        self.assertEqual(data["ttl_min"], 1)
+
+    def test_list_reads_legacy_mark_without_ttl(self) -> None:
+        (Path(self.tmp.name) / "r-old.json").write_text(
+            json.dumps(
+                {"resource": "r-old", "holder": "a", "pid": os.getpid(), "since_ms": 1}
+            ),
+            encoding="utf-8",
+        )
+        code, out = run("list")
+        self.assertEqual(code, 0, out)
+        line = next(x for x in out.splitlines() if x.startswith("| r-old "))
+        self.assertIn("без срока", line)
+        self.assertNotIn("просрочено", line)
+        code, out = run("list", "--json")
+        self.assertEqual(code, 0, out)
+        self.assertIsNone(json.loads(out)[0].get("ttl_min"))
 
     def test_ttl_must_be_positive(self) -> None:
         for value in ("0", "-5"):

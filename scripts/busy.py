@@ -191,7 +191,14 @@ def cmd_claim(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
-    if args.ttl_min is not None and args.ttl_min < 1:
+    if args.ttl_min is None:
+        print(
+            "claim: --ttl-min обязателен: срок отметки в минутах, "
+            "2× от замера операции",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if args.ttl_min < 1:
         print("claim: --ttl-min — целое не меньше 1", file=sys.stderr)
         return EXIT_USAGE
     if args.pid <= 0 or not pid_alive(args.pid):
@@ -209,9 +216,8 @@ def cmd_claim(args: argparse.Namespace) -> int:
         "pid": args.pid,
         "since_ms": now_ms(),
         "note": args.note or "",
+        "ttl_min": args.ttl_min,
     }
-    if args.ttl_min is not None:
-        mark["ttl_min"] = args.ttl_min
     for _ in range(3):
         if try_create(path, mark):
             print(f"занято ресурс {args.resource} держателем {args.holder}")
@@ -294,7 +300,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     print("| ресурс | держатель | задача | заметка | pid жив | минут | срок, мин |")
     print("|---|---|---|---|---|---|---|")
     for m in marks:
-        ttl = m.get("ttl_min") if m.get("ttl_min") is not None else "—"
+        ttl = m.get("ttl_min") if m.get("ttl_min") is not None else "без срока"
         ttl_cell = f"{ttl} {m['overdue']}" if m["overdue"] else str(ttl)
         print(
             f"| {m['resource']} | {m.get('holder')} | {m.get('task') or ''} | {m.get('note') or ''} "
@@ -329,7 +335,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument(
         "--ttl-min",
         type=int,
-        help="срок отметки, мин (2× от замера); дольше — list помечает «просрочено»",
+        help="обязателен: срок отметки, мин (2× от замера операции); "
+        "дольше — list помечает «просрочено»",
     )
     c.add_argument(
         "--pid",

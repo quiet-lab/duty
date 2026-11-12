@@ -26,9 +26,8 @@ allowed-tools: Bash, Read, Write
 
 Остальное — субагентом главной сессии или навыками `/duty:*`.
 
-Задача субагенту или в workspace ставится только с запиской по форме
-`${CLAUDE_PLUGIN_ROOT}/reference/brief-template.md`, крупная — только этим
-навыком. Справку по документам для строки «Справка» готовит `/duty:recall <тема>`;
+Форма записки — `${CLAUDE_PLUGIN_ROOT}/reference/brief-template.md` (владелец формы).
+Справку по документам для строки «Справка» готовит `/duty:recall <тема>`;
 при сборке записки из `--goal` строка задаётся ключом `--recall`, раздел
 «Приоритеты» — ключом `--priorities`. Форму проверяют
 ворота: `dispatch.sh` и хук плагина (README плагина, «Ворота постановки»).
@@ -41,12 +40,7 @@ allowed-tools: Bash, Read, Write
 Допустимые значения: `<имя-задачи> <модель> [текст задачи, путь к записке или --resume]`.
 
 - Имя — `[a-z][a-z0-9_-]{0,31}`, говорящее: оно же имя агента herdr и сессии Claude и имя каталога
-  задачи; символ workspace (из набора `symbols.tasks` конфигурации, вне репозитория —
-  `symbols.outside`; не занятый открытыми workspace; `symbols.main` — символ
-  главной сессии, задачам не выдаётся) выбирает `dispatch.sh` и сообщает
-  herdr токеном `symbol`; набора нет — символ выдаёт herdr дочернему workspace
-  (`[ui.workspace_symbols]` каталога родителя, токены в `herdr workspace get`),
-  herdr не дал — запасной `scripts/symbols.txt`. Цвет заголовка назначает herdr
+  задачи; символ workspace выбирает `dispatch.sh` (README плагина, «Вынос задачи в workspace»); запасной набор — `scripts/symbols.txt`. Цвет заголовка назначает herdr
   по правилу `ui.workspace_symbols.color_rule` (токен `color` в `workspace get`);
   без форка herdr, не знающего правила, плагин считает цвет сам по тому же правилу
   (`scripts/rule-color.py`) и шлёт токеном `color`; метка workspace и первой

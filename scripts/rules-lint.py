@@ -4,7 +4,8 @@
 
 Подкоманды:
 
-- `repeats` (по умолчанию) — повторы предложений между файлами правил:
+- `repeats` (по умолчанию) — повторы предложений между файлами правил
+  (точные и по сходству: доля общих пар соседних слов не ниже `SIMILARITY`):
   одно правило должно жить в одном файле-владельце, остальные места
   ссылаются на него. Набор: постоянные файлы плагина (`PLUGIN_FILES`;
   у `hooks/task-guard.py` берётся только докстринг модуля), затем из
@@ -42,6 +43,10 @@ PLUGIN = Path(__file__).resolve().parent.parent
 # Порог повтора: нормализованное предложение не короче обоих значений.
 MIN_WORDS = 8
 MIN_CHARS = 50
+# Порог сходства: доля общих пар соседних слов (коэффициент Жаккара) двух
+# предложений. Ниже порога — разные предложения, на 0,7 и выше — один и тот же
+# текст с перестановкой или заменой пары слов.
+SIMILARITY = 0.7
 # Постоянные файлы плагина от его каталога; у task-guard.py — только докстринг.
 PLUGIN_FILES = (
     "README.md",
@@ -56,6 +61,7 @@ PLUGIN_FILES = (
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
 HEADING_RE = re.compile(r"^\s*#{1,6}\s")
 LIST_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+LINK_TARGET_RE = re.compile(r"\]\([^)\s]*\)")
 SENTENCE_END_RE = re.compile(r"(?<=[.!?;])\s+")
 SHOWN_CHARS = 80
 
@@ -72,9 +78,48 @@ class Sentence:
 
 
 def normalize(text: str) -> str:
-    """Регистр, ё, обратные кавычки, разметка и пунктуация убираются."""
+    """Регистр, ё, обратные кавычки, цели ссылок, разметка и пунктуация убираются."""
+    text = LINK_TARGET_RE.sub("", text)
     lowered = text.casefold().replace("ё", "е").replace("`", "")
     return " ".join(re.sub(r"[^\w]+", " ", lowered).split())
+
+
+def shingles(key: str) -> frozenset[str]:
+    """Пары соседних слов нормализованного предложения."""
+    words = key.split()
+    return frozenset(" ".join(pair) for pair in zip(words, words[1:], strict=False))
+
+
+def similar_groups(
+    index: dict[str, list[Sentence]],
+) -> list[tuple[Sentence, Sentence]]:
+    """Пары предложений из разных файлов, схожие, но не совпадающие точно.
+
+    Кандидаты — предложения с общей парой слов (обратный индекс), затем
+    коэффициент Жаккара по парам слов не ниже `SIMILARITY`. Внешних
+    зависимостей нет.
+    """
+    keys = sorted(index)
+    sets = [shingles(k) for k in keys]
+    by_pair: dict[str, list[int]] = {}
+    for number, pairs in enumerate(sets):
+        for pair in pairs:
+            by_pair.setdefault(pair, []).append(number)
+    found: list[tuple[Sentence, Sentence]] = []
+    for number, pairs in enumerate(sets):
+        shared: dict[int, int] = {}
+        for pair in pairs:
+            for other in by_pair[pair]:
+                if other > number:
+                    shared[other] = shared.get(other, 0) + 1
+        for other, common in shared.items():
+            union = len(pairs) + len(sets[other]) - common
+            if not union or common / union < SIMILARITY:
+                continue
+            first, second = index[keys[number]][0], index[keys[other]][0]
+            if first.file != second.file:
+                found.append((first, second))
+    return found
 
 
 def units(lines: list[str], first_line: int = 1) -> list[tuple[int, str]]:
@@ -219,6 +264,11 @@ def run_repeats(root_arg: Path | None) -> list[str]:
                 f"{first.file}:{first.line}: повтор в {other.file}:{other.line}: "
                 f"{first.text[:SHOWN_CHARS]}"
             )
+    for first, other in similar_groups(index):
+        findings.append(
+            f"{first.file}:{first.line}: сходство с {other.file}:{other.line}: "
+            f"{first.text[:SHOWN_CHARS]}"
+        )
     return sorted(set(findings))
 
 

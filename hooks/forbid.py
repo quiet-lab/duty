@@ -15,7 +15,7 @@
 
 - `network` — переключение туннеля и сети станции; чтение состояния туннеля
   из перечня без пароля `~/.claude/CLAUDE.md`, «Повышение привилегий»
-  (`NETWORK_READS`), разрешено;
+  (`NETWORK_READS`), `resolvectl status|query|statistics`, разрешено;
 - `kill` — завершение процессов по образцу;
 - `git` — `git add -A/-u`, подкоманды записи `git stash`, принудительный push,
   push в защищённые ветви (`git.protected`);
@@ -138,6 +138,21 @@ NETWORK_READS = {
     ("awg", ("show", "amn0", "endpoints")),
     ("awg", ("show", "amn0", "latest-handshakes")),
     ("amn-zones-update", ("--count",)),
+}
+# Чтение resolvectl: подкоманды без изменения настроек и ключи со значением,
+# которые стоят до подкоманды (форма `--ключ=значение` — одно слово).
+RESOLVECTL_READS = {"status", "query", "statistics"}
+RESOLVECTL_VALUE_FLAGS = {
+    "-i",
+    "--interface",
+    "-t",
+    "--type",
+    "-c",
+    "--class",
+    "-p",
+    "--protocol",
+    "-H",
+    "--host",
 }
 # Подкоманды git stash, которые меняют общий стек; `git stash` без подкоманды
 # и с ключом вместо неё (`-m`, `-p`, `--`) — тот же push.
@@ -620,8 +635,23 @@ def systemctl_status(args: list[str]) -> bool:
     return i < len(args) and args[i] == "status"
 
 
+def resolvectl_read(args: list[str]) -> bool:
+    """`resolvectl [ключи] status|query|statistics …` — чтение состояния DNS.
+
+    Решение пользователя (RP-2233, комментарий 16832): `resolvectl` запускается
+    напрямую без sudo, чтение разрешено; `dns`, `domain`, `revert`, `flush-caches`
+    и прочие подкоманды остаются запрещёнными.
+    """
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in RESOLVECTL_VALUE_FLAGS else 1
+    return i < len(args) and args[i] in RESOLVECTL_READS
+
+
 def check_network(name: str, args: list[str]) -> str | None:
     if (name, tuple(args)) in NETWORK_READS:
+        return None
+    if name == "resolvectl" and resolvectl_read(args):
         return None
     if name in NETWORK_COMMANDS:
         return "network"

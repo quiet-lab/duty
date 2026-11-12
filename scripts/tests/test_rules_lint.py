@@ -15,9 +15,12 @@ LINT = PLUGIN / "scripts" / "rules-lint.py"
 # Замер: запуск на двойниках — 0,05 с; предел — предохранитель от зависания.
 LIMIT_S = 10
 
-# Переменные среды запуска, которые меняют поиск корня проекта и слой
-# пользователя: тесты их убирают, чтобы не видеть настоящий проект.
-CLEARED = ("DUTY_PROJECT", "CLAUDE_PROJECT_DIR", "DUTY_CONFIG_USER")
+# Переменные среды запуска, которые меняют поиск корня проекта, слой
+# пользователя и каталоги результатов, занятости, сигналов: тесты убирают
+# все DUTY_* и CLAUDE_PROJECT_DIR, чтобы не видеть настоящий проект.
+def cleared(name: str) -> bool:
+    return name.startswith("DUTY_") or name == "CLAUDE_PROJECT_DIR"
+
 
 SENTENCE = (
     "Независимые подзадачи выполняются параллельно, если они не пересекаются "
@@ -30,7 +33,7 @@ class RulesLintTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
-        env = {k: v for k, v in os.environ.items() if k not in CLEARED}
+        env = {k: v for k, v in os.environ.items() if not cleared(k)}
         env.update(
             HOME=str(self.root / "home"),
             DUTY_CONFIG_USER=str(self.root / "no-user.toml"),

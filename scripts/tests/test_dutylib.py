@@ -87,6 +87,37 @@ class DutylibConfigTest(unittest.TestCase):
         self.assertTrue(dutylib.ssl_context(_Cfg()).check_hostname)
 
 
+class RunMetaTest(unittest.TestCase):
+    """meta.txt прогона tab-run.sh читается одним помощником для хука и runs-web."""
+
+    def test_started_ms_and_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            self.assertEqual(dutylib.read_meta(run_dir), {})
+            self.assertEqual(dutylib.run_started_ms(run_dir), 0)
+            (run_dir / "meta.txt").write_text(
+                "cwd: C:/x\nstarted_ms: 1700000000123\npid: 42\nшум\n",
+                encoding="utf-8",
+            )
+            meta = dutylib.read_meta(run_dir)
+            self.assertEqual((meta["cwd"], meta["pid"]), ("C:/x", "42"))
+            self.assertEqual(dutylib.run_started_ms(run_dir), 1700000000123)
+            (run_dir / "meta.txt").write_text("started_ms: ²\n", encoding="utf-8")
+            self.assertEqual(dutylib.run_started_ms(run_dir), 0)
+            self.assertFalse(dutylib.tab_run_alive(run_dir))
+
+    def test_broken_byte_keeps_keys(self) -> None:
+        # Испорченный байт не лишает хук ключей: runs-web.py показывает тот же meta.txt.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "meta.txt").write_bytes(
+                b"cwd: /a\xff\nstarted_ms: 1700000000123\npid: 42\n"
+            )
+            meta = dutylib.read_meta(run_dir)
+            self.assertEqual((meta["started_ms"], meta["pid"]), ("1700000000123", "42"))
+            self.assertEqual(dutylib.run_started_ms(run_dir, meta), 1700000000123)
+
+
 class TaskFinishedTest(unittest.TestCase):
     """Признак завершения задачи по строке «Шаг:» в state.md — один на плагин."""
 
@@ -138,6 +169,50 @@ class TaskFinishedTest(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(r.returncode, 1)
+
+
+class ContainerMountsTest(unittest.TestCase):
+    """Каталог, смонтированный в работающий контейнер, считается открытым процессом.
+
+    Процессы контейнера rootless Docker чужого uid в `/proc` не читаются.
+    """
+
+    def with_docker(self, script: str):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        bin_dir = Path(tmp.name) / "bin"
+        bin_dir.mkdir()
+        stub = bin_dir / "docker"
+        stub.write_text("#!/bin/sh\n" + script + "\n", encoding="utf-8")
+        stub.chmod(0o755)
+        patcher = mock.patch.dict(
+            os.environ, {"PATH": f"{bin_dir}{os.pathsep}/usr/bin:/bin"}
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_mount_of_running_container_marks_top_live(self) -> None:
+        self.with_docker(
+            'case $1 in ps) echo abc ;; inspect) printf "/data/results/run-1/runs/x\\n/proc\\n" ;; esac'
+        )
+        self.assertEqual(
+            dutylib.container_mounts(),
+            [Path("/data/results/run-1/runs/x"), Path("/proc")],
+        )
+        index = dutylib.open_paths()
+        self.assertIn(Path("/data/results/run-1"), index)
+        self.assertIn(
+            "открыт файл процесса",
+            dutylib.live_reason(Path("/data/results/run-1"), index),
+        )
+
+    def test_no_containers_or_no_docker(self) -> None:
+        self.with_docker("exit 0")
+        self.assertEqual(dutylib.container_mounts(), [])
+        self.with_docker("exit 1")
+        self.assertEqual(dutylib.container_mounts(), [])
+        with mock.patch.dict(os.environ, {"PATH": "/nonexistent"}):
+            self.assertEqual(dutylib.container_mounts(), [])
 
 
 if __name__ == "__main__":

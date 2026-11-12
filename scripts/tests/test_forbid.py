@@ -72,6 +72,11 @@ CASES: dict[str, tuple[list[str], list[str]]] = {
             "ip link set tun0 down",
             "echo ok && wg-quick up wg0",
             "resolvectl dns eth0 1.1.1.1",
+            "resolvectl domain eth0 example.org",
+            "resolvectl revert eth0",
+            "resolvectl flush-caches",
+            "resolvectl -i eth0 dns eth0 1.1.1.1",
+            "resolvectl",
             "openvpn --config x.ovpn",
         ],
         [
@@ -83,6 +88,12 @@ CASES: dict[str, tuple[list[str], list[str]]] = {
             "systemctl --no-pager status awg-quick@amn0",
             "systemctl -n 50 status awg-quick@amn0",
             "systemctl -o cat --lines 5 status awg-quick@amn0",
+            "resolvectl status",
+            "resolvectl status eth0",
+            "resolvectl statistics",
+            "resolvectl query example.org",
+            "resolvectl -i eth0 query example.org",
+            "resolvectl --no-pager status",
             "ip addr show tun0",
             "ip link show",
             "git commit -m 'nmcli и awg в сообщении'",
@@ -487,6 +498,95 @@ class ForbidTest(unittest.TestCase):
         ):
             done = self.run_hook(payload, "worker")
             self.assertEqual((done.returncode, done.stdout), (0, ""))
+
+
+class RmResultsTest(unittest.TestCase):
+    """Ручной `rm -r` в paths.results при живом каталоге (live_reason) отвергается."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name).resolve()
+        self.results = base / "results"
+        self.live = self.results / "live-task"
+        self.idle = self.results / "idle-run"
+        self.live.mkdir(parents=True)
+        self.idle.mkdir()
+        (self.live / "brief.md").write_text("# Задача\n", encoding="utf-8")
+        (self.live / "state.md").write_text("Шаг: 2 — идёт\n", encoding="utf-8")
+        self.outside = base / "elsewhere"
+        self.outside.mkdir()
+        self.cfg = forbid.Settings(results=str(self.results), cwd=str(base))
+
+    def check(self, command: str) -> str | None:
+        return forbid.check(command, self.cfg)
+
+    def test_denied_while_live(self) -> None:
+        for flags in ("-r", "-rf", "-fr", "-R", "-Rf", "-f -r", "--recursive", "-vrf"):
+            with self.subTest(flags=flags):
+                found = self.check(f"rm {flags} {self.live}")
+                self.assertIsNotNone(found)
+                assert found is not None
+                self.assertTrue(found.startswith("rm-results|"), found)
+
+    def test_denied_inside_live_task_and_by_relative_path(self) -> None:
+        self.assertIsNotNone(self.check(f"rm -rf {self.live}/wt/x"))
+        self.cfg.cwd = str(self.results)
+        self.assertIsNotNone(self.check("rm -rf live-task"))
+        self.assertIsNotNone(self.check("rm -rf live-*"))
+        self.assertIsNotNone(self.check(f"sudo rm -rf {self.results}"))
+        self.assertIsNotNone(self.check(f"bash -c 'rm -rf {self.live}'"))
+
+    def test_cd_in_command_changes_base(self) -> None:
+        base = self.results.parent
+        self.assertIsNotNone(self.check("cd results && rm -rf live-task"))
+        self.assertIsNotNone(self.check(f"pushd {self.results}; rm -rf live-task"))
+        self.assertIsNotNone(
+            self.check("cd results; cd live-task; rm -rf ../live-task")
+        )
+        self.assertIsNone(self.check("cd results && cd .. && rm -rf live-task"))
+        self.assertIsNone(self.check(f"cd {self.outside} && rm -rf live-task"))
+        self.assertIsNone(self.check("cd /tmp && rm -rf x"))
+        self.assertIsNone(self.check("cd; rm -rf x"))
+        self.assertIsNone(self.check(f"cd {base} && rm -rf elsewhere"))
+
+    def test_cd_unknown_denies_relative_while_live(self) -> None:
+        for command in (
+            "cd $TARGET && rm -rf x",
+            "cd $(pwd) && rm -rf x",
+            "cd - && rm -rf x",
+            "cd results; popd; rm -rf x",
+            "pushd; rm -rf x",
+        ):
+            with self.subTest(command=command):
+                found = self.check(command)
+                assert found is not None
+                self.assertTrue(found.startswith("rm-results|"), found)
+        self.assertIsNone(self.check("cd $TARGET && rm -rf /tmp/duty-nonexistent-dir"))
+        (self.live / "state.md").write_text("Шаг: завершено\n", encoding="utf-8")
+        self.assertIsNone(self.check("cd $TARGET && rm -rf x"))
+
+    def test_text_names_busy_and_cleanup(self) -> None:
+        found = self.check(f"rm -rf {self.live}")
+        assert found is not None
+        text = forbid.deny_text(found, self.cfg)
+        self.assertIn("live-task", text)
+        self.assertIn("/duty:cleanup", text)
+
+    def test_allowed_without_live(self) -> None:
+        self.assertIsNone(self.check(f"rm -rf {self.idle}"))
+        (self.live / "state.md").write_text("Шаг: завершено\n", encoding="utf-8")
+        self.assertIsNone(self.check(f"rm -rf {self.live}"))
+
+    def test_allowed_non_recursive_and_outside(self) -> None:
+        self.assertIsNone(self.check(f"rm {self.live}/brief.md"))
+        self.assertIsNone(self.check(f"rm -f {self.live}/state.md"))
+        self.assertIsNone(self.check(f"rm -rf {self.outside}"))
+        self.assertIsNone(self.check("rm -rf /tmp/duty-nonexistent-dir"))
+
+    def test_off_without_results(self) -> None:
+        self.cfg.results = ""
+        self.assertIsNone(self.check(f"rm -rf {self.live}"))
 
 
 class ConfigTest(unittest.TestCase):

@@ -203,8 +203,16 @@ class ExcludeWorktreeTest(unittest.TestCase):
         return video
 
     def video_row(self, out: str, video: Path) -> str:
+        """Строка видео; у идущего прогона одна строка на каталог верхнего уровня results/."""
         rel = str(video.relative_to(self.base))
-        rows = [line for line in out.splitlines() if rel in line]
+        rows = [line for line in out.splitlines() if f"| {rel} |" in line]
+        if not rows:
+            top = str(video.relative_to(self.base / "results").parents[-2])
+            rows = [
+                line
+                for line in out.splitlines()
+                if f"| results/{top} |" in line and "видео и трасс: " in line
+            ]
         self.assertEqual(len(rows), 1, out)
         return rows[0]
 
@@ -235,6 +243,19 @@ class ExcludeWorktreeTest(unittest.TestCase):
         row = self.video_row(self.candidates(), video)
         self.assertIn("оставлено: прогон идёт", row)
         self.assertNotIn("rm -f", row)
+
+    def test_live_run_media_collapse_to_one_row(self) -> None:
+        video = self.passed_video("20261106-004455-qms-c")
+        second = video.parents[1] / "t2" / "video.webm"
+        second.parent.mkdir()
+        second.write_bytes(b"v")
+        trace = video.parents[1] / "t2" / "trace.zip"
+        trace.write_bytes(b"t")
+        self.spawn_writer(video.parents[2] / "log.txt")
+        out = self.candidates()
+        self.assertEqual(out.count("видео и трасс: "), 1, out)
+        self.assertIn("видео и трасс: 3", self.video_row(out, video))
+        self.assertNotIn("video.webm", out)
 
     def test_video_in_unfinished_task_is_kept(self) -> None:
         video = self.passed_video("task-a")

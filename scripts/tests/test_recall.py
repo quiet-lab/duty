@@ -117,6 +117,11 @@ class RecallTest(unittest.TestCase):
                 "<system-reminder>heartbeat напоминание</system-reminder>",
                 "<cross-session-message>heartbeat от агента</cross-session-message>",
                 "<bash-stdout>heartbeat</bash-stdout>",
+                "done rc=0 /home/u/results/x/runs/heartbeat-run",
+                (
+                    "субагент alpha остановился без итога: возобнови (SendMessage to=a1) "
+                    "или перезапусти; его последние слова: heartbeat"
+                ),
             )
         ]
         flagged = [
@@ -183,9 +188,86 @@ class RecallTest(unittest.TestCase):
         docs = out.split("## Документы")[1].split("## История git")[0]
         self.assertIn("docs/open-questions/q.md", docs)
         self.assertIn("todo.local.md", docs)
-        self.assertNotIn("0001-channel.md", docs)
+        # Разделы независимы: файл записи решений виден и в «Документах» (docs/).
+        self.assertIn("0001-channel.md", docs)
+        self.assertIn("0001-channel.md", decisions)
         history = self.run_recall("--keyword", "Heartbeat").split("## История git")[1]
         self.assertIn("добавлен heartbeat", history)
+
+    def raw_recall(self, env: dict[str, str], *extra: str) -> str:
+        done = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(SCRIPT),
+                "тема",
+                *extra,
+                "--root",
+                str(self.root),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout
+
+    def test_git_history_is_limited_by_time(self) -> None:
+        old = "2020-01-01T00:00:00"
+        write(self.root / "docs/old.md", "zzold\n")
+        env = dict(self.env, GIT_AUTHOR_DATE=old, GIT_COMMITTER_DATE=old)
+        subprocess.run(
+            ["git", "add", "docs/old.md"], cwd=self.root, env=env, check=True
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "старое zzold"],
+            cwd=self.root,
+            env=env,
+            check=True,
+        )
+        git_part = self.run_recall("--keyword", "zzold").split("## История git")[1]
+        git_part = git_part.split("## Реплики")[0]
+        self.assertNotIn("старое zzold", git_part)
+        self.assertIn("Совпадений нет.", git_part)
+
+    def test_file_limit_keeps_best_ranked_not_first_by_path(self) -> None:
+        for i in range(45):
+            write(self.root / f"docs/open-questions/f{i:02d}.md", "heartbeat\n")
+        write(self.root / "docs/zz-best.md", "heartbeat\n" * 5)
+        docs = self.run_recall("--keyword", "heartbeat").split("## Документы")[1]
+        docs = docs.split("## История git")[0]
+        self.assertIn("docs/zz-best.md", docs)
+        self.assertEqual(docs.count("\n- `"), 40)
+        self.assertRegex(docs, r"… ещё файлов: \d+")
+        self.assertLess(docs.index("zz-best.md"), docs.index("f00.md"))
+
+    def test_transcripts_of_root_subdirectories_are_found(self) -> None:
+        home = Path(self.env["HOME"])
+        projects = home / ".claude" / "projects"
+        prefix = str(self.root).replace("/", "-")
+
+        def session(name: str, cwd: str, text: str) -> None:
+            row = {
+                "type": "user",
+                "cwd": cwd,
+                "timestamp": "2026-11-07T10:00:00.000Z",
+                "message": {"role": "user", "content": text},
+            }
+            write(
+                projects / name / "s.jsonl", json.dumps(row, ensure_ascii=False) + "\n"
+            )
+
+        session(prefix, str(self.root), "heartbeat из корня")
+        session(prefix + "-wt-a", str(self.root / "wt/a"), "heartbeat из worktree")
+        session(prefix + "-x", str(self.root) + "-x", "heartbeat соседнего проекта")
+        replies = self.raw_recall(self.env, "--keyword", "heartbeat").split(
+            "## Реплики пользователя"
+        )[1]
+        self.assertIn("из корня", replies)
+        self.assertIn("из worktree", replies)
+        self.assertNotIn("соседнего", replies)
 
     def test_replies_only_string_user_newest_first(self) -> None:
         out = self.run_recall("--keyword", "heartbeat")
@@ -205,7 +287,16 @@ class RecallTest(unittest.TestCase):
         replies = self.run_recall("--keyword", "heartbeat").split(
             "## Реплики пользователя"
         )[1]
-        for marker in ("отчёт", "вывод", "напоминание", "от агента", "мета", "боков"):
+        for marker in (
+            "отчёт",
+            "вывод",
+            "напоминание",
+            "от агента",
+            "мета",
+            "боков",
+            "done rc",
+            "остановился",
+        ):
             self.assertNotIn(marker, replies)
         self.assertEqual(replies.count("- 2026-"), 1)
 

@@ -193,7 +193,46 @@ class GuardTest(unittest.TestCase):
             },
         )
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
-        self.assertEqual(list(self.subtasks.iterdir()), [])
+        self.assertEqual([p.name for p in self.subtasks.iterdir()], ["a1.started"])
+
+    def test_agent_with_tag_writes_started_and_stop_names_it(self) -> None:
+        r = self.hook(
+            "pre-tool",
+            {
+                "tool_name": "Agent",
+                "tool_input": {
+                    "prompt": "Подзадача: a2\n" + GATE_LINES + "Сделай.",
+                    "subagent_type": "general-purpose",
+                },
+            },
+        )
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        record = json.loads((self.subtasks / "a2.started").read_text(encoding="utf-8"))
+        self.assertIsInstance(record["at_ms"], int)
+        # Запущена без итога и не остановлена: ход не блокируется.
+        r = self.hook("stop", {})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        # Рядом остановилась другая подзадача: причина называет и запущенную.
+        self.write_stopped("a1")
+        r = self.hook("stop", {})
+        reason = json.loads(r.stdout)["reason"]
+        self.assertIn("a1", reason)
+        self.assertIn("Запущены и ещё без итога: a2", reason)
+        # Итог записан: подзадача из перечня запущенных уходит.
+        (self.subtasks / "a2.done").write_text("итог\n", encoding="utf-8")
+        reason = json.loads(self.hook("stop", {}).stdout)["reason"]
+        self.assertNotIn("Запущены", reason)
+
+    def test_subagent_stop_marks_registered(self) -> None:
+        transcript = self.transcript("Подзадача: a1\nСделай.")
+        r = self.hook("subagent-stop", self.stop_data(agent_transcript_path=transcript))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        record = json.loads((self.subtasks / "a1.stopped").read_text(encoding="utf-8"))
+        self.assertIs(record["registered"], False)
+        (self.subtasks / "a1.started").write_text("{}", encoding="utf-8")
+        self.hook("subagent-stop", self.stop_data(agent_transcript_path=transcript))
+        record = json.loads((self.subtasks / "a1.stopped").read_text(encoding="utf-8"))
+        self.assertIs(record["registered"], True)
 
     def test_agent_with_bad_tag_name(self) -> None:
         r = self.hook(
@@ -782,6 +821,41 @@ class GuardTest(unittest.TestCase):
             shutil.which("herdr", path=self.env["PATH"]),
             str(self.root / "bin" / "herdr"),
         )
+
+
+class UncoveredTest(unittest.TestCase):
+    """signals.py вызывается, только если прогоны покрыли не все остановки."""
+
+    def setUp(self) -> None:
+        import importlib.util
+        from unittest import mock
+
+        spec = importlib.util.spec_from_file_location("task_guard", HOOK)
+        assert spec and spec.loader
+        self.tg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.tg)
+        self.mock = mock
+        self.task = Path("/нет")
+
+    def check(self, runs: list[tuple[str, int]], expect_signals: bool) -> list:
+        pending = [("a1", "id-1", 100), ("a2", "id-2", 200)]
+        with (
+            self.mock.patch.object(
+                self.tg, "stopped_without_result", return_value=pending
+            ),
+            self.mock.patch.object(self.tg, "run_waits", return_value=runs),
+            self.mock.patch.object(self.tg, "signal_waits", return_value=[]) as sig,
+        ):
+            left = self.tg.uncovered(self.task)
+        self.assertEqual(sig.called, expect_signals)
+        return left
+
+    def test_runs_cover_all_skip_signals(self) -> None:
+        self.assertEqual(self.check([("прогон r1", 300)], False), [])
+
+    def test_partial_cover_asks_signals(self) -> None:
+        left = self.check([("прогон r1", 150)], True)
+        self.assertEqual([name for name, _, _ in left], ["a2"])
 
 
 if __name__ == "__main__":

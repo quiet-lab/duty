@@ -67,8 +67,9 @@ def build(
 class WeekStatsTest(unittest.TestCase):
     def test_jenkins_walk_is_parallel(self) -> None:
         # Сборки двух заданий запрашиваются одновременно: двойник отвечает
-        # на запрос сборок, только когда пришли оба (барьер; предел — предохранитель).
-        barrier = threading.Barrier(2, timeout=20)
+        # на запрос сборок, только когда пришли оба (барьер без срока: обход
+        # по одному зависает, его ловит внешний предел прогона целиком).
+        barrier = threading.Barrier(2)
         folders = {
             "http://j/": {"jobs": [{"name": "d", "url": "http://j/d/"}]},
             "http://j/d/": {
@@ -80,12 +81,16 @@ class WeekStatsTest(unittest.TestCase):
             },
         }
 
+        requests: list[str] = []
+
         def fake_jenkins(url: str, env: dict) -> dict | None:
             base = url.split("/api/json")[0] + "/"
-            if "allBuilds" not in url:
-                return folders.get(base, {"_class": "job"})
+            requests.append(base)
+            if base in folders:
+                return folders[base]
+            # Лист: сборки приходят в том же ответе, что и признак задания.
             barrier.wait()
-            return {"allBuilds": [{"timestamp": 5, "number": 1}]}
+            return {"_class": "job", "allBuilds": [{"timestamp": 5, "number": 1}]}
 
         old = ws.gates.jenkins
         ws.gates.jenkins = fake_jenkins
@@ -95,6 +100,12 @@ class WeekStatsTest(unittest.TestCase):
         self.addCleanup(setattr, ws.gates, "config", old_config)
         builds = ws.jenkins_builds({"JENKINS_URL": "http://j/"}, 0)
         self.assertEqual([b["job"] for b in builds], ["d/a", "d/b"])
+        # Корень, папка и по одному запросу на каждый из двух листьев;
+        # проверочное задание не запрашивается.
+        self.assertEqual(
+            sorted(requests),
+            ["http://j/", "http://j/d/", "http://j/d/a/", "http://j/d/b/"],
+        )
 
     def test_busy_merges_overlaps(self) -> None:
         builds = [

@@ -1,4 +1,5 @@
-"""Общие помощники сценариев плагина duty и расширений `.duty/*.d/`.
+"""Общие помощники сценариев плагина duty и расширений .duty/*.d/.
+" 2>/dev/null; exec python3 -I "$0" "$@" # файл, переданный оболочке (bash файл.py), запускается python3
 
 Сценарии плагина запускаются с `python3 -I`, поэтому модуль импортируется
 по пути, как `gates` в `branches.py`:
@@ -196,6 +197,43 @@ def _proc_paths(with_fds: bool) -> tuple[list[Path], list[Path]]:
     return cwds, files
 
 
+def container_mounts() -> list[Path]:
+    """Источники монтирования работающих контейнеров (`docker ps` и `docker inspect`); пусто — docker нет или контейнеров нет.
+
+    Процессы контейнера rootless Docker принадлежат uid из подчинённого
+    диапазона: `/proc/<pid>/{cwd,fd}` их не отдаёт, и серия стенда,
+    пишущая в смонтированный каталог результатов, в обходе `/proc` не видна.
+    """
+    try:
+        ids = subprocess.run(
+            ["docker", "ps", "-q"],
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+        if ids.returncode != 0 or not ids.stdout.split():
+            return []
+        info = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                "{{range .Mounts}}{{println .Source}}{{end}}",
+                *ids.stdout.split(),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError:
+        return []
+    if info.returncode != 0:
+        return []
+    return [Path(row) for row in info.stdout.splitlines() if row.startswith("/")]
+
+
 def cwd_index() -> dict[Path, Path]:
     """Индекс текущих каталогов процессов: один обход `/proc` на запуск."""
     return _with_ancestors(_proc_paths(False)[0])
@@ -211,7 +249,9 @@ def open_paths() -> dict[Path, Path]:
 
     Собирается один раз на перечень: обход `/proc` на каждый путь дорог,
     поиск каталога — по индексу (`_with_ancestors`).
-    Процессы других пользователей пропускаются (нет прав на чтение).
+    Процессы других пользователей пропускаются (нет прав на чтение);
+    их место для контейнеров rootless Docker занимают источники
+    монтирования работающих контейнеров (`container_mounts`).
     """
     return proc_indexes()[1]
 
@@ -219,7 +259,7 @@ def open_paths() -> dict[Path, Path]:
 def proc_indexes() -> tuple[dict[Path, Path], dict[Path, Path]]:
     """Индексы `cwd_index` и `open_paths` за один обход `/proc`."""
     cwds, files = _proc_paths(True)
-    return _with_ancestors(cwds), _with_ancestors([*cwds, *files])
+    return _with_ancestors(cwds), _with_ancestors([*cwds, *files, *container_mounts()])
 
 
 # Строка шага state.md: «Шаг: …» или «**Шаг:** …» (как `task_step` в dispatch.sh).
@@ -243,18 +283,47 @@ def task_finished(state: str) -> bool:
     return bool(match and _STEP_FINISHED.fullmatch(match.group(1).strip()))
 
 
-_PID_LINE = re.compile(r"^pid: (\d+)$", re.MULTILINE)
+def parse_meta(text: str) -> dict[str, str]:
+    """Строки `ключ: значение` из meta.txt прогона tab-run.sh; прочие строки пропускаются."""
+    meta: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        key = key.strip()
+        if sep and key:
+            meta[key] = value.strip()
+    return meta
 
 
-def tab_run_alive(run_dir: Path) -> bool:
-    """Прогон tab-run.sh без `done`, чей cmd.sh ещё работает (PID из meta.txt сверяется с командной строкой)."""
+def read_meta(run_dir: Path) -> dict[str, str]:
+    """meta.txt прогона tab-run.sh; испорченные байты заменяются; пустой словарь — файла нет или он не читается."""
+    try:
+        text = (run_dir / "meta.txt").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    return parse_meta(text)
+
+
+def run_started_ms(run_dir: Path, meta: dict[str, str] | None = None) -> int:
+    """Начало прогона tab-run.sh: строка `started_ms` в meta.txt; 0 — не прочитать.
+
+    meta — уже прочитанный `read_meta(run_dir)`, чтобы не читать файл повторно.
+    """
+    value = (read_meta(run_dir) if meta is None else meta).get("started_ms", "")
+    return int(value) if value.isascii() and value.isdigit() else 0
+
+
+def tab_run_alive(run_dir: Path, meta: dict[str, str] | None = None) -> bool:
+    """Прогон tab-run.sh без `done`, чей cmd.sh ещё работает (PID из meta.txt сверяется с командной строкой).
+
+    meta — уже прочитанный `read_meta(run_dir)`, чтобы не читать файл повторно.
+    """
     if (run_dir / "done").exists():
         return False
+    pid = (read_meta(run_dir) if meta is None else meta).get("pid", "")
+    if not (pid.isascii() and pid.isdigit()):
+        return False
     try:
-        match = _PID_LINE.search((run_dir / "meta.txt").read_text(encoding="utf-8"))
-        if not match:
-            return False
-        cmdline = Path(f"/proc/{match.group(1)}/cmdline").read_bytes()
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError:
         return False
     return str(run_dir / "cmd.sh").encode() in cmdline

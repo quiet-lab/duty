@@ -15,13 +15,16 @@
 
 - `network` — переключение туннеля и сети станции; чтение состояния туннеля
   из перечня без пароля `~/.claude/CLAUDE.md`, «Повышение привилегий»
-  (`NETWORK_READS`), разрешено;
+  (`NETWORK_READS`), `resolvectl status|query|statistics`, разрешено;
 - `kill` — завершение процессов по образцу;
 - `git` — `git add -A/-u`, подкоманды записи `git stash`, принудительный push,
   push в защищённые ветви (`git.protected`);
 - `herdr` — вкладки и ввод в панели в обход `scripts/tab-run.sh`;
 - `secret` — вывод содержимого каталогов секретов (`secrets.dirs`), печать
   окружения и секретов, пароль литералом в `curl -u` и `sshpass -p`;
+- `rm` — ручной `rm -r` (и `-rf`, `-fr`, `-R`, `--recursive`) в `paths.results`,
+  пока `dutylib.live_reason` каталога задачи или прогона непуста (общая
+  проверка с навыком `cleanup`); уборка — `/duty:cleanup`;
 - `rule` — свои правила проекта (`[[forbid.rules]]`).
 
 Причина отказа называет запрет и правило, но не повторяет команду: в ней
@@ -35,7 +38,7 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 MAX_DEPTH = 4
@@ -86,6 +89,12 @@ DENY = {
         "(tab create, pane run, pane send): agents/worker.md, п. 4 — "
         "вкладка команды только через scripts/tab-run.sh. "
         "Вместо этого: bash <плагин>/scripts/tab-run.sh <имя> -- <команда>."
+    ),
+    "rm-results": (
+        "Запрещён ручной rm -r в каталоге результатов (paths.results), пока "
+        "там есть живое: {live}. Уборка — /duty:cleanup (перечень с размерами, "
+        "затем apply): навык проверяет то же признаки живого и не трогает "
+        "идущие задачи, прогоны и открытые файлы процессов."
     ),
     "secret-file": (
         "Запрещён вывод содержимого файлов каталогов секретов (secrets.dirs: "
@@ -138,6 +147,21 @@ NETWORK_READS = {
     ("awg", ("show", "amn0", "endpoints")),
     ("awg", ("show", "amn0", "latest-handshakes")),
     ("amn-zones-update", ("--count",)),
+}
+# Чтение resolvectl: подкоманды без изменения настроек и ключи со значением,
+# которые стоят до подкоманды (форма `--ключ=значение` — одно слово).
+RESOLVECTL_READS = {"status", "query", "statistics"}
+RESOLVECTL_VALUE_FLAGS = {
+    "-i",
+    "--interface",
+    "-t",
+    "--type",
+    "-c",
+    "--class",
+    "-p",
+    "--protocol",
+    "-H",
+    "--host",
 }
 # Подкоманды git stash, которые меняют общий стек; `git stash` без подкоманды
 # и с ключом вместо неё (`-m`, `-p`, `--`) — тот же push.
@@ -283,6 +307,10 @@ class Settings:
     forbid_stash: bool = True
     network: bool = True
     herdr: bool = True
+    results: str = ""  # paths.results; пусто — проверка rm -r выключена
+    cwd: str | None = (
+        ""  # None: каталог после `cd` вычислить нельзя; каталог вызова хука: от него считаются относительные пути rm
+    )
     secret_dirs: list[str] = field(default_factory=list)
     secret_res: list["re.Pattern[str]"] = field(default_factory=list)
     rules: list[tuple[tuple[str, ...], str]] = field(default_factory=list)
@@ -297,7 +325,9 @@ def settings_from_config(cfg: object) -> Settings:
         words = tuple(w for w in rule.get("words", []) if isinstance(w, str))
         if words:
             rules.append((words, str(rule.get("reason", ""))))
+    results = get("paths.results", "")
     return Settings(
+        results=str(results) if results else "",
         protected=set(get("git.protected", ["main", "master"])),
         forbid_add_all=bool(get("git.forbid_add_all", True)),
         forbid_stash=bool(get("git.forbid_stash", True)),
@@ -335,7 +365,9 @@ def load_settings(cwd: str | None = None) -> Settings:
                 "умолчаниями:\n" + "\n".join(cfg.findings),
                 file=sys.stderr,
             )
-        return settings_from_config(cfg)
+        settings = settings_from_config(cfg)
+        settings.cwd = cwd or os.getcwd()
+        return settings
     except Exception as error:
         if type(error).__name__ == "ConfigError":
             raise ConfigUnreadable(str(error)) from error
@@ -348,6 +380,8 @@ def load_settings(cwd: str | None = None) -> Settings:
 
 def deny_text(key: str, cfg: Settings) -> str:
     """Текст отказа: подстановка актуальных перечней из конфигурации."""
+    if key.startswith("rm-results|"):
+        return DENY["rm-results"].replace("{live}", key.partition("|")[2])
     if key.startswith("rule-"):
         reason = cfg.rules[int(key[5:])][1]
         return f"Запрещено: {reason} — {RULE_NOTE}."
@@ -620,8 +654,23 @@ def systemctl_status(args: list[str]) -> bool:
     return i < len(args) and args[i] == "status"
 
 
+def resolvectl_read(args: list[str]) -> bool:
+    """`resolvectl [ключи] status|query|statistics …` — чтение состояния DNS.
+
+    Решение пользователя (RP-2233, комментарий 16832): `resolvectl` запускается
+    напрямую без sudo, чтение разрешено; `dns`, `domain`, `revert`, `flush-caches`
+    и прочие подкоманды остаются запрещёнными.
+    """
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in RESOLVECTL_VALUE_FLAGS else 1
+    return i < len(args) and args[i] in RESOLVECTL_READS
+
+
 def check_network(name: str, args: list[str]) -> str | None:
     if (name, tuple(args)) in NETWORK_READS:
+        return None
+    if name == "resolvectl" and resolvectl_read(args):
         return None
     if name in NETWORK_COMMANDS:
         return "network"
@@ -673,6 +722,90 @@ def check_kill(name: str, args: list[Word]) -> str | None:
             i += 2 if texts[i] in XARGS_VALUE_FLAGS else 1
         if i < len(texts) and base(texts[i]) in KILL_COMMANDS | {"kill"}:
             return "kill"
+    return None
+
+
+def _dutylib() -> object:
+    """Модуль `scripts/dutylib.py` (под `python3 -I` каталог сценария не в sys.path)."""
+    module = sys.modules.get("dutylib")
+    if module is None:
+        path = PLUGIN / "scripts" / "dutylib.py"
+        spec = importlib.util.spec_from_file_location("dutylib", path)
+        if spec is None or spec.loader is None:
+            raise ImportError(str(path))
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["dutylib"] = module
+        spec.loader.exec_module(module)
+    return module
+
+
+def rm_recursive(texts: list[str]) -> bool:
+    """В аргументах rm есть рекурсивный ключ: -r, -R, --recursive, в любой связке коротких."""
+    for t in texts:
+        if t == "--":
+            break
+        if t == "--recursive" or re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*", t):
+            return True
+    return False
+
+
+def rm_targets(args: list[Word], cwd: str | None) -> list[Path]:
+    """Пути-цели rm без ключей: `~` и `$HOME` раскрыты, шаблон усечён до каталога перед ним.
+
+    Слово с прочей подстановкой пропускается: его значение до запуска неизвестно.
+    Относительная цель при неизвестном `cwd` (None) даёт корень `/`: он предок любого
+    каталога результатов, то есть проверяются все живые каталоги.
+    """
+    out: list[Path] = []
+    options = True
+    for word in args:
+        text = word.text
+        if options and text == "--":
+            options = False
+        elif options and text.startswith("-") and len(text) > 1:
+            continue
+        elif not word.subs and set(word.vars) <= {"HOME"}:
+            text = os.path.expanduser(text)
+            text = text.replace("${HOME}", str(Path.home())).replace(
+                "$HOME", str(Path.home())
+            )
+            parts = []
+            for part in text.split("/"):
+                if re.search(r"[*?\[]", part):
+                    break
+                parts.append(part)
+            rel = "/".join(parts) or "."
+            if cwd is None and not rel.startswith("/"):
+                out.append(Path("/"))
+                continue
+            joined = os.path.join(cwd or "/", rel)
+            out.append(Path(os.path.normpath(joined)))
+    return out
+
+
+def check_rm(name: str, args: list[Word], cfg: Settings) -> str | None:
+    """`rm -r` внутри `paths.results` при живом каталоге: ключ `rm-results|<каталог>: <причина>`."""
+    if name != "rm" or not cfg.results or not rm_recursive([a.text for a in args]):
+        return None
+    results = Path(os.path.realpath(cfg.results))
+    lib = _dutylib()
+    opened = lib.open_paths()  # type: ignore[attr-defined]
+    for target in rm_targets(args, cfg.cwd):
+        target = Path(os.path.realpath(target))
+        if target.is_relative_to(results) and target != results:
+            tops = [results / target.relative_to(results).parts[0]]
+        elif results.is_relative_to(target):  # сам каталог результатов или его предок
+            tops = (
+                sorted(p for p in results.iterdir() if p.is_dir())
+                if results.is_dir()
+                else []
+            )
+        else:
+            continue
+        for top in tops:
+            why = lib.live_reason(top.resolve(), opened)  # type: ignore[attr-defined]
+            if why:
+                return f"rm-results|{top}: {why}"
     return None
 
 
@@ -937,6 +1070,25 @@ def inner_commands(name: str, args: list[Word]) -> list[str]:
     return []
 
 
+def next_cwd(name: str, args: list[Word], cwd: str | None) -> str | None:
+    """Каталог после `cd`/`pushd`/`popd`; None, если его вычислить нельзя."""
+    if name == "popd":
+        return None
+    words = [a for a in args if not (a.text.startswith("-") and len(a.text) > 1)]
+    if not words:
+        return None if name == "pushd" else str(Path.home())
+    word = words[0]
+    if word.subs or not set(word.vars) <= {"HOME"} or word.text == "-":
+        return None
+    text = os.path.expanduser(word.text)
+    text = text.replace("${HOME}", str(Path.home())).replace("$HOME", str(Path.home()))
+    if text.startswith("/"):
+        return os.path.normpath(text)
+    if cwd is None:
+        return None
+    return os.path.normpath(os.path.join(cwd or "/", text))
+
+
 def shell_quote(text: str) -> str:
     return "'" + text.replace("'", "'\\''") + "'"
 
@@ -947,7 +1099,9 @@ def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
     if depth > MAX_DEPTH:
         return None
     commands = parse(src)
+    cwd = cfg.cwd
     for index, cmd in enumerate(commands):
+        cfg = replace(cfg, cwd=cwd)
         for word in cmd.words + [w for _, w in cmd.redirs]:
             for inner in word.subs:
                 found = check(inner, cfg, depth + 1)
@@ -957,6 +1111,8 @@ def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
         if not name:
             continue
         texts = [a.text for a in args]
+        if name in {"cd", "pushd", "popd"} and not cmd.pipe_out:
+            cwd = next_cwd(name, args, cwd)
         next_name = None
         if cmd.pipe_out and index + 1 < len(commands):
             last = index + 1  # конец конвейера: до экрана доходит его вывод
@@ -972,6 +1128,7 @@ def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
         found = (
             (check_network(name, texts) if cfg.network else None)
             or check_kill(name, args)
+            or check_rm(name, args, cfg)
             or (check_git(args, cfg) if name == "git" else None)
             or (check_herdr(texts) if name == "herdr" and cfg.herdr else None)
             or check_rules(name, texts, cfg)

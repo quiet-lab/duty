@@ -105,6 +105,31 @@ class WaitDoneStallTest(unittest.TestCase):
         r = self.wait("--timeout-s", "1")
         self.assertEqual(r.returncode, 124)
 
+    def follow_state(self) -> None:
+        """Журнал с целой строкой и неоконченной; смещение — с начала журнала."""
+        self.log.write_text("ready\npartial", encoding="utf-8")
+        (self.run_dir / ".follow-off").write_text("0\n", encoding="utf-8")
+        (self.run_dir / ".follow-start").write_text(f"{int(time.time())}\n")
+
+    def test_timeout_flushes_unfinished_line(self) -> None:
+        self.follow_state()
+        r = self.wait(
+            "--log", str(self.log), "--stall-s", "5", "--timeout-s", "1", "--follow"
+        )
+        self.assertEqual(r.returncode, 124, r.stderr)
+        self.assertRegex(r.stdout, r"\d\d:\d\d:\d\d ready\n")
+        self.assertRegex(r.stdout, r"\d\d:\d\d:\d\d partial\n")
+        self.assertTrue(r.stdout.rstrip().endswith("timeout"), r.stdout)
+
+    def test_stall_keeps_offset_before_unfinished_line(self) -> None:
+        self.follow_state()
+        r = self.wait("--log", str(self.log), "--stall-s", "1", "--follow")
+        self.assertEqual(r.returncode, 125, r.stderr)
+        self.assertIn("partial", r.stdout)
+        # Смещение — за «ready\n»: после перезапуска строка печатается целиком.
+        off = (self.run_dir / ".follow-off").read_text(encoding="utf-8").strip()
+        self.assertEqual(off, str(len("ready\n")))
+
 
 if __name__ == "__main__":
     unittest.main()

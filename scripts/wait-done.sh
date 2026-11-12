@@ -80,19 +80,21 @@ fi
 # Печатает дописанные в журнал целые строки (final — и неоконченную).
 flush_log() {
     [ -n "$follow" ] || return 0
-    local size chunk line
+    local size chunk line complete persist
     [ -e "$log" ] || return 0
     size=$(stat -c %s "$log")
     (( size >= off )) || off=0
     (( size > off )) || return 0
     chunk=$(tail -c +"$(( off + 1 ))" "$log" | head -c "$(( size - off ))"; printf x)
     chunk=${chunk%x}
-    if [ -z "${1:-}" ] && [[ $chunk != *$'\n' ]]; then
-        chunk=${chunk%"${chunk##*$'\n'}"}
-    fi
+    complete=${chunk%"${chunk##*$'\n'}"}
+    [ -z "${1:-}" ] && chunk=$complete
     [ -n "$chunk" ] || return 0
+    # В .follow-off — смещение за последней целой строкой: неоконченная строка,
+    # показанная при остановке (final), после перезапуска печатается целиком.
+    persist=$(( off + $(printf '%s' "$complete" | wc -c) ))
     off=$(( off + $(printf '%s' "$chunk" | wc -c) ))
-    printf '%s\n' "$off" > "$dir/.follow-off"
+    printf '%s\n' "$persist" > "$dir/.follow-off"
     while IFS= read -r line || [ -n "$line" ]; do
         printf '%(%H:%M:%S)T %s\n' -1 "$line"
     done <<< "${chunk%$'\n'}"
@@ -150,7 +152,7 @@ while true; do
     left=
     if [ -n "$timeout_s" ]; then
         left=$(( deadline - SECONDS ))
-        (( left > 0 )) || { [ -f "$dir/done" ] && finish; echo timeout; exit 124; }
+        (( left > 0 )) || { [ -f "$dir/done" ] && finish; flush_log final; echo timeout; exit 124; }
     fi
     if [ -n "$stall_s" ]; then
         sleft=$(( last + stall_s - SECONDS ))
@@ -165,6 +167,7 @@ while true; do
         # Код больше 128 — истёк read -t; иначе поток закончился.
         if [ "$rc" -gt 128 ]; then
             [ -n "${stalling:-}" ] && continue
+            flush_log final
             echo timeout
             exit 124
         fi

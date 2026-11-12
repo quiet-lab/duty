@@ -16,6 +16,10 @@
   (поле `agent_id` есть только там) и снимает отметки подзадачи при её
   перезапуске (`Agent`: `SubagentStop` субагента на переднем плане пишет
   `.stopped` раньше `PostToolUse`, поэтому снятие — до вызова);
+- `pre-tool` при запуске подзадачи пишет отметку `subtasks/<имя>.started`;
+  `.started` без `.done` — запущена и ещё без итога (`launched_without_result`),
+  `Stop` называет такие подзадачи в причине блокировки, а `SubagentStop`
+  помечает `registered: false` в `.stopped`, если запуска не видел;
 - `post-tool` снимает отметку остановки после успешного `SendMessage`
   (возобновление): неудачная отправка отметку не теряет;
 - `subagent-stop` по метке `Подзадача: <имя>` в приглашении субагента проверяет
@@ -280,9 +284,30 @@ def pre_tool(data: dict[str, object]) -> None:
             # Перезапуск под тем же именем: прежние отметки к нему не относятся.
             for suffix in (".stopped", ".done"):
                 (subtasks(task) / f"{tag.group(1)}{suffix}").unlink(missing_ok=True)
+            mark_started(task, tag.group(1))
         elif tool_input.get("subagent_type") not in READ_ONLY_TYPES:
             has_line = TAG_LINE_RE.search(str(tool_input.get("prompt", "")))
             pre_tool_output(additionalContext=BAD_TAG if has_line else UNTAGGED)
+
+
+def mark_started(task: Path, name: str) -> None:
+    """Запуск подзадачи регистрируется отметкой `<имя>.started` со временем (мс)."""
+    directory = subtasks(task)
+    directory.mkdir(parents=True, exist_ok=True)
+    record = {"at_ms": time.time_ns() // 1_000_000}
+    (directory / f"{name}.started").write_text(json.dumps(record), encoding="utf-8")
+
+
+def launched_without_result(task: Path) -> list[str]:
+    """Запущенные подзадачи без итога `.done` (сверка `.started` с `.done`)."""
+    directory = subtasks(task)
+    if not directory.is_dir():
+        return []
+    return [
+        path.stem
+        for path in sorted(directory.glob("*.started"))
+        if not (directory / f"{path.stem}.done").exists()
+    ]
 
 
 def post_tool(data: dict[str, object]) -> None:
@@ -345,7 +370,13 @@ def subagent_stop(data: dict[str, object]) -> None:
     agent_id = str(data.get("agent_id", ""))
     last = one_line(data.get("last_assistant_message"))
     directory.mkdir(parents=True, exist_ok=True)
-    record = {"agent_id": agent_id, "last": last, "at_ms": time.time_ns() // 1_000_000}
+    record = {
+        "agent_id": agent_id,
+        "last": last,
+        "at_ms": time.time_ns() // 1_000_000,
+        # Остановка подзадачи, запуск которой хук не видел (нет `.started`).
+        "registered": (directory / f"{name}.started").exists(),
+    }
     (directory / f"{name}.stopped").write_text(
         json.dumps(record, ensure_ascii=False), encoding="utf-8"
     )
@@ -377,12 +408,12 @@ def stopped_without_result(task: Path) -> list[tuple[str, str, int]]:
     return pending
 
 
-def run_alive(run_dir: Path) -> bool:
-    """Прогон без `done`, чей cmd.sh ещё работает; реализация — `dutylib.tab_run_alive`."""
+def dutylib_module():
+    """Модуль scripts/dutylib.py плагина: прогоны tab-run.sh и их meta.txt."""
     sys.path.insert(0, str(SCRIPTS))
     import dutylib
 
-    return dutylib.tab_run_alive(run_dir)
+    return dutylib
 
 
 def json_lines(argv: list[str]) -> object:
@@ -400,26 +431,28 @@ def json_lines(argv: list[str]) -> object:
         return None
 
 
-STARTED_RE = re.compile(r"(?m)^started_ms: (\d+)$")
-
-
-def run_started_ms(run_dir: Path) -> int:
-    """Начало прогона tab-run.sh: строка `started_ms` в meta.txt; 0 — не прочитать."""
-    try:
-        found = STARTED_RE.search((run_dir / "meta.txt").read_text(encoding="utf-8"))
-    except OSError:
-        return 0
-    return int(found.group(1)) if found else 0
-
-
-def registered_waits(task: Path) -> list[tuple[str, int]]:
-    """Ожидания, которые разбудят координатора сами: (что, начало в мс)."""
-    found: list[tuple[str, int]] = []
+def run_waits(task: Path) -> list[tuple[str, int]]:
+    """Живые прогоны tab-run.sh задачи: (что, начало в мс)."""
     runs = task / "runs"
-    if runs.is_dir():
-        for run_dir in sorted(p for p in runs.iterdir() if p.is_dir()):
-            if run_alive(run_dir.resolve()):
-                found.append((f"прогон {run_dir.name}", run_started_ms(run_dir)))
+    if not runs.is_dir():
+        return []
+    dutylib = dutylib_module()
+    found: list[tuple[str, int]] = []
+    for run_dir in sorted(p for p in runs.iterdir() if p.is_dir()):
+        if (run_dir / "done").exists():
+            continue  # завершённый прогон: meta.txt не читается
+        # meta.txt читается один раз на прогон: и для PID, и для начала.
+        meta = dutylib.read_meta(run_dir)
+        if dutylib.tab_run_alive(run_dir.resolve(), meta):
+            found.append(
+                (f"прогон {run_dir.name}", dutylib.run_started_ms(run_dir, meta))
+            )
+    return found
+
+
+def signal_waits(task: Path) -> list[tuple[str, int]]:
+    """Живые ожидания сигналов этой задачи в signals.py: (что, начало в мс)."""
+    found: list[tuple[str, int]] = []
     holder = os.environ.get("DUTY_NAME") or task.name
     waits = json_lines([str(SCRIPTS / "signals.py"), "list", "--waits", "--json"])
     if isinstance(waits, dict):
@@ -440,12 +473,18 @@ def registered_waits(task: Path) -> list[tuple[str, int]]:
 
 
 def uncovered(task: Path) -> list[tuple[str, str, int]]:
-    """Остановившиеся подзадачи, после остановки которых не начато ни одно ожидание."""
+    """Остановившиеся подзадачи, после остановки которых не начато ни одно ожидание.
+
+    Ожидания, которые разбудят координатора сами, — живые прогоны и сигналы;
+    signals.py вызывается, только если прогоны покрыли не все остановки.
+    """
     pending = stopped_without_result(task)
-    if not pending:
-        return []
-    starts = [start for _, start in registered_waits(task)]
-    return [item for item in pending if not any(s >= item[2] for s in starts)]
+    for source in (run_waits, signal_waits):
+        if not pending:
+            break
+        starts = [start for _, start in source(task)]
+        pending = [item for item in pending if not any(s >= item[2] for s in starts)]
+    return pending
 
 
 def stop(data: dict[str, object]) -> None:
@@ -474,6 +513,10 @@ def stop(data: dict[str, object]) -> None:
         )
         return
     lines = "; ".join(f"{name} (agent_id {agent})" for name, agent, _ in pending)
+    stopped = {name for name, _, _ in pending}
+    running = [n for n in launched_without_result(task) if n not in stopped]
+    if running:
+        lines += f". Запущены и ещё без итога: {', '.join(running)}"
     emit(
         {
             "decision": "block",

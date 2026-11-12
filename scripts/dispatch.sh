@@ -539,8 +539,10 @@ cmd_close() {
         # Вкладка команды закрывается сама по done: между list и close она могла
         # исчезнуть, тогда ошибка закрытия не ошибка.
         if ! herdr tab close "$tab" > /dev/null; then
-            herdr tab list --workspace "$ws" | jq -e --arg t "$tab" '.result.tabs[] | select(.tab_id == $t)' > /dev/null \
-                && die "вкладка $tab не закрыта"
+            # Сбой самого перечня вкладок не доказывает закрытие.
+            left=$(herdr tab list --workspace "$ws") || die "перечень вкладок workspace $ws не получен: закрытие $tab не подтверждено"
+            ! jq -e --arg t "$tab" '.result.tabs[] | select(.tab_id == $t)' <<< "$left" > /dev/null \
+                || die "вкладка $tab не закрыта"
         fi
     done
 

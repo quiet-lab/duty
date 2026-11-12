@@ -7,7 +7,9 @@
 <что ждём>» по строкам, чей срок истёк; нет просроченных — пусто. Строка
 без срока (старый формат) помечается «⚠ без срока <что ждём>». Время в
 строке — только ЧЧ:ММ UTC: начало берётся как ближайшее такое время
-не позже текущего. Код выхода всегда 0: перечень не должен ломать list.
+не позже текущего, поэтому прошедшее — от 0 до 1439 мин, и срок больше
+MAX_TTL_MIN не проверить: такая строка помечается «⚠ срок больше
+1438 мин: <что ждём>». Код выхода всегда 0: перечень не должен ломать list.
 """
 
 import re
@@ -19,6 +21,11 @@ LINE_RE = re.compile(
     r"^\s*-\s+(?P<what>.+?):\s+pid\s+\d+\s+\S+"
     r"(?:,\s+с\s+(?P<hh>\d{1,2}):(?P<mm>\d{2}))?(?:,\s+срок\s+(?P<ttl>\d+)\s+мин)?\s*$"
 )
+
+DAY_MIN = 24 * 60
+# Наибольший проверяемый срок строки: время начала записано без даты, прошедшее
+# не больше DAY_MIN - 1, просрочка — хотя бы на минуту (agents/worker.md, п. 8).
+MAX_TTL_MIN = DAY_MIN - 2
 
 
 def section(text: str) -> list[str]:
@@ -36,7 +43,7 @@ def elapsed_min(hh: int, mm: int, now: float) -> int:
     """Минуты от последнего наступления ЧЧ:ММ UTC до now."""
     t = time.gmtime(now)
     cur = t.tm_hour * 60 + t.tm_min
-    return (cur - (hh * 60 + mm)) % (24 * 60)
+    return (cur - (hh * 60 + mm)) % DAY_MIN
 
 
 def marks(text: str, now: float | None = None) -> list[str]:
@@ -52,6 +59,9 @@ def marks(text: str, now: float | None = None) -> list[str]:
             continue
         if m["ttl"] is None or m["hh"] is None:
             out.append(f"⚠ без срока: {m['what']}")
+            continue
+        if int(m["ttl"]) > MAX_TTL_MIN:
+            out.append(f"⚠ срок больше {MAX_TTL_MIN} мин: {m['what']}")
             continue
         over = elapsed_min(int(m["hh"]), int(m["mm"]), now) - int(m["ttl"])
         if over > 0:

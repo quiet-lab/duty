@@ -61,17 +61,6 @@ PAGE_STYLE = (
 )
 
 
-def parse_meta(text: str) -> dict[str, str]:
-    """Строки `ключ: значение` из meta.txt; прочие строки пропускаются."""
-    meta: dict[str, str] = {}
-    for line in text.splitlines():
-        key, sep, value = line.partition(":")
-        key = key.strip()
-        if sep and key:
-            meta[key] = value.strip()
-    return meta
-
-
 def parse_cmd(text: str) -> str:
     """Команда пользователя из cmd.sh, записанного tab-run.sh: между `{` и `} 2>&1 | tee`."""
     lines = text.splitlines()
@@ -94,8 +83,13 @@ def read_text(path: Path) -> str:
         return ""
 
 
-def run_state(run_dir: Path) -> tuple[str, int | None]:
-    """(`done` | `running` | `pending`, код выхода). done пишется tab-run.sh последним и целиком."""
+def run_state(
+    run_dir: Path, meta: dict[str, str] | None = None
+) -> tuple[str, int | None]:
+    """(`done` | `running` | `pending`, код выхода). done пишется tab-run.sh последним и целиком.
+
+    meta — уже прочитанный `dutylib.read_meta(run_dir)`: прогон идёт, если в нём есть ключи.
+    """
     try:
         # Одно чтение вместо exists и read: между ними файл мог появиться.
         done = (run_dir / "done").read_text(encoding="utf-8", errors="replace").strip()
@@ -106,14 +100,14 @@ def run_state(run_dir: Path) -> tuple[str, int | None]:
             return "done", int(done)
         except ValueError:
             return "done", None
-    if (run_dir / "meta.txt").exists():
+    if (run_dir / "meta.txt").exists() if meta is None else meta:
         return "running", None
     return "pending", None
 
 
 def describe_run(run_dir: Path) -> dict[str, object]:
-    meta = parse_meta(read_text(run_dir / "meta.txt"))
-    state, code = run_state(run_dir)
+    meta = dutylib.read_meta(run_dir)
+    state, code = run_state(run_dir, meta)
     try:
         mtime = (run_dir / "out.log").stat().st_mtime_ns // 1_000_000
     except OSError:

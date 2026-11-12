@@ -188,9 +188,13 @@ description: Исполнитель крупной задачи в своём wo
    остальное разделяется данными (правила проекта об изоляции, `docs.rules`):
 
    ```sh
-   python3 -I <плагин>/scripts/busy.py claim <ресурс> --holder "$DUTY_NAME" --task "$DUTY_TASK" --pid "$PPID" --note '<что идёт>'
+   python3 -I <плагин>/scripts/busy.py claim <ресурс> --holder "$DUTY_NAME" --task "$DUTY_TASK" --pid "$PPID" --ttl-min <срок> --note '<что идёт>'
    python3 -I <плагин>/scripts/busy.py release <ресурс> --holder "$DUTY_NAME"
    ```
+
+   `--ttl-min` обязателен: срок отметки в минутах — 2× от замера
+   операции (не замерена — сначала замерить); `list` помечает отметку
+   дольше срока как просроченную.
 
    `--pid "$PPID"` — процесс твоей сессии Claude (родитель оболочки
    Bash): без него отметка привязывается к оболочке вызова и сразу

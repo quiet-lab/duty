@@ -15,6 +15,7 @@ LINT = PLUGIN / "scripts" / "rules-lint.py"
 # Замер: запуск на двойниках — 0,05 с; предел — предохранитель от зависания.
 LIMIT_S = 10
 
+
 # Переменные среды запуска, которые меняют поиск корня проекта, слой
 # пользователя и каталоги результатов, занятости, сигналов: тесты убирают
 # все DUTY_* и CLAUDE_PROJECT_DIR, чтобы не видеть настоящий проект.
@@ -178,7 +179,7 @@ class RulesLintTest(unittest.TestCase):
         )
         r = self.repeats(["a.md", "b.md"])
         self.assertEqual(r.returncode, 1, r.stdout)
-        self.assertIn("сходство с b.md:1", r.stdout)
+        self.assertIn("b.md:1: сходство с a.md:1", r.stdout)
 
     def test_different_sentences_not_similar(self) -> None:
         self.write("a.md", f"{SENTENCE}\n")

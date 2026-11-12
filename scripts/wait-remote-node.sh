@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Часть wait-remote.sh, которая выполняется на узле: сценарий приходит
 # в bash узла на стандартный ввод ssh.
 #
@@ -199,7 +200,7 @@ watch_log() {
 
 # Подключение: <журнал> <pid> <метка> <первая запись|first>.
 main() {
-    local log=$1 pid=$2 token=$3 start=$4 missing= c
+    local log=$1 pid=$2 token=$3 start=$4 missing='' c
     # Сценарий уже прочитан до вызова main: стандартный ввод больше не нужен.
     exec < /dev/null
     for c in inotifywait flock setsid stat tail ps; do
@@ -214,7 +215,8 @@ main() {
     root=${TMPDIR:-/tmp}/wait-remote-$(id -u)
     key=$(printf '%s\n' "$pid $log" | cksum)
     S=$root/$pid-${key%% *}
-    mkdir -p -m 700 "$root" "$S"
+    mkdir -p "$root" "$S"
+    chmod 700 "$root" "$S"
     touch "$S/spool"
     # Один наблюдатель на пару «процесс, журнал»: замок lock держит живой
     # наблюдатель (дескриптор наследуется при запуске), замок start — запуск.

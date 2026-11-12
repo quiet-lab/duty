@@ -400,7 +400,7 @@ class DecisionNumberTest(unittest.TestCase):
         code = "\n".join(
             line for line in text.splitlines() if not line.lstrip().startswith("#")
         )
-        self.assertNotIn("git -C \"$root\" status", code)
+        self.assertNotIn('git -C "$root" status', code)
         self.assertNotIn("status --porcelain", code)
         self.assertNotIn("tr '\\0'", code)
 
@@ -456,7 +456,9 @@ class DecisionNumberTest(unittest.TestCase):
                 self.assertIn(f"получен сигнал {sig.name[3:]}", rest)
                 self.assertIn("каталог возвращён в исходное состояние", rest)
                 self.assertEqual(self.snapshot(), before)
-                self.assertEqual(list((self.root / ".git").glob("decision-insert*")), [])
+                self.assertEqual(
+                    list((self.root / ".git").glob("decision-insert*")), []
+                )
                 self.assertTrue(draft.exists())
 
     def test_failed_insert_keeps_draft_inside_repo(self) -> None:

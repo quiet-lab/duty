@@ -259,9 +259,7 @@ def open_paths() -> dict[Path, Path]:
 def proc_indexes() -> tuple[dict[Path, Path], dict[Path, Path]]:
     """Индексы `cwd_index` и `open_paths` за один обход `/proc`."""
     cwds, files = _proc_paths(True)
-    return _with_ancestors(cwds), _with_ancestors(
-        [*cwds, *files, *container_mounts()]
-    )
+    return _with_ancestors(cwds), _with_ancestors([*cwds, *files, *container_mounts()])
 
 
 # Строка шага state.md: «Шаг: …» или «**Шаг:** …» (как `task_step` в dispatch.sh).

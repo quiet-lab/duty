@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import ast
 import glob
+import itertools
 import re
 import sys
 from dataclasses import dataclass
@@ -87,7 +88,7 @@ def normalize(text: str) -> str:
 def shingles(key: str) -> frozenset[str]:
     """Пары соседних слов нормализованного предложения."""
     words = key.split()
-    return frozenset(" ".join(pair) for pair in zip(words, words[1:], strict=False))
+    return frozenset(" ".join(pair) for pair in itertools.pairwise(words))
 
 
 def similar_groups(

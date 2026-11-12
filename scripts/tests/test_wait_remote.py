@@ -463,9 +463,7 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         sleeper.kill()
         out, _ = self.finish(proc, head)
         self.assertEqual(proc.returncode, 0, out)
-        self.assertEqual(
-            self.shown(out), [f"o{i}" for i in range(5)] * 2, out
-        )
+        self.assertEqual(self.shown(out), [f"o{i}" for i in range(5)] * 2, out)
         self.assertEqual(out.count("журнал усечён"), 1, out)
 
     def test_partial_line_on_drop_printed_once(self) -> None:

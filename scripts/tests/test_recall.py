@@ -118,8 +118,10 @@ class RecallTest(unittest.TestCase):
                 "<cross-session-message>heartbeat от агента</cross-session-message>",
                 "<bash-stdout>heartbeat</bash-stdout>",
                 "done rc=0 /home/u/results/x/runs/heartbeat-run",
-                "субагент alpha остановился без итога: возобнови (SendMessage to=a1) "
-                "или перезапусти; его последние слова: heartbeat",
+                (
+                    "субагент alpha остановился без итога: возобнови (SendMessage to=a1) "
+                    "или перезапусти; его последние слова: heartbeat"
+                ),
             )
         ]
         flagged = [
@@ -194,7 +196,15 @@ class RecallTest(unittest.TestCase):
 
     def raw_recall(self, env: dict[str, str], *extra: str) -> str:
         done = subprocess.run(
-            [sys.executable, "-I", str(SCRIPT), "тема", *extra, "--root", str(self.root)],
+            [
+                sys.executable,
+                "-I",
+                str(SCRIPT),
+                "тема",
+                *extra,
+                "--root",
+                str(self.root),
+            ],
             capture_output=True,
             text=True,
             env=env,
@@ -208,9 +218,14 @@ class RecallTest(unittest.TestCase):
         old = "2020-01-01T00:00:00"
         write(self.root / "docs/old.md", "zzold\n")
         env = dict(self.env, GIT_AUTHOR_DATE=old, GIT_COMMITTER_DATE=old)
-        subprocess.run(["git", "add", "docs/old.md"], cwd=self.root, env=env, check=True)
         subprocess.run(
-            ["git", "commit", "-q", "-m", "старое zzold"], cwd=self.root, env=env, check=True
+            ["git", "add", "docs/old.md"], cwd=self.root, env=env, check=True
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "старое zzold"],
+            cwd=self.root,
+            env=env,
+            check=True,
         )
         git_part = self.run_recall("--keyword", "zzold").split("## История git")[1]
         git_part = git_part.split("## Реплики")[0]
@@ -240,7 +255,9 @@ class RecallTest(unittest.TestCase):
                 "timestamp": "2026-11-07T10:00:00.000Z",
                 "message": {"role": "user", "content": text},
             }
-            write(projects / name / "s.jsonl", json.dumps(row, ensure_ascii=False) + "\n")
+            write(
+                projects / name / "s.jsonl", json.dumps(row, ensure_ascii=False) + "\n"
+            )
 
         session(prefix, str(self.root), "heartbeat из корня")
         session(prefix + "-wt-a", str(self.root / "wt/a"), "heartbeat из worktree")

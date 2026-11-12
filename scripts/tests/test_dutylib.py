@@ -185,7 +185,9 @@ class ContainerMountsTest(unittest.TestCase):
         stub = bin_dir / "docker"
         stub.write_text("#!/bin/sh\n" + script + "\n", encoding="utf-8")
         stub.chmod(0o755)
-        patcher = mock.patch.dict(os.environ, {"PATH": f"{bin_dir}{os.pathsep}/usr/bin:/bin"})
+        patcher = mock.patch.dict(
+            os.environ, {"PATH": f"{bin_dir}{os.pathsep}/usr/bin:/bin"}
+        )
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -199,7 +201,10 @@ class ContainerMountsTest(unittest.TestCase):
         )
         index = dutylib.open_paths()
         self.assertIn(Path("/data/results/run-1"), index)
-        self.assertIn("открыт файл процесса", dutylib.live_reason(Path("/data/results/run-1"), index))
+        self.assertIn(
+            "открыт файл процесса",
+            dutylib.live_reason(Path("/data/results/run-1"), index),
+        )
 
     def test_no_containers_or_no_docker(self) -> None:
         self.with_docker("exit 0")

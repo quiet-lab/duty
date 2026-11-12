@@ -218,12 +218,12 @@ while true; do
             idx=$(( h_from - 1 ))
             bound=$h_count
             phase=old
-            (( idx < bound )) || phase=tail
+            (( idx < bound )) || phase='tail'
             continue
         fi
         idx=$(( idx + 1 ))
         next=$(( idx + 1 ))
-        (( idx < bound )) || phase=tail
+        (( idx < bound )) || phase='tail'
         record "$idx" "$line"
     done
     exec {events}<&-

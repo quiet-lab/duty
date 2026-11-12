@@ -253,7 +253,9 @@ def transcripts_dirs(root: Path, override: str | None) -> list[Path]:
         for d in sorted(projects.iterdir()):
             if d in found or not d.is_dir():
                 continue
-            if not (d.name.startswith(plain.name + "-") or d.name.startswith(name + "-")):
+            if not (
+                d.name.startswith(plain.name + "-") or d.name.startswith(name + "-")
+            ):
                 continue
             # Имя с общим началом бывает у соседнего проекта (`proj` и `proj-x`):
             # решает рабочий каталог сеанса.

@@ -13,15 +13,20 @@
 (`docs.decisions`), «Спецификации» (`docs.openspec`: `specs/*/spec.md`,
 `changes/*/{proposal.md,design.md,specs/**}`, без `changes/archive/`),
 «Правила» (`docs.rules`), «Документы» (`docs.recall`), «История git»
-(`git log -S<слово> --oneline -20`), «Реплики пользователя» (транскрипты
+(`git log -S<слово> --oneline -20 --since=365.days.ago`), «Реплики пользователя» (транскрипты
 `~/.claude/projects/<корень с заменой знаков на ->/*.jsonl`, строки
 `"type":"user"` с текстовым `content`, до 20 новых). Поиск — без учёта
 регистра, по любому из слов. По файлу: путь и до трёх строк совпадений
 с номером и ближайшим заголовком выше; отсутствующий файл пропускается.
+Файлов раздела показывается не больше 40: сначала с большим числом
+разных слов и строк совпадений, остальные — счётчиком «… ещё файлов».
+Файл, подходящий нескольким разделам, показывается в каждом.
 
 Каталог транскриптов — `--transcripts`, затем переменная
-`DUTY_TRANSCRIPTS_DIR`, затем `~/.claude/projects/<имя>`. Транскрипты
-читаются построчно; stdin читает только `save`.
+`DUTY_TRANSCRIPTS_DIR`, затем `~/.claude/projects/<имя корня>` и каталоги
+с этим именем в начале (сеансы из подкаталогов и worktree корня): такой
+каталог берётся, если рабочий каталог его сеанса — корень или внутри
+корня. Транскрипты читаются построчно; stdin читает только `save`.
 """
 
 import argparse
@@ -39,6 +44,7 @@ import dutylib
 
 MAX_LINES = 3
 MAX_FILES = 40
+GIT_SINCE = "365.days.ago"
 MAX_REPLIES = 20
 QUOTE = 300
 MAX_REPLY_CHARS = 4000
@@ -120,58 +126,59 @@ def openspec_files(root: Path, entry: str) -> list[Path]:
     return out
 
 
-def matches(path: Path, words: list[str]) -> list[str]:
-    """До трёх строк совпадений: `номер (заголовок): текст`."""
+def matches(path: Path, words: list[str]) -> tuple[list[str], int, int]:
+    """До трёх строк совпадений `номер (заголовок): текст`, число строк совпадений и разных слов."""
     low = [w.lower() for w in words]
     heading = ""
     found: list[str] = []
     total = 0
+    hit_words: set[str] = set()
     try:
         with path.open(encoding="utf-8", errors="replace") as fh:
             for number, line in enumerate(fh, 1):
                 text = line.rstrip("\n")
                 if text.startswith("#"):
                     heading = text.lstrip("# ").strip()
-                if any(w in text.lower() for w in low):
+                lowered = text.lower()
+                here = [w for w in low if w in lowered]
+                if here:
                     total += 1
+                    hit_words.update(here)
                     if len(found) < MAX_LINES:
                         where = f" ({heading})" if heading else ""
                         found.append(f"{number}{where}: {text.strip()[:200]}")
     except OSError:
-        return []
+        return [], 0, 0
     if total > MAX_LINES:
         found.append(f"… ещё {total - MAX_LINES}")
-    return found
+    return found, total, len(hit_words)
 
 
-def section(
-    title: str, files: list[Path], words: list[str], root: Path, seen: set[Path]
-) -> str:
+def section(title: str, files: list[Path], words: list[str], root: Path) -> str:
+    """Раздел справки: файл показывается один раз в разделе, порядок — по числу разных слов и строк."""
     lines = [f"## {title}", ""]
-    count = 0
-    hits = 0
+    seen: set[Path] = set()
+    hits: list[tuple[int, int, int, Path, list[str]]] = []
     for path in files:
         real = path.resolve()
         if real in seen:
             continue
-        found = matches(path, words)
-        if not found:
-            continue
         seen.add(real)
-        hits += 1
-        if hits > MAX_FILES:
-            count += 1
-            continue
+        found, total, distinct = matches(path, words)
+        if found:
+            hits.append((-distinct, -total, len(hits), path, found))
+    hits.sort(key=lambda h: h[:3])
+    for *_, path, found in hits[:MAX_FILES]:
         try:
             shown = path.relative_to(root)
         except ValueError:
             shown = path
         lines.append(f"- `{shown}`")
         lines += [f"  - {item}" for item in found]
-    if hits == 0:
+    if not hits:
         lines.append("Совпадений нет.")
-    elif count:
-        lines.append(f"… ещё файлов: {count}")
+    elif len(hits) > MAX_FILES:
+        lines.append(f"… ещё файлов: {len(hits) - MAX_FILES}")
     lines.append("")
     return "\n".join(lines)
 
@@ -179,11 +186,20 @@ def section(
 def git_section(root: Path, words: list[str]) -> str:
     lines = ["## История git", ""]
     for word in words:
-        lines.append(f"### `{word}`")
+        lines.append(f"### `{word}` (за год)")
         lines.append("")
         try:
             done = subprocess.run(
-                ["git", "-C", str(root), "log", f"-S{word}", "--oneline", "-20"],
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "log",
+                    f"-S{word}",
+                    "--oneline",
+                    "-20",
+                    f"--since={GIT_SINCE}",
+                ],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -202,15 +218,49 @@ def git_section(root: Path, words: list[str]) -> str:
     return "\n".join(lines)
 
 
-def transcripts_dir(root: Path, override: str | None) -> Path:
+def session_cwd(directory: Path) -> str:
+    """Рабочий каталог сеанса из первой записи с `cwd` самого нового транскрипта каталога."""
+    files = sorted(directory.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+    for path in reversed(files):
+        try:
+            with path.open(encoding="utf-8", errors="replace") as fh:
+                for _, line in zip(range(50), fh):
+                    if '"cwd"' not in line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    cwd = obj.get("cwd") if isinstance(obj, dict) else None
+                    if isinstance(cwd, str):
+                        return cwd
+        except OSError:
+            continue
+    return ""
+
+
+def transcripts_dirs(root: Path, override: str | None) -> list[Path]:
+    """Каталоги транскриптов проекта: заданный явно либо по имени корня и его префиксным подкаталогам."""
     given = override or os.environ.get("DUTY_TRANSCRIPTS_DIR")
     if given:
-        return Path(given)
+        return [Path(given)]
     projects = Path.home() / ".claude" / "projects"
     plain = projects / str(root).replace("/", "-")
-    if plain.is_dir():
-        return plain
-    return projects / re.sub(r"[^A-Za-z0-9-]", "-", str(root))
+    name = re.sub(r"[^A-Za-z0-9-]", "-", str(root))
+    found = [d for d in (plain, projects / name) if d.is_dir()]
+    found = list(dict.fromkeys(found))
+    if projects.is_dir():
+        for d in sorted(projects.iterdir()):
+            if d in found or not d.is_dir():
+                continue
+            if not (d.name.startswith(plain.name + "-") or d.name.startswith(name + "-")):
+                continue
+            # Имя с общим началом бывает у соседнего проекта (`proj` и `proj-x`):
+            # решает рабочий каталог сеанса.
+            cwd = session_cwd(d)
+            if cwd == str(root) or cwd.startswith(str(root) + "/"):
+                found.append(d)
+    return found or [plain]
 
 
 # Служебные записи `type:user`: отчёты субагентов, вывод команд, напоминания.
@@ -218,6 +268,11 @@ SERVICE_RE = re.compile(
     r"\s*<(?:task-notification|local-command-stdout|local-command-stderr"
     r"|system-reminder|command-name|command-message|command-args"
     r"|cross-session-message|bash-input|bash-stdout)\b"
+    # Строки push-agent.sh (herdr agent prompt) приходят без тегов:
+    # «done rc=<код> <каталог прогона>» от tab-run.sh и «субагент <имя>
+    # остановился без итога: …» от хука SubagentStop.
+    r"|done rc=\d+ "
+    r"|субагент \S+ остановился без итога"
 )
 
 
@@ -229,11 +284,12 @@ def quote(text: str, words: list[str]) -> str:
     return flat[start : start + QUOTE]
 
 
-def replies(directory: Path, words: list[str]) -> list[tuple[str, str, str]]:
+def replies(directories: list[Path], words: list[str]) -> list[tuple[str, str, str]]:
     low = [w.lower() for w in words]
     found: list[tuple[str, str, str]] = []
     seen: set[str] = set()
-    for path in sorted(directory.glob("*.jsonl")):
+    paths = sorted(p for d in directories for p in d.glob("*.jsonl"))
+    for path in paths:
         try:
             with path.open(encoding="utf-8", errors="replace") as fh:
                 for line in fh:
@@ -274,12 +330,13 @@ def replies(directory: Path, words: list[str]) -> list[tuple[str, str, str]]:
     return found[:MAX_REPLIES]
 
 
-def replies_section(directory: Path, words: list[str]) -> str:
+def replies_section(directories: list[Path], words: list[str]) -> str:
     lines = ["## Реплики пользователя", ""]
-    if not directory.is_dir():
-        lines.append(f"Каталога транскриптов нет: `{directory}`.")
+    existing = [d for d in directories if d.is_dir()]
+    if not existing:
+        lines.append(f"Каталога транскриптов нет: `{directories[0]}`.")
     else:
-        rows = replies(directory, words)
+        rows = replies(existing, words)
         if not rows:
             lines.append("Совпадений нет.")
         for stamp, text, name in rows:
@@ -334,7 +391,6 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit(f"recall.py: ошибка конфигурации: {error}")
     root = Path(args.root).resolve() if args.root else (cfg.root or Path.cwd())
     words = [w for w in args.keyword if w.strip()] or [args.topic]
-    seen: set[Path] = set()
     out = [
         f"# Справка по теме: {args.topic}",
         "",
@@ -344,25 +400,25 @@ def main(argv: list[str] | None = None) -> int:
 
     decisions = cfg.get("docs.decisions", "")
     files = expand(root, decisions) if isinstance(decisions, str) and decisions else []
-    out.append(section("Записи решений", files, words, root, seen))
+    out.append(section("Записи решений", files, words, root))
 
     files = []
     for entry in cfg.get("docs.openspec", []):
         files += openspec_files(root, entry)
-    out.append(section("Спецификации", files, words, root, seen))
+    out.append(section("Спецификации", files, words, root))
 
     files = []
     for entry in cfg.get("docs.rules", []):
         files += expand(root, entry)
-    out.append(section("Правила", files, words, root, seen))
+    out.append(section("Правила", files, words, root))
 
     files = []
     for entry in cfg.get("docs.recall", dutylib.duty_config.DEFAULTS["docs"]["recall"]):
         files += expand(root, entry)
-    out.append(section("Документы", files, words, root, seen))
+    out.append(section("Документы", files, words, root))
 
     out.append(git_section(root, words))
-    out.append(replies_section(transcripts_dir(root, args.transcripts), words))
+    out.append(replies_section(transcripts_dirs(root, args.transcripts), words))
     sys.stdout.write("\n".join(out))
     return 0
 

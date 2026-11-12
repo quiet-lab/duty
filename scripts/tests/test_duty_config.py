@@ -902,9 +902,9 @@ class ShellLaunchTest(Base):
         scripts = [
             p
             for p in [*SCRIPTS.glob("*.py"), *(SCRIPTS.parent / "hooks").glob("*.py")]
-            if p.name != "dutylib.py"
         ]
         self.assertIn(SCRIPT, scripts)
+        self.assertIn(SCRIPTS / "dutylib.py", scripts)
         for script in scripts:
             for shell in ("bash", "sh"):
                 with self.subTest(script=script.name, shell=shell):
@@ -920,6 +920,22 @@ class ShellLaunchTest(Base):
                         calls.read_text(encoding="utf-8").splitlines()[-1],
                         f"-I {script} --help",
                     )
+
+    def test_adapter_line_follows_a_quote_free_first_line(self) -> None:
+        """Оболочка читает первую строку докстринга как строку в кавычках: в ней нет `"`, `$`, `\\` и обратных кавычек."""
+        scripts = [*SCRIPTS.glob("*.py"), *(SCRIPTS.parent / "hooks").glob("*.py")]
+        for script in scripts:
+            with self.subTest(script=script.name):
+                lines = script.read_text(encoding="utf-8").splitlines()
+                start = next(i for i, ln in enumerate(lines) if ln.startswith('"""'))
+                first = lines[start]
+                self.assertFalse(first.endswith('"""') and len(first) > 6, "докстринг в одну строку")
+                for bad in ('"', "$", "\\", "`"):
+                    self.assertNotIn(bad, first[3:], f"{script.name}: {bad!r} в первой строке")
+                self.assertTrue(
+                    lines[start + 1].startswith('" 2>/dev/null; exec python3 -I "$0" "$@"'),
+                    f"{script.name}: нет переходника за первой строкой докстринга",
+                )
 
 
 if __name__ == "__main__":

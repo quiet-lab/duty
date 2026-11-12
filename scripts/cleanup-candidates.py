@@ -483,18 +483,16 @@ def live_top(f: Path) -> str:
     return _live_tops[top]
 
 
+# Видео и трассы идущего прогона: одна строка «оставлено» на каталог верхнего уровня.
+kept_media: dict[Path, list] = {}
 if RESULTS.is_dir():
     for f in sorted(RESULTS.rglob("*")):
         if f.name not in ("video.webm", "trace.zip") or not f.is_file():
             continue
         why_live = live_top(f)
         if why_live:
-            add(
-                "results",
-                str(f.relative_to(STAND)),
-                size(f),
-                f"оставлено: прогон идёт — {why_live}",
-            )
+            top = RESULTS / f.relative_to(RESULTS).parts[0]
+            kept_media.setdefault(top, [0, why_live])[0] += 1
             continue
         failed = (f.parent / "error-context.md").exists() or any(
             f.parent.glob("test-failed-*.png")
@@ -512,6 +510,13 @@ if RESULTS.is_dir():
                 "удалить: тест прошёл",
                 rm,
             )
+    for top, (count, why) in sorted(kept_media.items()):
+        add(
+            "results",
+            str(top.relative_to(STAND)),
+            "—",
+            f"оставлено: прогон идёт — {why} (видео и трасс: {count})",
+        )
     # Пустые каталоги чужих владельцев остаются от контейнеров прогонов
     # и сами не исчезают.
     for f in RESULTS.rglob("*"):

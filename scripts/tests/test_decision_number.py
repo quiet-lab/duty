@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -35,6 +36,14 @@ if sys.argv[1:2] == ["insert"]:
         first.rename(first.with_name(".renumber-0-" + first.name))
         src.rename(src.with_name(".renumber-1-" + src.name))
         raise OSError("обрыв")
+    if os.environ.get("FAKE_WAIT_FIFO"):
+        # Вставка «зависла» посреди переименований: сообщает о готовности
+        # и ждёт, пока тест откроет канал на запись; затем завершается успешно.
+        first = next((root / "docs" / "decisions").glob("*/0001-*.md"))
+        first.rename(first.with_name(".renumber-0-" + first.name))
+        print("ready", file=sys.stderr, flush=True)
+        Path(os.environ["FAKE_WAIT_FIFO"]).read_text()
+        raise SystemExit(0)
     decisions = root / "docs" / "decisions"
     if "--catalog" in sys.argv:
         catalog = sys.argv[sys.argv.index("--catalog") + 1]
@@ -265,6 +274,65 @@ class DecisionNumberTest(unittest.TestCase):
             check=True,
         ).stdout
         self.assertEqual(status, "")
+
+    def committed_repo(self) -> None:
+        subprocess.run([*GIT, "add", "-A"], cwd=self.root, check=True)
+        subprocess.run([*GIT, "commit", "-qm", "init"], cwd=self.root, check=True)
+
+    def git_status(self) -> str:
+        return subprocess.run(
+            ["git", "status", "--porcelain", "-uall"],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+
+    def test_rollback_failure_is_reported_honestly(self) -> None:
+        """Откат не смог вернуть путь: итог не заявляет, что дерево возвращено."""
+        self.committed_repo()
+        draft = Path(self.tmp.name) / "stuck.md"
+        draft.write_text("# 0000. Сбой отката\n", encoding="utf-8")
+        self.env["FAKE_FAIL"] = "1"
+        # Замок индекса git: checkout отслеживаемого пути откажет.
+        (self.root / ".git" / "index.lock").write_text("", encoding="utf-8")
+        r = self.run_script(str(self.decisions / "02-code"), "--insert", str(draft))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("откат не завершён", r.stderr)
+        self.assertIn("не возвращён", r.stderr)
+        self.assertNotIn("дерево возвращено в исходное состояние", r.stderr)
+
+    def test_signal_during_insert_rolls_back(self) -> None:
+        """TERM, пришедший во время вставки, приводит к откату и коду 2."""
+        self.committed_repo()
+        draft = Path(self.tmp.name) / "signal.md"
+        draft.write_text("# 0000. Сигнал\n", encoding="utf-8")
+        fifo = Path(self.tmp.name) / "wait.fifo"
+        os.mkfifo(fifo)
+        self.env["FAKE_WAIT_FIFO"] = str(fifo)
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT), str(self.decisions / "02-code"), "--insert", str(draft)],
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self.env,
+        )
+        self.addCleanup(proc.kill)
+        assert proc.stderr is not None
+        # Ожидание события: вставка сообщила о готовности строкой в stderr.
+        for line in proc.stderr:
+            if line.strip() == "ready":
+                break
+        proc.send_signal(signal.SIGTERM)
+        # Ловушка оболочки выполняется после завершения текущей команды:
+        # открытие канала на запись отпускает «зависшую» вставку.
+        with open(fifo, "w", encoding="utf-8"):
+            pass
+        rest = proc.stderr.read()
+        self.assertEqual(proc.wait(), 2, rest)
+        self.assertIn("получен сигнал TERM", rest)
+        self.assertIn("дерево возвращено в исходное состояние", rest)
+        self.assertEqual(self.git_status(), "")
+        self.assertEqual(list((self.root / ".git").glob("decision-insert*")), [])
 
     def test_failed_insert_keeps_draft_inside_repo(self) -> None:
         draft = self.root / "draft-in-repo.md"

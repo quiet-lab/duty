@@ -143,20 +143,38 @@ fi
 changed_paths() { git -C "$root" status --porcelain=v1 -z --no-renames -uall | tr '\0' '\n' | sed 's/^...//' | sort -u; }
 before=$(changed_paths)
 rollback() {
-    local path
-    printf 'decision-number.sh: вставка оборвалась, откат изменений\n' >&2
+    local path failed=0 reason=${1:-вставка оборвалась}
+    # Во время отката сигналы игнорируются: прерванный откат оставил бы
+    # дерево наполовину возвращённым.
+    trap '' INT TERM HUP
+    printf 'decision-number.sh: %s, откат изменений\n' "$reason" >&2
     while IFS= read -r path; do
         [ -n "$path" ] || continue
         grep -qxF -- "$path" <<< "$before" && continue
         if git -C "$root" cat-file -e "HEAD:$path" 2> /dev/null; then
-            git -C "$root" checkout -q HEAD -- "$path"
+            git -C "$root" checkout -q HEAD -- "$path" || {
+                failed=$((failed + 1))
+                printf 'decision-number.sh: не возвращён: %s\n' "$path" >&2
+            }
         else
             git -C "$root" rm -q --cached --ignore-unmatch -- "$path" 2> /dev/null || true
-            rm -f -- "$root/$path"
+            rm -f -- "$root/$path" || {
+                failed=$((failed + 1))
+                printf 'decision-number.sh: не удалён: %s\n' "$path" >&2
+            }
         fi
     done < <(changed_paths)
-    die 'вставка не выполнена, дерево возвращено в исходное состояние'
+    if [ "$failed" -gt 0 ]; then
+        die "$reason; откат не завершён, не возвращено путей: $failed, дерево требует ручной проверки (git status)"
+    fi
+    die "$reason; вставка не выполнена, дерево возвращено в исходное состояние"
 }
+# Сигнал прерывания приходит после завершения текущей команды вставки
+# (оболочка выполняет ловушку после дочернего процесса): откат делается
+# тем же образом, что при ошибке, с названием сигнала в сообщении.
+trap 'rollback "получен сигнал INT"' INT
+trap 'rollback "получен сигнал TERM"' TERM
+trap 'rollback "получен сигнал HUP"' HUP
 
 if [ -n "$after" ]; then
     (cd "$project" && "${insert_argv[@]}" --after "$((10#$after))" "$insert") >&2 || rollback

@@ -186,14 +186,21 @@ class ClassifyTest(Base):
         self.assertEqual(
             report.stale(dt.date(2026, 11, 20)),
             [
-                ("RP-286", 20),
+                ("RP-286", 50),
                 ("RP-524", 20),
                 ("RP-1389", 21),
                 ("RP-1602", 21),
                 ("RP-1775", 20),
             ],
         )
-        self.assertEqual(report.stale(dt.date(2026, 11, 9)), [])
+        self.assertEqual(report.stale(dt.date(2026, 10, 10)), [])
+
+    def test_stale_age_from_status_entry(self) -> None:
+        # RP-286 обновлён 2026-10-31, но в статусе с 2026-10-01.
+        report = self.mod.Report(self.t, self.rules, "")
+        days = dict(report.stale(dt.date(2026, 11, 20)))
+        self.assertEqual(days["RP-286"], 50)
+        self.assertEqual(dict(report.stale(dt.date(2026, 11, 9)))["RP-286"], 39)
 
     def test_default_jql(self) -> None:
         self.assertEqual(
@@ -407,6 +414,7 @@ class JiraTest(Base):
         FakeJira.pages = pages
         FakeJira.seen = []
         server = HTTPServer(("127.0.0.1", 0), FakeJira)
+        self.port = server.server_port
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -441,6 +449,60 @@ class JiraTest(Base):
         self.assertEqual(sorted(export), ["RP-1", "RP-2"])
         self.assertEqual(export["RP-1"]["dup_links"], ["RP-2"])
         self.assertNotIn("secret-token", r.stdout + r.stderr)
+
+    def test_duplicate_link_types_from_config(self) -> None:
+        item = issue("RP-1", "Первый")
+        item["fields"]["issuelinks"][0]["type"]["name"] = "Relates"
+        self.serve([(200, {"total": 1, "issues": [item]})])
+        self.write_config(
+            f'[jira]\nurl = "http://127.0.0.1:{self.port}"\ntoken_file = "token"\n',
+            TICKETS_TOML.replace(
+                "[tickets]\n", '[tickets]\nduplicate_links = ["Relates"]\n'
+            ),
+        )
+        r = self.run_script("--root", str(self.root))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        path = Path(r.stdout.strip().splitlines()[-1].removeprefix("Отчёт: "))
+        export = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        self.assertEqual(export["RP-1"]["dup_links"], ["RP-2"])
+
+    def test_default_link_type_ignores_other_types(self) -> None:
+        item = issue("RP-1", "Первый")
+        item["fields"]["issuelinks"][0]["type"]["name"] = "Relates"
+        self.serve([(200, {"total": 1, "issues": [item]})])
+        r = self.run_script()
+        path = Path(r.stdout.strip().splitlines()[-1].removeprefix("Отчёт: "))
+        export = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        self.assertEqual(export["RP-1"]["dup_links"], [])
+
+    def test_status_since_from_changelog(self) -> None:
+        item = issue("RP-1", "Первый")
+        item["fields"]["created"] = "2026-09-01T10:00:00.000+0300"
+        item["changelog"] = {
+            "histories": [
+                {
+                    "created": "2026-09-05T10:00:00.000+0300",
+                    "items": [{"field": "status"}],
+                },
+                {
+                    "created": "2026-10-10T10:00:00.000+0300",
+                    "items": [{"field": "status"}],
+                },
+                {
+                    "created": "2026-10-30T10:00:00.000+0300",
+                    "items": [{"field": "labels"}],
+                },
+            ]
+        }
+        mod = load_module()
+        self.assertEqual(mod.normalize(item, [])["status_since"], "2026-10-10")
+        item["changelog"] = {}
+        self.assertEqual(mod.normalize(item, [])["status_since"], "2026-09-01")
+
+    def test_expand_changelog_requested(self) -> None:
+        self.serve([(200, {"total": 1, "issues": [issue("RP-1", "Первый")]})])
+        self.run_script()
+        self.assertIn("expand=changelog", FakeJira.seen[0])
 
 
 if __name__ == "__main__":

@@ -45,6 +45,7 @@ FIELDS = (
     "summary,status,issuetype,priority,labels,assignee,reporter,"
     "created,updated,description,issuelinks,parent"
 )
+EXPAND = "changelog"
 PAGE = 100
 DESC_KEEP = 1000
 SHORT_WORDS = 12
@@ -84,6 +85,15 @@ def all_jql(cfg) -> str:
     return f'project = "{project}" AND resolution = Unresolved'
 
 
+def status_since(issue: dict) -> str:
+    """Дата последнего перехода в статус по changelog Jira; пусто — переходов нет."""
+    since = ""
+    for h in (issue.get("changelog") or {}).get("histories") or []:
+        if any(i.get("field") == "status" for i in h.get("items") or []):
+            since = max(since, (h.get("created") or "")[:10])
+    return since
+
+
 def normalize(issue: dict, duplicate_types: list[str]) -> dict:
     f = issue["fields"]
     links, dups = [], []
@@ -95,6 +105,7 @@ def normalize(issue: dict, duplicate_types: list[str]) -> dict:
         if (link.get("type") or {}).get("name") in duplicate_types:
             dups.append(other["key"])
     desc = f.get("description") or ""
+    created = (f.get("created") or "")[:10]
     return {
         "key": issue["key"],
         "summary": f.get("summary") or "",
@@ -104,8 +115,9 @@ def normalize(issue: dict, duplicate_types: list[str]) -> dict:
         "labels": f.get("labels") or [],
         "assignee": (f.get("assignee") or {}).get("displayName"),
         "reporter": (f.get("reporter") or {}).get("displayName"),
-        "created": (f.get("created") or "")[:10],
+        "created": created,
         "updated": (f.get("updated") or "")[:10],
+        "status_since": status_since(issue) or created,
         "desc": desc if isinstance(desc, str) else "",
         "links": links,
         "dup_links": dups,
@@ -124,7 +136,13 @@ def fetch(cfg, jql: str) -> dict[str, dict]:
     start = 0
     while True:
         query = urllib.parse.urlencode(
-            {"jql": jql, "fields": FIELDS, "maxResults": PAGE, "startAt": start}
+            {
+                "jql": jql,
+                "fields": FIELDS,
+                "expand": EXPAND,
+                "maxResults": PAGE,
+                "startAt": start,
+            }
         )
         req = urllib.request.Request(
             base + query, headers={"Authorization": f"Bearer {token}"}
@@ -266,11 +284,16 @@ def short(s: str) -> str:
 
 
 def stale(t: dict, rules: Rules, today: dt.date) -> int | None:
-    """Дни без обновления у тикета в статусе проверки, если не меньше порога."""
+    """Дни в статусе проверки, если не меньше порога: от даты входа в статус.
+
+    В выгрузке без `status_since` (прежний формат) берётся дата обновления.
+    """
     if t["status"] not in rules.check_statuses:
         return None
     try:
-        days = (today - dt.date.fromisoformat(t["updated"])).days
+        days = (
+            today - dt.date.fromisoformat(t.get("status_since") or t["updated"])
+        ).days
     except ValueError:
         return None
     return days if days >= rules.stale_days else None

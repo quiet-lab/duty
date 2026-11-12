@@ -83,7 +83,7 @@ scripts/wait-remote-node.sh  часть wait-remote.sh на узле: наблю
 scripts/state-waits.py       просроченные ожидания из раздела «Ожидания» state.md
 scripts/push-agent.sh        сообщение агенту задачи в панель herdr
 hooks/task-guard.py          сторожа сессии агента задачи
-hooks/forbid.py              запреты команд Bash агента задачи (туннель, kill по образцу, git, herdr, секреты)
+hooks/forbid.py              запреты команд Bash агента задачи (туннель, kill по образцу, git, herdr, секреты, rm -r в results при живом)
 scripts/jwait.sh, jwait.py   ожидание конца сборки Jenkins: report.md, done
 scripts/decision-number.sh   номер и вставка записи решения в тематический каталог
 reference/config.md          схема `duty.toml`, слои и поиск корня, расширения `.duty/`
@@ -155,6 +155,9 @@ push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane 
 окружения и секретных переменных (имя секретное, если часть имени через `_` —
 `PASS`, `PASSWORD`, `TOKEN`, `SECRET`, `KEY`, `PAT` и близкие, перечень —
 `SECRET_PARTS`), пароль литералом в `curl -u` и `sshpass -p`,
+ручной `rm -r` (`-rf`, `-fr`, `-R`, `--recursive`) в `paths.results`, пока
+`dutylib.live_reason` каталога непуста (та же проверка у навыка `cleanup`;
+убирать — `/duty:cleanup`),
 а также образцы проекта из `[[forbid.rules]]`. Команда разбирается по
 словам и конвейерам; подстановки, `bash -c`, `eval` и команда после `--`
 у `tab-run.sh` проверяются рекурсивно. Отказ называет запрет и правило, но не

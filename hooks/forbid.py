@@ -22,6 +22,9 @@
 - `herdr` — вкладки и ввод в панели в обход `scripts/tab-run.sh`;
 - `secret` — вывод содержимого каталогов секретов (`secrets.dirs`), печать
   окружения и секретов, пароль литералом в `curl -u` и `sshpass -p`;
+- `rm` — ручной `rm -r` (и `-rf`, `-fr`, `-R`, `--recursive`) в `paths.results`,
+  пока `dutylib.live_reason` каталога задачи или прогона непуста (общая
+  проверка с навыком `cleanup`); уборка — `/duty:cleanup`;
 - `rule` — свои правила проекта (`[[forbid.rules]]`).
 
 Причина отказа называет запрет и правило, но не повторяет команду: в ней
@@ -86,6 +89,12 @@ DENY = {
         "(tab create, pane run, pane send): agents/worker.md, п. 4 — "
         "вкладка команды только через scripts/tab-run.sh. "
         "Вместо этого: bash <плагин>/scripts/tab-run.sh <имя> -- <команда>."
+    ),
+    "rm-results": (
+        "Запрещён ручной rm -r в каталоге результатов (paths.results), пока "
+        "там есть живое: {live}. Уборка — /duty:cleanup (перечень с размерами, "
+        "затем apply): навык проверяет то же признаки живого и не трогает "
+        "идущие задачи, прогоны и открытые файлы процессов."
     ),
     "secret-file": (
         "Запрещён вывод содержимого файлов каталогов секретов (secrets.dirs: "
@@ -298,6 +307,8 @@ class Settings:
     forbid_stash: bool = True
     network: bool = True
     herdr: bool = True
+    results: str = ""  # paths.results; пусто — проверка rm -r выключена
+    cwd: str = ""  # каталог вызова хука: от него считаются относительные пути rm
     secret_dirs: list[str] = field(default_factory=list)
     secret_res: list["re.Pattern[str]"] = field(default_factory=list)
     rules: list[tuple[tuple[str, ...], str]] = field(default_factory=list)
@@ -312,7 +323,9 @@ def settings_from_config(cfg: object) -> Settings:
         words = tuple(w for w in rule.get("words", []) if isinstance(w, str))
         if words:
             rules.append((words, str(rule.get("reason", ""))))
+    results = get("paths.results", "")
     return Settings(
+        results=str(results) if results else "",
         protected=set(get("git.protected", ["main", "master"])),
         forbid_add_all=bool(get("git.forbid_add_all", True)),
         forbid_stash=bool(get("git.forbid_stash", True)),
@@ -350,7 +363,9 @@ def load_settings(cwd: str | None = None) -> Settings:
                 "умолчаниями:\n" + "\n".join(cfg.findings),
                 file=sys.stderr,
             )
-        return settings_from_config(cfg)
+        settings = settings_from_config(cfg)
+        settings.cwd = cwd or os.getcwd()
+        return settings
     except Exception as error:
         if type(error).__name__ == "ConfigError":
             raise ConfigUnreadable(str(error)) from error
@@ -363,6 +378,8 @@ def load_settings(cwd: str | None = None) -> Settings:
 
 def deny_text(key: str, cfg: Settings) -> str:
     """Текст отказа: подстановка актуальных перечней из конфигурации."""
+    if key.startswith("rm-results|"):
+        return DENY["rm-results"].replace("{live}", key.partition("|")[2])
     if key.startswith("rule-"):
         reason = cfg.rules[int(key[5:])][1]
         return f"Запрещено: {reason} — {RULE_NOTE}."
@@ -706,6 +723,84 @@ def check_kill(name: str, args: list[Word]) -> str | None:
     return None
 
 
+def _dutylib() -> object:
+    """Модуль `scripts/dutylib.py` (под `python3 -I` каталог сценария не в sys.path)."""
+    module = sys.modules.get("dutylib")
+    if module is None:
+        path = PLUGIN / "scripts" / "dutylib.py"
+        spec = importlib.util.spec_from_file_location("dutylib", path)
+        if spec is None or spec.loader is None:
+            raise ImportError(str(path))
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["dutylib"] = module
+        spec.loader.exec_module(module)
+    return module
+
+
+def rm_recursive(texts: list[str]) -> bool:
+    """В аргументах rm есть рекурсивный ключ: -r, -R, --recursive, в любой связке коротких."""
+    for t in texts:
+        if t == "--":
+            break
+        if t == "--recursive" or re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*", t):
+            return True
+    return False
+
+
+def rm_targets(args: list[Word], cwd: str) -> list[Path]:
+    """Пути-цели rm без ключей: `~` и `$HOME` раскрыты, шаблон усечён до каталога перед ним.
+
+    Слово с прочей подстановкой пропускается: его значение до запуска неизвестно.
+    """
+    out: list[Path] = []
+    options = True
+    for word in args:
+        text = word.text
+        if options and text == "--":
+            options = False
+        elif options and text.startswith("-") and len(text) > 1:
+            continue
+        elif not word.subs and set(word.vars) <= {"HOME"}:
+            text = os.path.expanduser(text)
+            text = text.replace("${HOME}", str(Path.home())).replace(
+                "$HOME", str(Path.home())
+            )
+            parts = []
+            for part in text.split("/"):
+                if re.search(r"[*?\[]", part):
+                    break
+                parts.append(part)
+            joined = os.path.join(cwd or "/", "/".join(parts) or ".")
+            out.append(Path(os.path.normpath(joined)))
+    return out
+
+
+def check_rm(name: str, args: list[Word], cfg: Settings) -> str | None:
+    """`rm -r` внутри `paths.results` при живом каталоге: ключ `rm-results|<каталог>: <причина>`."""
+    if name != "rm" or not cfg.results or not rm_recursive([a.text for a in args]):
+        return None
+    results = Path(os.path.realpath(cfg.results))
+    lib = _dutylib()
+    opened = lib.open_paths()  # type: ignore[attr-defined]
+    for target in rm_targets(args, cfg.cwd):
+        target = Path(os.path.realpath(target))
+        if target.is_relative_to(results) and target != results:
+            tops = [results / target.relative_to(results).parts[0]]
+        elif results.is_relative_to(target):  # сам каталог результатов или его предок
+            tops = (
+                sorted(p for p in results.iterdir() if p.is_dir())
+                if results.is_dir()
+                else []
+            )
+        else:
+            continue
+        for top in tops:
+            why = lib.live_reason(top.resolve(), opened)  # type: ignore[attr-defined]
+            if why:
+                return f"rm-results|{top}: {why}"
+    return None
+
+
 def git_subcommand(texts: list[str]) -> tuple[str, list[str]]:
     i = 0
     while i < len(texts) and texts[i].startswith("-"):
@@ -1002,6 +1097,7 @@ def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
         found = (
             (check_network(name, texts) if cfg.network else None)
             or check_kill(name, args)
+            or check_rm(name, args, cfg)
             or (check_git(args, cfg) if name == "git" else None)
             or (check_herdr(texts) if name == "herdr" and cfg.herdr else None)
             or check_rules(name, texts, cfg)

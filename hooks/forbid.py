@@ -38,7 +38,7 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 MAX_DEPTH = 4
@@ -308,7 +308,9 @@ class Settings:
     network: bool = True
     herdr: bool = True
     results: str = ""  # paths.results; пусто — проверка rm -r выключена
-    cwd: str = ""  # каталог вызова хука: от него считаются относительные пути rm
+    cwd: str | None = (
+        ""  # None: каталог после `cd` вычислить нельзя; каталог вызова хука: от него считаются относительные пути rm
+    )
     secret_dirs: list[str] = field(default_factory=list)
     secret_res: list["re.Pattern[str]"] = field(default_factory=list)
     rules: list[tuple[tuple[str, ...], str]] = field(default_factory=list)
@@ -747,10 +749,12 @@ def rm_recursive(texts: list[str]) -> bool:
     return False
 
 
-def rm_targets(args: list[Word], cwd: str) -> list[Path]:
+def rm_targets(args: list[Word], cwd: str | None) -> list[Path]:
     """Пути-цели rm без ключей: `~` и `$HOME` раскрыты, шаблон усечён до каталога перед ним.
 
     Слово с прочей подстановкой пропускается: его значение до запуска неизвестно.
+    Относительная цель при неизвестном `cwd` (None) даёт корень `/`: он предок любого
+    каталога результатов, то есть проверяются все живые каталоги.
     """
     out: list[Path] = []
     options = True
@@ -770,7 +774,11 @@ def rm_targets(args: list[Word], cwd: str) -> list[Path]:
                 if re.search(r"[*?\[]", part):
                     break
                 parts.append(part)
-            joined = os.path.join(cwd or "/", "/".join(parts) or ".")
+            rel = "/".join(parts) or "."
+            if cwd is None and not rel.startswith("/"):
+                out.append(Path("/"))
+                continue
+            joined = os.path.join(cwd or "/", rel)
             out.append(Path(os.path.normpath(joined)))
     return out
 
@@ -1062,6 +1070,25 @@ def inner_commands(name: str, args: list[Word]) -> list[str]:
     return []
 
 
+def next_cwd(name: str, args: list[Word], cwd: str | None) -> str | None:
+    """Каталог после `cd`/`pushd`/`popd`; None, если его вычислить нельзя."""
+    if name == "popd":
+        return None
+    words = [a for a in args if not (a.text.startswith("-") and len(a.text) > 1)]
+    if not words:
+        return None if name == "pushd" else str(Path.home())
+    word = words[0]
+    if word.subs or not set(word.vars) <= {"HOME"} or word.text == "-":
+        return None
+    text = os.path.expanduser(word.text)
+    text = text.replace("${HOME}", str(Path.home())).replace("$HOME", str(Path.home()))
+    if text.startswith("/"):
+        return os.path.normpath(text)
+    if cwd is None:
+        return None
+    return os.path.normpath(os.path.join(cwd or "/", text))
+
+
 def shell_quote(text: str) -> str:
     return "'" + text.replace("'", "'\\''") + "'"
 
@@ -1072,7 +1099,9 @@ def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
     if depth > MAX_DEPTH:
         return None
     commands = parse(src)
+    cwd = cfg.cwd
     for index, cmd in enumerate(commands):
+        cfg = replace(cfg, cwd=cwd)
         for word in cmd.words + [w for _, w in cmd.redirs]:
             for inner in word.subs:
                 found = check(inner, cfg, depth + 1)
@@ -1082,6 +1111,8 @@ def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
         if not name:
             continue
         texts = [a.text for a in args]
+        if name in {"cd", "pushd", "popd"} and not cmd.pipe_out:
+            cwd = next_cwd(name, args, cwd)
         next_name = None
         if cmd.pipe_out and index + 1 < len(commands):
             last = index + 1  # конец конвейера: до экрана доходит его вывод

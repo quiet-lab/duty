@@ -537,6 +537,35 @@ class RmResultsTest(unittest.TestCase):
         self.assertIsNotNone(self.check(f"sudo rm -rf {self.results}"))
         self.assertIsNotNone(self.check(f"bash -c 'rm -rf {self.live}'"))
 
+    def test_cd_in_command_changes_base(self) -> None:
+        base = self.results.parent
+        self.assertIsNotNone(self.check("cd results && rm -rf live-task"))
+        self.assertIsNotNone(self.check(f"pushd {self.results}; rm -rf live-task"))
+        self.assertIsNotNone(
+            self.check("cd results; cd live-task; rm -rf ../live-task")
+        )
+        self.assertIsNone(self.check("cd results && cd .. && rm -rf live-task"))
+        self.assertIsNone(self.check(f"cd {self.outside} && rm -rf live-task"))
+        self.assertIsNone(self.check("cd /tmp && rm -rf x"))
+        self.assertIsNone(self.check("cd; rm -rf x"))
+        self.assertIsNone(self.check(f"cd {base} && rm -rf elsewhere"))
+
+    def test_cd_unknown_denies_relative_while_live(self) -> None:
+        for command in (
+            "cd $TARGET && rm -rf x",
+            "cd $(pwd) && rm -rf x",
+            "cd - && rm -rf x",
+            "cd results; popd; rm -rf x",
+            "pushd; rm -rf x",
+        ):
+            with self.subTest(command=command):
+                found = self.check(command)
+                assert found is not None
+                self.assertTrue(found.startswith("rm-results|"), found)
+        self.assertIsNone(self.check("cd $TARGET && rm -rf /tmp/duty-nonexistent-dir"))
+        (self.live / "state.md").write_text("Шаг: завершено\n", encoding="utf-8")
+        self.assertIsNone(self.check("cd $TARGET && rm -rf x"))
+
     def test_text_names_busy_and_cleanup(self) -> None:
         found = self.check(f"rm -rf {self.live}")
         assert found is not None

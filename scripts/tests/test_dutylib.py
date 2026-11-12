@@ -171,5 +171,44 @@ class TaskFinishedTest(unittest.TestCase):
             self.assertEqual(r.returncode, 1)
 
 
+class ContainerMountsTest(unittest.TestCase):
+    """Каталог, смонтированный в работающий контейнер, считается открытым процессом.
+
+    Процессы контейнера rootless Docker чужого uid в `/proc` не читаются.
+    """
+
+    def with_docker(self, script: str):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        bin_dir = Path(tmp.name) / "bin"
+        bin_dir.mkdir()
+        stub = bin_dir / "docker"
+        stub.write_text("#!/bin/sh\n" + script + "\n", encoding="utf-8")
+        stub.chmod(0o755)
+        patcher = mock.patch.dict(os.environ, {"PATH": f"{bin_dir}{os.pathsep}/usr/bin:/bin"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_mount_of_running_container_marks_top_live(self) -> None:
+        self.with_docker(
+            'case $1 in ps) echo abc ;; inspect) printf "/data/results/run-1/runs/x\\n/proc\\n" ;; esac'
+        )
+        self.assertEqual(
+            dutylib.container_mounts(),
+            [Path("/data/results/run-1/runs/x"), Path("/proc")],
+        )
+        index = dutylib.open_paths()
+        self.assertIn(Path("/data/results/run-1"), index)
+        self.assertIn("открыт файл процесса", dutylib.live_reason(Path("/data/results/run-1"), index))
+
+    def test_no_containers_or_no_docker(self) -> None:
+        self.with_docker("exit 0")
+        self.assertEqual(dutylib.container_mounts(), [])
+        self.with_docker("exit 1")
+        self.assertEqual(dutylib.container_mounts(), [])
+        with mock.patch.dict(os.environ, {"PATH": "/nonexistent"}):
+            self.assertEqual(dutylib.container_mounts(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

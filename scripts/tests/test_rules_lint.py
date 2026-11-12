@@ -165,6 +165,28 @@ class RulesLintTest(unittest.TestCase):
         r = self.repeats(["a.md", "b.md"])
         self.assertEqual(r.returncode, 1, r.stdout)
 
+    def test_similar_sentence_found(self) -> None:
+        """Повтор с заменой пары слов — находка «сходство», точного совпадения нет."""
+        self.write("a.md", f"{SENTENCE}\n")
+        self.write(
+            "b.md",
+            "Независимые подзадачи выполняются одновременно, если они не пересекаются "
+            "по файлам, ветвям и ресурсам.\n",
+        )
+        r = self.repeats(["a.md", "b.md"])
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("сходство с b.md:1", r.stdout)
+
+    def test_different_sentences_not_similar(self) -> None:
+        self.write("a.md", f"{SENTENCE}\n")
+        self.write(
+            "b.md",
+            "Откат вставки записи решения возвращает ровно те файлы, которые "
+            "изменила сама вставка, и не трогает прочие.\n",
+        )
+        r = self.repeats(["a.md", "b.md"])
+        self.assertEqual((r.returncode, r.stdout), (0, "0 находок\n"), r.stderr)
+
     def test_wrapped_paragraph_joined(self) -> None:
         self.write(
             "a.md",

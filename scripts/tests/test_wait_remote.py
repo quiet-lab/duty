@@ -4,8 +4,15 @@
 ssh подменяется сценарием в PATH, который выполняет команду на месте;
 проба с настоящим ssh на localhost пропускается, если `ssh -o BatchMode=yes
 localhost true` не проходит.
+
+Сроков ожидания в проверках нет: каждое ожидание — до события (строка
+вывода, событие inotify, конец процесса); удалённый процесс завершается,
+когда проверка его останавливает. Зависание ловит только внешний предел
+прогона целиком (~/.claude/CLAUDE.md, «Устройство кода»). Сроки --stall-s
+и --timeout-s — проверяемое поведение сценариев, а не ожидание проверки.
 """
 
+import fcntl
 import os
 import shutil
 import signal
@@ -19,12 +26,6 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parents[1]
 WAIT_REMOTE = SCRIPTS / "wait-remote.sh"
 WAIT_DONE = SCRIPTS / "wait-done.sh"
-# Замер на станции (32 ядра): запуск сценария и выход по событию — до 0,1 с;
-# узел Jenkins медленнее на ядро в 4,5 раза, с двойным запасом — 1 с. Паузы
-# писателей в тестах (0,3 с) сделаны больше этого, предохранитель вызова — 20 с:
-# защита от зависания, а не время ожидания события.
-LIMIT_S = 20
-PAUSE_S = 0.3
 
 FAKE_SSH = r"""#!/bin/bash
 while [ $# -gt 0 ]; do
@@ -36,59 +37,56 @@ while [ $# -gt 0 ]; do
 done
 shift
 cmd=$1
-if [[ $cmd == *"tail --pid"* ]]; then
-    # Вывод оболочки узла до команды (.bashrc): строка перед шапкой, с переводом
-    # строки или без него (FAKE_SSH_NOISE_NONL), — склеивается с шапкой.
-    if [ -n "${FAKE_SSH_NOISE:-}" ]; then
-        if [ -n "${FAKE_SSH_NOISE_NONL:-}" ]; then printf '%s' "$FAKE_SSH_NOISE"; else echo "$FAKE_SSH_NOISE"; fi
-    fi
-    # Журнал усекается на узле после шапки и прежних строк, перед запуском tail.
-    [ -z "${FAKE_SSH_TRUNC:-}" ] || cmd=${cmd/'exec '/': > "$FAKE_SSH_LOG"; exec '}
+# Вывод оболочки узла до команды (.bashrc): строка перед шапкой, с переводом
+# строки или без него (FAKE_SSH_NOISE_NONL), — склеивается с шапкой.
+if [ -n "${FAKE_SSH_NOISE:-}" ]; then
+    if [ -n "${FAKE_SSH_NOISE_NONL:-}" ]; then printf '%s' "$FAKE_SSH_NOISE"; else echo "$FAKE_SSH_NOISE"; fi
 fi
-if [ -n "${FAKE_SSH_DROP:-}" ] && [ -e "$FAKE_SSH_DROP" ] && [[ $cmd == *"tail --pid"* ]]; then
-    # В файле — строка на подключение с обрывом: «<строк до обрыва>[+<дописать>]»;
+spec=
+if [ -n "${FAKE_SSH_DROP:-}" ] && [ -e "$FAKE_SSH_DROP" ]; then
+    # В файле — строка на подключение с обрывом: «<записей до обрыва>[+<дописать>]»;
     # дописанные строки попадают в журнал FAKE_SSH_LOG до запуска команды;
     # «!» вместо «+» — журнал перед этим усекается; «-» в конце — от последней
-    # строки до обрыва передаётся первая половина без перевода строки; «h» —
-    # обрыв посреди шапки. Строки шапки, границы и сообщения tail не считаются;
-    # обрыв — не раньше границы прежних строк.
-    mapfile -t spec < "$FAKE_SSH_DROP"
-    if [ "${#spec[@]}" -le 1 ]; then rm -f "$FAKE_SSH_DROP"; else printf '%s
-' "${spec[@]:1}" > "$FAKE_SSH_DROP"; fi
-    cur=${spec[0]:-0}
-    if [ "$cur" = h ]; then
-        exec 3< <(exec bash -c "$cmd")
-        remote=$!
-        IFS= read -r line <&3 && printf '%s' "${line:0:${#line}/2}"
-        kill "$remote" 2> /dev/null
-        exit 255
-    fi
-    cut=0
-    if [[ $cur == *- ]]; then cut=1; cur=${cur%-}; fi
-    if [[ $cur == *'!'* ]]; then : > "$FAKE_SSH_LOG"; cur=${cur/'!'/+}; fi
-    lines=${cur%%+*}
-    if [[ $cur == *+* ]]; then
-        for ((i = 0; i < ${cur#*+}; i++)); do echo "дописано $i" >> "$FAKE_SSH_LOG"; done
-    fi
-    # Настоящая команда на месте: шапка и строки журнала, затем обрыв.
-    exec 3< <(exec bash -c "$cmd")
+    # записи до обрыва передаётся первая половина без перевода строки; «h» —
+    # обрыв посреди шапки. Шапка записью не считается.
+    mapfile -t specs < "$FAKE_SSH_DROP"
+    if [ "${#specs[@]}" -le 1 ]; then rm -f "$FAKE_SSH_DROP"; else printf '%s\n' "${specs[@]:1}" > "$FAKE_SSH_DROP"; fi
+    spec=${specs[0]:-0}
+fi
+[ -n "$spec" ] || exec bash -c "$cmd"
+# Команда узла — своя группа процессов: обрыв снимает её целиком
+# (наблюдатель узла — в своей группе и остаётся).
+if [ "$spec" = h ]; then
+    exec 3< <(exec setsid bash -c "$cmd")
     remote=$!
-    i=0
-    bound=0
-    while { (( i < lines )) || (( ! bound )); } && IFS= read -r line <&3; do
-        case $line in
-            wait-remote-tail*) bound=1; echo "$line"; continue ;;
-            *wait-remote*|tail:*) echo "$line"; continue ;;
-        esac
-        i=$(( i + 1 ))
-        if (( cut && i == lines )); then printf '%s' "${line:0:${#line}/2}"; break; fi
-        echo "$line"
-    done
-    kill "$remote" 2> /dev/null
-    [ -z "${FAKE_SSH_ERR:-}" ] || echo "ssh: connection refused" >&2
+    IFS= read -r line <&3 && printf '%s' "${line:0:${#line}/2}"
+    kill -- -"$remote" 2> /dev/null
     exit 255
 fi
-exec bash -c "$cmd"
+cut=0
+if [[ $spec == *- ]]; then cut=1; spec=${spec%-}; fi
+if [[ $spec == *'!'* ]]; then : > "$FAKE_SSH_LOG"; spec=${spec/'!'/+}; fi
+records=${spec%%+*}
+if [[ $spec == *+* ]]; then
+    for ((i = 0; i < ${spec#*+}; i++)); do echo "дописано $i" >> "$FAKE_SSH_LOG"; done
+fi
+exec 3< <(exec setsid bash -c "$cmd")
+remote=$!
+i=0
+header=0
+while { (( ! header )) || (( i < records )); } && IFS= read -r line <&3; do
+    if (( ! header )); then
+        [[ $line != *'wait-remote '* ]] || header=1
+        echo "$line"
+        continue
+    fi
+    i=$(( i + 1 ))
+    if (( cut && i == records )); then printf '%s' "${line:0:${#line}/2}"; break; fi
+    echo "$line"
+done
+kill -- -"$remote" 2> /dev/null
+[ -z "${FAKE_SSH_ERR:-}" ] || echo "ssh: connection refused" >&2
+exit 255
 """
 
 
@@ -99,9 +97,20 @@ def real_ssh_available() -> bool:
         ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "localhost", "true"],
         check=False,
         capture_output=True,
-        timeout=10,
     )
     return r.returncode == 0
+
+
+def read_until(stream, text: str) -> str:
+    """Строки потока до первой, содержащей text, включительно; конец потока — ошибка."""
+    got = []
+    while True:
+        line = stream.readline()
+        if not line:
+            raise AssertionError(f"поток кончился до «{text}»: {''.join(got)}")
+        got.append(line)
+        if text in line:
+            return "".join(got)
 
 
 class WaitFollowTest(unittest.TestCase):
@@ -112,25 +121,49 @@ class WaitFollowTest(unittest.TestCase):
         self.run_dir.mkdir()
         self.log = self.run_dir / "out.log"
 
-    def test_follow_prints_lines_as_written(self) -> None:
-        self.log.write_text("старая\n", encoding="utf-8")
-        proc = subprocess.Popen(
+    def start_follow(self, argv: list[str]) -> subprocess.Popen:
+        """Запуск wait-done --follow; возврат — после записи .follow-off.
+
+        С этого события смещение в журнале закреплено: дописанное после
+        него — новые строки.
+        """
+        mark = subprocess.Popen(
             [
-                "bash",
-                str(WAIT_DONE),
+                "inotifywait",
+                "-e",
+                "close_write",
+                "--include",
+                r"\.follow-off$",
                 str(self.run_dir),
-                "--log",
-                str(self.log),
-                "--stall-s",
-                "30",
-                "--follow",
             ],
-            stdout=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
         )
+        self.addCleanup(mark.kill)
+        assert mark.stderr is not None
+        read_until(mark.stderr, "Watches established.")
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True)
         self.addCleanup(proc.kill)
+        mark.wait()
+        return proc
+
+    def follow_argv(self, stall_s: str) -> list[str]:
+        return [
+            "bash",
+            str(WAIT_DONE),
+            str(self.run_dir),
+            "--log",
+            str(self.log),
+            "--stall-s",
+            stall_s,
+            "--follow",
+        ]
+
+    def test_follow_prints_lines_as_written(self) -> None:
+        self.log.write_text("старая\n", encoding="utf-8")
+        proc = self.start_follow(self.follow_argv("30"))
         assert proc.stdout is not None
-        time.sleep(PAUSE_S)
         with self.log.open("a", encoding="utf-8") as f:
             f.write("раз\n")
         first = proc.stdout.readline()
@@ -140,7 +173,7 @@ class WaitFollowTest(unittest.TestCase):
         with self.log.open("a", encoding="utf-8") as f:
             f.write("два\n")
         (self.run_dir / "done").write_text("3\n", encoding="utf-8")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        out, _ = proc.communicate()
         self.assertEqual(proc.returncode, 3)
         lines = out.splitlines()
         self.assertRegex(lines[0], r"^\d\d:\d\d:\d\d два$")
@@ -148,59 +181,26 @@ class WaitFollowTest(unittest.TestCase):
         self.assertNotIn("старая", out)
 
     def test_follow_restart_does_not_lose_lines(self) -> None:
-        argv = [
-            "bash",
-            str(WAIT_DONE),
-            str(self.run_dir),
-            "--log",
-            str(self.log),
-            "--stall-s",
-            "30",
-            "--follow",
-        ]
+        argv = self.follow_argv("30")
         self.log.write_text("", encoding="utf-8")
         first = subprocess.run(
-            [*argv, "--timeout-s", "1"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=LIMIT_S,
+            [*argv, "--timeout-s", "1"], check=False, capture_output=True, text=True
         )
         self.assertEqual(first.returncode, 124, first.stderr)
         # Строки, записанные между двумя вызовами (перезапуск после timeout), не теряются.
         self.log.write_text("между вызовами\n", encoding="utf-8")
         (self.run_dir / "done").write_text("0\n", encoding="utf-8")
-        second = subprocess.run(
-            argv, check=False, capture_output=True, text=True, timeout=LIMIT_S
-        )
+        second = subprocess.run(argv, check=False, capture_output=True, text=True)
         self.assertIn("между вызовами", second.stdout)
 
     def test_follow_stall_prints_unfinished_last_line(self) -> None:
         self.log.write_text("", encoding="utf-8")
-        argv = [
-            "bash",
-            str(WAIT_DONE),
-            str(self.run_dir),
-            "--log",
-            str(self.log),
-            "--stall-s",
-            "1",
-            "--follow",
-        ]
-
-        def writer() -> None:
-            time.sleep(PAUSE_S)
-            with self.log.open("a", encoding="utf-8") as f:
-                f.write("без перевода строки")
-
-        th = threading.Thread(target=writer)
-        th.start()
-        self.addCleanup(th.join)
-        r = subprocess.run(
-            argv, check=False, capture_output=True, text=True, timeout=LIMIT_S
-        )
-        self.assertEqual(r.returncode, 125, r.stderr)
-        self.assertRegex(r.stdout, r"\d\d:\d\d:\d\d без перевода строки\n")
+        proc = self.start_follow(self.follow_argv("1"))
+        with self.log.open("a", encoding="utf-8") as f:
+            f.write("без перевода строки")
+        out, _ = proc.communicate()
+        self.assertEqual(proc.returncode, 125, out)
+        self.assertRegex(out, r"\d\d:\d\d:\d\d без перевода строки\n")
 
     def test_follow_requires_log(self) -> None:
         r = subprocess.run(
@@ -208,19 +208,12 @@ class WaitFollowTest(unittest.TestCase):
             check=False,
             capture_output=True,
             text=True,
-            timeout=LIMIT_S,
         )
         self.assertEqual(r.returncode, 2)
 
     def test_without_follow_log_lines_not_printed(self) -> None:
-        def writer() -> None:
-            time.sleep(PAUSE_S)
-            self.log.write_text("тихо\n", encoding="utf-8")
-            (self.run_dir / "done").write_text("0\n", encoding="utf-8")
-
-        th = threading.Thread(target=writer)
-        th.start()
-        self.addCleanup(th.join)
+        self.log.write_text("тихо\n", encoding="utf-8")
+        (self.run_dir / "done").write_text("0\n", encoding="utf-8")
         r = subprocess.run(
             [
                 "bash",
@@ -234,7 +227,6 @@ class WaitFollowTest(unittest.TestCase):
             check=False,
             capture_output=True,
             text=True,
-            timeout=LIMIT_S,
         )
         self.assertEqual(r.stdout, f"done rc=0 {self.run_dir}\n")
 
@@ -243,32 +235,63 @@ class WaitRemoteTest(unittest.TestCase):
     use_fake = True
 
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
         self.log = self.tmp / "remote.log"
         self.log.write_text("", encoding="utf-8")
         self.env = dict(os.environ)
+        # Спул наблюдателя узла — в каталоге проверки.
+        self.env["TMPDIR"] = str(self.tmp)
+        self.addCleanup(self.stop_watchers)
         if self.use_fake:
-            bindir = self.tmp / "bin"
-            bindir.mkdir()
-            (bindir / "ssh").write_text(FAKE_SSH, encoding="utf-8")
-            (bindir / "ssh").chmod(0o755)
-            self.env["PATH"] = f"{bindir}:{self.env['PATH']}"
+            self.bindir = self.tmp / "bin"
+            self.bindir.mkdir()
+            (self.bindir / "ssh").write_text(FAKE_SSH, encoding="utf-8")
+            (self.bindir / "ssh").chmod(0o755)
+            self.env["PATH"] = f"{self.bindir}:{self.env['PATH']}"
             self.env["FAKE_SSH_DROP"] = str(self.tmp / "drop")
             self.env["FAKE_SSH_LOG"] = str(self.log)
 
-    def remote(self, secs: float) -> subprocess.Popen:
-        p = subprocess.Popen(["sleep", str(secs)])
+    def stop_watchers(self) -> None:
+        """Снять наблюдателей узла, которые ещё живы (процесс pid 1 не кончается).
+
+        Живой наблюдатель держит замок lock своего спула; его группа процессов
+        (setsid) — PID из файла pid. Ожидание конца — освобождение замка.
+        """
+        for lock in self.tmp.glob("wait-remote-*/*/lock"):
+            with lock.open("a") as f:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    continue
+                except BlockingIOError:
+                    pass
+                try:
+                    os.killpg(int((lock.parent / "pid").read_text()), signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                fcntl.flock(f, fcntl.LOCK_EX)
+
+    def remote(self) -> subprocess.Popen:
+        """Удалённый процесс: живёт, пока проверка его не остановит (kill)."""
+        p = subprocess.Popen(["sleep", "infinity"])
         self.addCleanup(p.kill)
         # Завершившийся процесс нужно подобрать, иначе он остаётся зомби и kill -0 видит его живым.
         threading.Thread(target=p.wait, daemon=True).start()
         return p
 
-    def start(self, pid: int, *argv: str) -> subprocess.Popen:
+    def start(self, pid: int, *argv: str, path: str | None = None) -> subprocess.Popen:
         proc = subprocess.Popen(
-            ["bash", str(WAIT_REMOTE), "localhost", str(pid), str(self.log), *argv],
+            [
+                "bash",
+                str(WAIT_REMOTE),
+                "localhost",
+                str(pid),
+                path or str(self.log),
+                *argv,
+            ],
             stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             env=self.env,
         )
@@ -276,34 +299,46 @@ class WaitRemoteTest(unittest.TestCase):
         self.addCleanup(proc.wait)
         return proc
 
+    def finish(self, proc: subprocess.Popen, head: str = "") -> tuple[str, str]:
+        out, err = proc.communicate()
+        return head + out, err
+
     def append(self, text: str) -> None:
         with self.log.open("a", encoding="utf-8") as f:
             f.write(text)
 
+    def shown(self, out: str) -> list[str]:
+        return [
+            line.split(" ", 1)[1]
+            for line in out.splitlines()
+            if line[:2].isdigit() and line[2:3] == ":"
+        ]
+
     def test_shows_progress_and_ends_with_process(self) -> None:
         self.append("в журнале\n")
-        sleeper = self.remote(1.5)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid)
         assert proc.stdout is not None
         self.assertRegex(proc.stdout.readline(), r"^\d\d:\d\d:\d\d в журнале$")
         self.append("ход\n")
         self.assertRegex(proc.stdout.readline(), r"^\d\d:\d\d:\d\d ход$")
         self.assertIsNone(proc.poll())
-        out, _ = proc.communicate(timeout=LIMIT_S)
-        self.assertEqual(proc.returncode, 0)
+        sleeper.kill()
+        out, err = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, err)
         self.assertRegex(out, rf"remote done pid={sleeper.pid} localhost")
 
     def test_stall_exit_125(self) -> None:
-        sleeper = self.remote(15)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid, "--stall-s", "1")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        out, _ = self.finish(proc)
         self.assertEqual(proc.returncode, 125)
         self.assertRegex(out, r"stall \d+ localhost")
 
     def test_timeout_exit_124(self) -> None:
-        sleeper = self.remote(15)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid, "--timeout-s", "1")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        out, _ = self.finish(proc)
         self.assertEqual(proc.returncode, 124)
         self.assertIn("timeout", out)
 
@@ -313,36 +348,50 @@ class WaitRemoteTest(unittest.TestCase):
             check=False,
             capture_output=True,
             text=True,
-            timeout=LIMIT_S,
         )
         self.assertEqual(r.returncode, 2)
 
 
 class WaitRemoteFakeSshTest(WaitRemoteTest):
     def drops(self, *spec: int | str) -> None:
-        """Подключения с обрывом: строк журнала до обрыва, «N+K» — дописать K строк."""
+        """Подключения с обрывом: записей до обрыва, «N+K» — дописать K строк."""
         (self.tmp / "drop").write_text(
             "".join(f"{item}\n" for item in spec), encoding="utf-8"
         )
 
+    def dead_pid(self) -> int:
+        p = subprocess.Popen(["true"])
+        p.wait()
+        return p.pid
+
+    def age_log(self, seconds: float) -> None:
+        old = time.time() - seconds
+        os.utime(self.log, (old, old))
+
     def test_reconnect_after_drop_while_process_alive(self) -> None:
         self.append("до обрыва\n")
         self.drops(1)
-        sleeper = self.remote(2)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid, "--reconnect-s", "0")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        assert proc.stdout is not None
+        head = read_until(proc.stdout, "обрыв связи")
+        sleeper.kill()
+        out, _ = self.finish(proc, head)
         self.assertEqual(proc.returncode, 0, out)
         self.assertEqual(out.count("до обрыва"), 1, out)
-        self.assertIn("обрыв связи", out)
         self.assertRegex(out, r"remote done")
 
     def test_attempt_resets_after_new_lines_arrive(self) -> None:
-        # Каждое подключение с обрывом дописывает строку и передаёт её: новая
-        # строка сбрасывает попытки, два обрыва при --max-reconnects 1 их не исчерпывают.
+        # Второе подключение дописывает строку и передаёт её: новая строка
+        # сбрасывает попытки, два обрыва при --max-reconnects 1 их не исчерпывают.
         self.drops("1+1", "1+1")
-        sleeper = self.remote(2)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid, "--reconnect-s", "0", "--max-reconnects", "1")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        assert proc.stdout is not None
+        head = read_until(proc.stdout, "обрыв связи")
+        head += read_until(proc.stdout, "обрыв связи")
+        sleeper.kill()
+        out, _ = self.finish(proc, head)
         self.assertEqual(proc.returncode, 0, out)
         self.assertRegex(out, r"remote done")
 
@@ -351,9 +400,9 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         # и новых строк не дают: счёт попыток не сбрасывается.
         self.append("одна\n")
         self.drops(1, *[0] * 30)
-        sleeper = self.remote(15)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid, "--reconnect-s", "0", "--max-reconnects", "1")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        out, _ = self.finish(proc)
         self.assertEqual(proc.returncode, 3, out)
         self.assertEqual(out.count("одна"), 1, out)
         self.assertIn("связь с localhost потеряна, попыток 1", out)
@@ -364,48 +413,72 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         # второй обрыв при --max-reconnects 1 не исчерпывает попыток.
         self.append("".join(f"строка {i}\n" for i in range(1, 101)))
         self.drops(20, "5+5")
-        sleeper = self.remote(2)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid, "--reconnect-s", "0", "--max-reconnects", "1")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        assert proc.stdout is not None
+        head = read_until(proc.stdout, "обрыв связи")
+        head += read_until(proc.stdout, "обрыв связи")
+        sleeper.kill()
+        out, _ = self.finish(proc, head)
         self.assertEqual(proc.returncode, 0, out)
-        shown = [
-            line.split(" ", 1)[1]
-            for line in out.splitlines()
-            if " строка " in line or " дописано " in line
-        ]
         expected = [f"строка {i}" for i in range(81, 101)] + [
             f"дописано {i}" for i in range(5)
         ]
-        self.assertEqual(shown, expected, out)
+        self.assertEqual(self.shown(out), expected, out)
 
     def test_truncated_log_after_drop_shown_from_start(self) -> None:
         # Показаны последние 20 из 30 строк, обрыв, журнал усечён и в нём
         # 3 новые строки: после переподключения приходят ровно они.
         self.append("".join(f"строка {i}\n" for i in range(1, 31)))
         self.drops(20, "3!3")
-        sleeper = self.remote(2)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid, "--reconnect-s", "0", "--max-reconnects", "1")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        assert proc.stdout is not None
+        head = read_until(proc.stdout, "дописано 2")
+        sleeper.kill()
+        out, _ = self.finish(proc, head)
         self.assertEqual(proc.returncode, 0, out)
-        shown = [
-            line.split(" ", 1)[1]
-            for line in out.splitlines()
-            if " строка " in line or " дописано " in line
-        ]
         expected = [f"строка {i}" for i in range(11, 31)] + [
             f"дописано {i}" for i in range(3)
         ]
-        self.assertEqual(shown, expected, out)
-        self.assertIn("журнал усечён", out)
+        self.assertEqual(self.shown(out), expected, out)
+        self.assertEqual(out.count("журнал усечён"), 1, out)
+
+    def test_truncated_and_regrown_with_same_last_line(self) -> None:
+        # RP-2289 п. 8: показаны 5 строк, обрыв, журнал усечён и снова дорос
+        # до тех же строк (та же длина, та же последняя строка, тот же inode):
+        # наблюдатель узла видит усечение по событию, строки нового журнала
+        # приходят один раз, без потерь и повторов.
+        old = "".join(f"o{i}\n" for i in range(5))
+        self.append(old)
+        self.drops(5)
+        sleeper = self.remote()
+        proc = self.start(sleeper.pid, "--reconnect-s", "0")
+        assert proc.stdout is not None
+        head = read_until(proc.stdout, "обрыв связи")
+        os.truncate(self.log, 0)
+        head += read_until(proc.stdout, "журнал усечён")
+        self.append(old)
+        head += read_until(proc.stdout, "o4")
+        sleeper.kill()
+        out, _ = self.finish(proc, head)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(
+            self.shown(out), [f"o{i}" for i in range(5)] * 2, out
+        )
+        self.assertEqual(out.count("журнал усечён"), 1, out)
 
     def test_partial_line_on_drop_printed_once(self) -> None:
-        # Обрыв посреди строки при живом процессе: обрывок не печатается,
+        # Обрыв посреди записи при живом процессе: обрывок не печатается,
         # после переподключения строка приходит целиком один раз.
         self.append("первая\nобрывок\n")
         self.drops("2-")
-        sleeper = self.remote(2)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid, "--reconnect-s", "0")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        assert proc.stdout is not None
+        head = read_until(proc.stdout, "обрывок")
+        sleeper.kill()
+        out, _ = self.finish(proc, head)
         self.assertEqual(proc.returncode, 0, out)
         self.assertEqual(out.count("обрывок"), 1, out)
         self.assertRegex(out, r"\d\d:\d\d:\d\d обрывок\n")
@@ -413,9 +486,12 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
     def test_partial_last_line_printed_when_process_ends(self) -> None:
         # Последняя строка журнала без перевода строки не теряется.
         self.append("первая\nхвост")
-        sleeper = self.remote(1.5)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid)
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        assert proc.stdout is not None
+        head = read_until(proc.stdout, "первая")
+        sleeper.kill()
+        out, _ = self.finish(proc, head)
         self.assertEqual(proc.returncode, 0, out)
         self.assertEqual(out.count("хвост"), 1, out)
         self.assertRegex(out, r"\d\d:\d\d:\d\d хвост\nremote done")
@@ -426,135 +502,94 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         self.env["FAKE_SSH_NOISE"] = "привет из bashrc"
         self.append("одна\n")
         self.drops(1)
-        sleeper = self.remote(2)
-        proc = subprocess.Popen(
-            [
-                "bash",
-                str(WAIT_REMOTE),
-                "localhost",
-                str(sleeper.pid),
-                str(self.log),
-                "--reconnect-s",
-                "0",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=self.env,
-        )
-        self.addCleanup(proc.kill)
-        out, err = proc.communicate(timeout=LIMIT_S)
+        sleeper = self.remote()
+        proc = self.start(sleeper.pid, "--reconnect-s", "0")
+        assert proc.stdout is not None
+        head = read_until(proc.stdout, "обрыв связи")
+        sleeper.kill()
+        out, err = self.finish(proc, head)
         self.assertEqual(proc.returncode, 0, out)
         self.assertNotIn("wait-remote", out)
         self.assertNotIn("привет из bashrc", out)
         self.assertIn("вывод оболочки узла: привет из bashrc", err)
         self.assertEqual(out.count("одна"), 1, out)
 
-    def dead_pid(self) -> int:
-        p = subprocess.Popen(["true"])
-        p.wait()
-        return p.pid
-
-    def later(self, action) -> None:
-        def run() -> None:
-            time.sleep(PAUSE_S)
-            action()
-
-        th = threading.Thread(target=run)
-        th.start()
-        self.addCleanup(th.join)
-
-    def shown(self, out: str) -> list[str]:
-        return [
-            line.split(" ", 1)[1]
-            for line in out.splitlines()
-            if line[:2].isdigit() and line[2:3] == ":"
-        ]
-
     def test_log_created_inside_connection(self) -> None:
-        # Журнала нет при подключении, он появляется, обрыв: после
-        # переподключения нет ни повтора, ни сообщения об усечении.
+        # Журнала нет при подключении (сообщение в stderr), он появляется,
+        # обрыв: после переподключения нет ни повтора, ни сообщения об усечении.
         self.log.unlink()
         self.drops(2)
-        self.later(lambda: self.log.write_text("a1\na2\n", encoding="utf-8"))
-        sleeper = self.remote(4)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid, "--reconnect-s", "0")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        assert proc.stdout is not None and proc.stderr is not None
+        read_until(proc.stderr, "пока нет")
+        self.log.write_text("a1\na2\n", encoding="utf-8")
+        head = read_until(proc.stdout, "a2")
+        sleeper.kill()
+        out, _ = self.finish(proc, head)
         self.assertEqual(proc.returncode, 0, out)
         self.assertEqual(self.shown(out), ["a1", "a2"], out)
         self.assertNotIn("усечён", out)
 
     def test_log_truncated_inside_connection(self) -> None:
-        # Журнал усечён внутри подключения: tail показывает новые строки,
+        # Журнал усечён внутри подключения: показываются новые строки,
         # после обрыва они не повторяются.
         self.append("".join(f"o{i}\n" for i in range(5)))
         self.drops(7)
-        self.later(lambda: self.log.write_text("n1\nn2\n", encoding="utf-8"))
-        sleeper = self.remote(4)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid, "--reconnect-s", "0")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        assert proc.stdout is not None
+        head = read_until(proc.stdout, "o4")
+        self.log.write_text("n1\nn2\n", encoding="utf-8")
+        head += read_until(proc.stdout, "n2")
+        sleeper.kill()
+        out, _ = self.finish(proc, head)
         self.assertEqual(proc.returncode, 0, out)
         self.assertEqual(
             self.shown(out), [f"o{i}" for i in range(5)] + ["n1", "n2"], out
         )
         self.assertEqual(out.count("журнал усечён"), 1, out)
 
+    def replace_log(self, text: str) -> None:
+        new = self.tmp / "new.log"
+        new.write_text(text, encoding="utf-8")
+        os.replace(new, self.log)
+
     def test_log_replaced_inside_connection(self) -> None:
         # Журнал заменён (mv) внутри подключения: строки нового журнала
         # показываются с первой, после обрыва не повторяются.
         self.append("o1\no2\n")
         self.drops(4)
-
-        def replace() -> None:
-            new = self.tmp / "new.log"
-            new.write_text("r1\nr2\n", encoding="utf-8")
-            os.replace(new, self.log)
-
-        self.later(replace)
-        sleeper = self.remote(4)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid, "--reconnect-s", "0")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        assert proc.stdout is not None
+        head = read_until(proc.stdout, "o2")
+        self.replace_log("r1\nr2\n")
+        head += read_until(proc.stdout, "r2")
+        sleeper.kill()
+        out, _ = self.finish(proc, head)
         self.assertEqual(proc.returncode, 0, out)
         self.assertEqual(self.shown(out), ["o1", "o2", "r1", "r2"], out)
         self.assertEqual(out.count("журнал усечён"), 1, out)
 
-    def test_same_inode_shrunk_and_regrown_during_drop(self) -> None:
-        # За время обрыва журнал усечён и снова дорос до прежней длины
-        # (inode тот же): последняя показанная строка не совпала — показ с первой.
-        self.append("".join(f"o{i}\n" for i in range(5)))
-        self.drops(5)
-
-        def regrow() -> None:
-            # Ожидание до обрыва: файл drop удаляется двойником при подключении.
-            with self.log.open("r+", encoding="utf-8") as f:
-                f.truncate(0)
-                f.write("".join(f"z{i}\n" for i in range(6)))
-
-        sleeper = self.remote(3)
-        proc = self.start(sleeper.pid, "--reconnect-s", "1")
-        assert proc.stdout is not None
-        head = [proc.stdout.readline() for _ in range(5)]
-        self.assertIn("обрыв связи", proc.stdout.readline())
-        regrow()
-        rest, _ = proc.communicate(timeout=LIMIT_S)
-        out = "".join(head) + rest
+    def test_log_created_then_replaced_at_once(self) -> None:
+        # RP-2289 п. 7: журнал создан и тут же заменён (mv) — tail -F (GNU
+        # coreutils 9.12) после этого молчал. Строки заменившего журнала
+        # приходят по одному разу; строка первого — не больше одного раза.
+        self.log.unlink()
+        sleeper = self.remote()
+        proc = self.start(sleeper.pid)
+        assert proc.stdout is not None and proc.stderr is not None
+        read_until(proc.stderr, "пока нет")
+        self.log.write_text("a1\n", encoding="utf-8")
+        self.replace_log("r1\nr2\n")
+        head = read_until(proc.stdout, "r2")
+        sleeper.kill()
+        out, _ = self.finish(proc, head)
         self.assertEqual(proc.returncode, 0, out)
-        self.assertEqual(
-            self.shown(out),
-            [f"o{i}" for i in range(5)] + [f"z{i}" for i in range(6)],
-            out,
-        )
-        self.assertIn("журнал усечён", out)
-
-    def test_truncated_before_tail_still_watched(self) -> None:
-        # Журнал усечён на узле между подсчётом строк и запуском tail, давно
-        # неподвижен: сторож всё равно срабатывает (без исправления — вечное ожидание).
-        self.env["FAKE_SSH_TRUNC"] = "1"
-        self.append("".join(f"строка {i}\n" for i in range(30)))
-        self.age_log(120)
-        proc = self.start(1, "--stall-s", "60")
-        out, _ = proc.communicate(timeout=LIMIT_S)
-        self.assertEqual(proc.returncode, 125, out)
+        shown = self.shown(out)
+        self.assertEqual([s for s in shown if s != "a1"], ["r1", "r2"], out)
+        self.assertLessEqual(shown.count("a1"), 1, out)
 
     def test_shell_output_without_newline_glued_to_header(self) -> None:
         # Вывод оболочки без перевода строки склеен с шапкой: шапка найдена,
@@ -562,35 +597,20 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         self.env["FAKE_SSH_NOISE"] = "\x1b]0;title\x07"
         self.env["FAKE_SSH_NOISE_NONL"] = "1"
         self.append("одна\n")
-        proc = subprocess.Popen(
-            [
-                "bash",
-                str(WAIT_REMOTE),
-                "localhost",
-                "1",
-                str(self.log),
-                "--stall-s",
-                "1",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=self.env,
-        )
-        self.addCleanup(proc.kill)
-        out, err = proc.communicate(timeout=LIMIT_S)
+        proc = self.start(1, "--stall-s", "1")
+        out, err = self.finish(proc)
         self.assertEqual(proc.returncode, 125, out)
         self.assertNotIn("wait-remote", out)
         self.assertIn("title", err)
         self.assertEqual(self.shown(out), ["одна"], out)
 
     def test_partial_line_on_drop_then_process_ended(self) -> None:
-        # Обрыв посреди строки, процесс уже завершился: обрывок не печатается,
-        # журнал дочитывается последним подключением — строка целиком один раз.
+        # Обрыв посреди записи, процесс уже завершился: обрывок не печатается,
+        # спул дочитывается следующим подключением — строка целиком один раз.
         self.append("первая\nобрывок-длинный-хвост\n")
         self.drops("2-")
         proc = self.start(self.dead_pid(), "--reconnect-s", "0")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        out, _ = self.finish(proc)
         self.assertEqual(proc.returncode, 0, out)
         self.assertEqual(self.shown(out), ["первая", "обрывок-длинный-хвост"], out)
 
@@ -600,13 +620,10 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         self.append("одна\n")
         self.drops("h")
         proc = self.start(self.dead_pid(), "--reconnect-s", "0")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        out, _ = self.finish(proc)
         self.assertEqual(proc.returncode, 0, out)
         self.assertNotIn("wait-remote", out)
-
-    def age_log(self, seconds: float) -> None:
-        old = time.time() - seconds
-        os.utime(self.log, (old, old))
+        self.assertEqual(self.shown(out), ["одна"], out)
 
     def test_restart_keeps_stall_from_log_mtime(self) -> None:
         # Перезапуск ожидания давно идущего процесса (pid 1) при неподвижном
@@ -615,7 +632,7 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         self.append("старая\n")
         self.age_log(120)
         proc = self.start(1, "--stall-s", "60")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        out, _ = self.finish(proc)
         self.assertEqual(proc.returncode, 125, out)
         self.assertIn("старая", out)
         self.assertRegex(out, r"stall 1[12]\d localhost")
@@ -625,9 +642,9 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         # от запуска процесса, застоя нет, ожидание кончается по --timeout-s.
         self.append("вчерашняя\n")
         self.age_log(86400)
-        sleeper = self.remote(15)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid, "--stall-s", "900", "--timeout-s", "2")
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        out, _ = self.finish(proc)
         self.assertEqual(proc.returncode, 124, out)
         self.assertNotIn("stall", out)
 
@@ -639,38 +656,37 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         proc = self.start(
             1, "--stall-s", "2", "--reconnect-s", "1", "--max-reconnects", "9"
         )
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        out, _ = self.finish(proc)
         self.assertEqual(proc.returncode, 125, out)
 
+    def test_header_drops_end_in_stall(self) -> None:
+        # RP-2289 п. 9: обрывы раз за разом до шапки (записей нет): срок
+        # сторожа проверяется при обрыве — код 125, а не 3 после всех попыток.
+        self.drops(*["h"] * 10)
+        proc = self.start(
+            1, "--stall-s", "2", "--reconnect-s", "1", "--max-reconnects", "9"
+        )
+        out, _ = self.finish(proc)
+        self.assertEqual(proc.returncode, 125, out)
+        self.assertRegex(out, r"stall \d+ localhost")
+
     def test_foreign_process_is_alive_not_done(self) -> None:
-        # pid 1 чужой (kill -0 даёт EPERM), но /proc/1 есть: процесс жив.
-        self.drops(0)
-        proc = self.start(1, "--reconnect-s", "0", "--max-reconnects", "0")
-        out, _ = proc.communicate(timeout=LIMIT_S)
-        self.assertEqual(proc.returncode, 3, out)
+        # pid 1 чужой (kill -0 даёт EPERM), но процесс жив: наблюдатель
+        # конца процесса не пишет, ожидание кончается сторожем.
+        proc = self.start(1, "--stall-s", "1")
+        out, _ = self.finish(proc)
+        self.assertEqual(proc.returncode, 125, out)
         self.assertNotIn("remote done", out)
 
     def test_ssh_stderr_is_not_log_line(self) -> None:
         self.env["FAKE_SSH_ERR"] = "1"
         self.drops(0)
-        sleeper = self.remote(2)
-        proc = subprocess.Popen(
-            [
-                "bash",
-                str(WAIT_REMOTE),
-                "localhost",
-                str(sleeper.pid),
-                str(self.log),
-                "--reconnect-s",
-                "0",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=self.env,
-        )
-        self.addCleanup(proc.kill)
-        out, err = proc.communicate(timeout=LIMIT_S)
+        sleeper = self.remote()
+        proc = self.start(sleeper.pid, "--reconnect-s", "0")
+        assert proc.stdout is not None
+        head = read_until(proc.stdout, "обрыв связи")
+        sleeper.kill()
+        out, err = self.finish(proc, head)
         self.assertEqual(proc.returncode, 0, out)
         self.assertNotIn("connection refused", out)
         self.assertIn("connection refused", err)
@@ -683,27 +699,37 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         self.env["HOME"] = str(home)
         for path in ("~/a b'c.log", str(home / "a b'c.log")):
             with self.subTest(path=path):
-                sleeper = self.remote(1.5)
-                proc = subprocess.Popen(
-                    ["bash", str(WAIT_REMOTE), "localhost", str(sleeper.pid), path],
-                    stdout=subprocess.PIPE,
-                    text=True,
-                    env=self.env,
-                )
-                self.addCleanup(proc.kill)
-                out, _ = proc.communicate(timeout=LIMIT_S)
-                self.assertRegex(out, r"\d\d:\d\d:\d\d в тильде")
+                sleeper = self.remote()
+                proc = self.start(sleeper.pid, path=path)
+                assert proc.stdout is not None
+                head = read_until(proc.stdout, "в тильде")
+                sleeper.kill()
+                out, _ = self.finish(proc, head)
+                self.assertEqual(proc.returncode, 0, out)
+
+    def test_missing_inotifywait_reported(self) -> None:
+        # На узле нет inotifywait: явное сообщение и код 2, без отката
+        # на другой способ слежения.
+        for tool in ("bash", "dirname", "flock", "setsid", "stat", "tail", "ps"):
+            found = shutil.which(tool)
+            assert found is not None, tool
+            (self.bindir / tool).symlink_to(found)
+        self.env["PATH"] = str(self.bindir)
+        proc = self.start(1)
+        out, err = self.finish(proc)
+        self.assertEqual(proc.returncode, 2, out + err)
+        self.assertIn("на узле localhost нет: inotifywait (", err)
 
     def check_term_in_pause(self, *extra: str) -> None:
         # Пауза — sleep с числом секунд, которого нет у других процессов.
         pause = 5000 + os.getpid() % 1000
         self.drops(0)
-        sleeper = self.remote(15)
+        sleeper = self.remote()
         proc = self.start(sleeper.pid, *extra, "--reconnect-s", str(pause))
         assert proc.stdout is not None
         self.assertIn("обрыв связи", proc.stdout.readline())
         proc.send_signal(signal.SIGTERM)
-        proc.wait(timeout=LIMIT_S)
+        proc.wait()
         self.assertEqual(proc.returncode, 143)
         left = subprocess.run(
             ["pgrep", "-fx", f"sleep {pause}"], check=False, capture_output=True

@@ -89,6 +89,8 @@ case "$1 $2" in
         jq --arg w "$3" '.result.workspaces |= map(select(.workspace_id != $w))' "$FAKE_DIR/ws.json" > "$FAKE_DIR/ws.tmp"
         mv "$FAKE_DIR/ws.tmp" "$FAKE_DIR/ws.json" ;;
     "tab list")
+        # Сбой перечня после попытки закрытия: закрытие не подтверждено.
+        [ -z "${FAKE_HERDR_LIST_FAIL:-}" ] || [ ! -e "$FAKE_DIR/t2.closed" ] || exit 1
         if [ -n "${FAKE_HERDR_EXTRA_TAB:-}" ] && [ ! -e "$FAKE_DIR/t2.closed" ]; then
             echo '{"result":{"tabs":[{"tab_id":"t1"},{"tab_id":"t2"}]}}'
         else
@@ -634,6 +636,20 @@ class SymbolsTest(unittest.TestCase):
         )
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("workspace=w1", r.stdout)
+
+    def test_close_dies_when_tab_list_fails(self) -> None:
+        # Сбой `herdr tab list` не считается закрытием вкладки.
+        self.task("tsk", "🦊", "🦊 tsk · sonnet", "w1", report=True)
+        r = self.run_cmd(
+            "close",
+            "tsk",
+            FAKE_HERDR_EXTRA_TAB="1",
+            FAKE_HERDR_TAB_GONE="1",
+            FAKE_HERDR_LIST_FAIL="1",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("перечень вкладок workspace w1 не получен", r.stdout + r.stderr)
+        self.assertNotIn("workspace=w1", r.stdout)
 
     def test_close_dies_when_tab_stays_open(self) -> None:
         self.task("tsk", "🦊", "🦊 tsk · sonnet", "w1", report=True)

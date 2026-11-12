@@ -136,46 +136,42 @@ def set_lifetimes(root: Path, since_ms: int, now_ms: int) -> str:
 def jenkins_builds(env: dict[str, str], since_ms: int) -> list[dict]:
     """Сборки всех заданий с началом в периоде, кроме проверочных (`jenkins.fake_job`).
 
-    Дерево папок обходится по уровням, запросы уровня и сборки листьев идут
-    параллельно; порядок результата — порядок обхода.
+    Дерево папок обходится по уровням, запросы уровня идут параллельно, лист
+    запрашивается один раз; порядок результата — порядок обхода.
     """
     fake = gates.config().get("jenkins.fake_job", "")
     if not env.get("JENKINS_URL"):
         raise ConnectionError("в файле доступа Jenkins нет JENKINS_URL")
-    folder_tree = urllib.parse.quote("_class,jobs[name,url]", safe=",[]")
-    builds_tree = urllib.parse.quote(f"allBuilds[{BUILD_TREE}]{{0,200}}", safe=",[]{}")
+    # Один запрос на узел: у папки приходят `jobs`, у задания — `allBuilds`,
+    # поэтому лист не запрашивается второй раз.
+    tree = urllib.parse.quote(
+        f"_class,jobs[name,url],allBuilds[{BUILD_TREE}]{{0,200}}", safe=",[]{}"
+    )
 
-    def folder(item: tuple[str, list[str]]) -> dict | None:
-        return gates.jenkins(item[0].rstrip("/") + f"/api/json?tree={folder_tree}", env)
-
-    def job_builds(item: tuple[str, list[str]]) -> list[dict]:
-        url, path = item
-        name = "/".join(path)
-        b = gates.jenkins(url.rstrip("/") + f"/api/json?tree={builds_tree}", env) or {}
-        found = []
-        for build in b.get("allBuilds", []):
-            if build["timestamp"] >= since_ms:
-                build["job"] = name
-                found.append(build)
-        return found
+    def node(item: tuple[str, list[str]]) -> dict | None:
+        return gates.jenkins(item[0].rstrip("/") + f"/api/json?tree={tree}", env)
 
     out: list[dict] = []
     with ThreadPoolExecutor(8) as pool:
         level = [(env["JENKINS_URL"], [])]
-        leaves: list[tuple[str, list[str]]] = []
         while level:
             nxt: list[tuple[str, list[str]]] = []
-            for item, d in zip(level, pool.map(folder, level), strict=True):
+            for item, d in zip(level, pool.map(node, level), strict=True):
                 if d is None:
                     raise ConnectionError(f"Jenkins не ответил на {item[0]}")
                 if d.get("jobs") is None:
-                    if not (fake and fake in "/".join(item[1])):
-                        leaves.append(item)
+                    name = "/".join(item[1])
+                    for build in d.get("allBuilds", []):
+                        if build["timestamp"] >= since_ms:
+                            build["job"] = name
+                            out.append(build)
                     continue
-                nxt += [(job["url"], [*item[1], job["name"]]) for job in d["jobs"]]
+                for job in d["jobs"]:
+                    path = [*item[1], job["name"]]
+                    # Проверочные задания и всё под ними не запрашиваются.
+                    if not (fake and fake in "/".join(path)):
+                        nxt.append((job["url"], path))
             level = nxt
-        for found in pool.map(job_builds, leaves):
-            out.extend(found)
     return out
 
 

@@ -295,6 +295,25 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(len(shows), 1)
         self.assertIn("a3", shows[0][4])
 
+    def test_stop_empty_description_is_not_judged(self) -> None:
+        # Вызов без описания: живость по описанию не определить, ход не блокируется.
+        self.launch("a6", "")
+        r = self.hook("stop", {"background_tasks": [self.live_agent("Сделай.")]})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_stop_names_covered_stopped_as_launched(self) -> None:
+        # Остановившаяся и покрытая ожиданием подзадача называется, как прежде.
+        self.launch("a2", "правка хука")
+        self.write_stopped("a2")
+        self.start_run()
+        self.write_stopped("a1", at_ms=time.time_ns() // 1_000_000 + 60_000)
+        r = self.hook("stop", {"background_tasks": []})
+        reason = json.loads(r.stdout)["reason"]
+        self.assertIn("a1 (agent_id id-1)", reason)
+        self.assertIn("Запущены и ещё без итога: a2", reason)
+        self.assertNotIn("Завершены без итога", reason)
+        self.assertIn("Каждую возобнови", reason)
+
     def test_stop_started_without_description_is_not_judged(self) -> None:
         # Отметка прежней версии хука без описания: живость не определить,
         # ход не блокируется, как без поля background_tasks.

@@ -332,10 +332,12 @@ def is_live(record: dict[str, str], live: list[object]) -> bool:
 def launched_without_result(
     task: Path, live: list[object] | None
 ) -> tuple[list[str], list[str], list[str]]:
-    """Подзадачи с `.started` без `.done` и `.stopped`: идут, завершены, неизвестно.
+    """Подзадачи с `.started` без `.done`: идут, завершены, неизвестно.
 
     `live` — поле `background_tasks` входа `Stop`; None — поля нет, и все
-    подзадачи попадают в «неизвестно», как и отметки без описания.
+    подзадачи попадают в «неизвестно», как и отметки с пустым описанием или
+    без него. Подзадача с `.stopped` — тоже «неизвестно»: её судит отметка
+    остановки, а здесь она только называется.
     """
     directory = subtasks(task)
     running: list[str] = []
@@ -345,12 +347,14 @@ def launched_without_result(
         return running, ended, unknown
     for path in sorted(directory.glob("*.started")):
         name = path.stem
-        if (directory / f"{name}.done").exists() or (
-            directory / f"{name}.stopped"
-        ).exists():
+        if (directory / f"{name}.done").exists():
             continue
         record = read_record(path)
-        if live is None or "description" not in record:
+        if (
+            live is None
+            or not record.get("description")
+            or (directory / f"{name}.stopped").exists()
+        ):
             unknown.append(name)
         elif is_live(record, live):
             running.append(name)
@@ -578,13 +582,15 @@ def stop(data: dict[str, object]) -> None:
         )
     if running:
         parts.append(f"Ещё идут: {', '.join(running)}")
+    stopped = {name for name, _, _ in pending}
+    unknown = [name for name in unknown if name not in stopped]
     if unknown:
         parts.append(f"Запущены и ещё без итога: {', '.join(unknown)}")
     emit(
         {
             "decision": "block",
             "reason": (
-                ". ".join(parts) + ". Каждую остановившуюся и завершённую возобнови "
+                ". ".join(parts) + ". Каждую возобнови "
                 "(SendMessage), перезапусти или, если итог уже снят или подзадача снята, "
                 f"запиши отметку {subtasks(task)}/<имя>.done с одной строкой итога."
             ),

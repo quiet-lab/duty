@@ -741,16 +741,22 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         self.check_term_in_pause()
 
 
-
 FLOCK_DOUBLE = r"""#!/bin/bash
 # Двойник flock: перед неблокирующим захватом замка наблюдателя сообщает
 # об этом в stderr и ждёт записи «e» в спуле (события inotify), то есть
-# конца процесса и выхода прежнего наблюдателя.
+# конца процесса и выхода прежнего наблюдателя. Наблюдение за спулом
+# устанавливается до проверки условия: запись «e» между проверкой
+# и наблюдением не теряется.
 if [ -n "${FAKE_FLOCK_SPOOL:-}" ] && [ "$1" = -n ]; then
+    exec 5< <(exec inotifywait -m -e modify --format m -- "$FAKE_FLOCK_SPOOL" 2>&1)
+    watcher=$!
+    while IFS= read -r line <&5 && [ "$line" != 'Watches established.' ]; do :; done
     echo flock-reached >&2
     until [ "$(tail -n 1 -- "$FAKE_FLOCK_SPOOL" 2> /dev/null)" = e ]; do
-        inotifywait -qq -e modify "$FAKE_FLOCK_SPOOL"
+        IFS= read -r line <&5 || break
     done
+    kill "$watcher" 2> /dev/null
+    exec 5<&-
 fi
 exec /usr/bin/flock "$@"
 """
@@ -806,6 +812,64 @@ class WaitRemoteNodeRaceTest(unittest.TestCase):
             self.assertEqual(out2.splitlines()[-2:], ["o a", "e"], out2)
             self.assertNotIn("w", out2.splitlines(), out2)
             self.assertEqual(out2.splitlines().count("e"), 1, out2)
+
+    def test_end_written_while_watcher_holds_lock(self) -> None:
+        # Окно между записью «e» и выходом наблюдателя (освобождением замка
+        # lock): подключение прочитало спул до «e», захват замка не удался —
+        # оно идёт за спулом до выхода наблюдателя, получает «e» ровно один
+        # раз, второго наблюдателя не запускает и удаляет каталог спула.
+        # Наблюдатель изображают процесс target (его PID в файле pid)
+        # и замок lock, который держит проверка.
+        node = SCRIPTS / "wait-remote-node.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log = root / "log"
+            log.write_text("a\n", encoding="utf-8")
+            target = subprocess.Popen(["sleep", "100000"])
+            # Очистки идут в обратном порядке: сначала kill, затем wait.
+            self.addCleanup(target.wait)
+            self.addCleanup(target.kill)
+            watcher = subprocess.Popen(["sleep", "100000"])
+            # Очистки идут в обратном порядке: сначала kill, затем wait.
+            self.addCleanup(watcher.wait)
+            self.addCleanup(watcher.kill)
+            key = subprocess.run(
+                ["cksum"],
+                input=f"{target.pid} {log}\n",
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.split()[0]
+            spool_dir = (
+                root / "tmp" / f"wait-remote-{os.getuid()}" / f"{target.pid}-{key}"
+            )
+            spool_dir.mkdir(parents=True)
+            spool = spool_dir / "spool"
+            spool.write_text("o a\n", encoding="utf-8")
+            (spool_dir / "pid").write_text(f"{watcher.pid}\n", encoding="utf-8")
+            lock = (spool_dir / "lock").open("a")
+            self.addCleanup(lock.close)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            with node.open("rb") as script:
+                conn = subprocess.Popen(
+                    ["bash", "-s", "--", str(log), str(target.pid), "t", "first"],
+                    stdin=script,
+                    stdout=subprocess.PIPE,
+                    text=True,
+                    env={**os.environ, "TMPDIR": str(root / "tmp")},
+                )
+            assert conn.stdout is not None
+            # Шапка печатается после попытки захвата замка.
+            self.assertIn("wait-remote t 1 1 ", conn.stdout.readline())
+            with spool.open("a", encoding="utf-8") as f:
+                f.write("e\n")
+            watcher.kill()
+            watcher.wait()
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            out, _ = conn.communicate()
+            self.assertEqual(conn.returncode, 0, out)
+            self.assertEqual(out.splitlines(), ["o a", "e"], out)
+            self.assertFalse(spool_dir.exists())
 
 
 @unittest.skipUnless(

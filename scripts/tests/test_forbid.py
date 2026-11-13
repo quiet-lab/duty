@@ -730,6 +730,51 @@ class RmResultsTest(unittest.TestCase):
             ]
         )
 
+    def test_review_bypasses_denied_while_live(self) -> None:
+        """Обходы, найденные ревью: цель в теле -exec, команда со стандартного ввода,
+        своя строка замены, шаблон в имени, иные удаляющие команды и интерпретаторы."""
+        live, out = self.live, self.outside
+        self.assert_denied(
+            [
+                f"find {out} -maxdepth 0 -exec rm -rf {live} \\;",
+                f"find {out} -maxdepth 0 -exec rm -f {live}/brief.md \\;",
+                f"find {out} -maxdepth 0 -exec sh -c 'rm -rf {live}' \\;",
+                f"find {out} -maxdepth 0 -exec find {live} -delete \\;",
+                f"find {live} -exec sh -c 'x' + {{}} \\;",
+                "echo rm -rf x | xargs env",
+                "echo rm -rf x | xargs sudo",
+                "echo rm -rf x | xargs nice",
+                "ls | xargs env -S 'rm -rf'",
+                f"echo rm | xargs -I% % -rf {live}",
+                "ls | xargs --replace=% % -rf",
+                "ls | xargs -i% % -rf",
+                "ls | xargs /bin/r[m] -rf",
+                "ls | xargs r? -rf",
+                "ls | xargs shred -u",
+                "ls | xargs rmdir",
+                "ls | xargs truncate -s 0",
+                "ls | xargs git rm -r",
+                "ls | xargs git clean -fdx",
+                "ls | xargs rsync --remove-source-files -a /dst",
+                "ls | xargs rsync -a --delete /src",
+                "ls | xargs awk 'BEGIN{system(\"rm -rf \" ARGV[1])}'",
+                f"find {live} -exec shred -u {{}} +",
+                "ls | xargs ruby3.2 -e 'x'",
+                "ls | xargs node22 x.js",
+                "ls | xargs nodejs x.js",
+                "ls | xargs tclsh x",
+                "ls | xargs uv run python x.py",
+                "ls | xargs npx rimraf",
+                "ls | xargs pypy3 x.py",
+            ]
+        )
+
+    def test_find_exec_body_checked_as_command(self) -> None:
+        self.assertEqual(self.check(f"find {self.outside} -exec pkill x \\;"), "kill")
+        self.assertEqual(
+            self.check(f"find {self.outside} -exec sh -c 'pkill x' \\;"), "kill"
+        )
+
     def test_find_exec_allowed_outside_or_harmless(self) -> None:
         live = self.live
         self.assertIsNone(self.check(f"find {live} -exec env cat {{}} +"))

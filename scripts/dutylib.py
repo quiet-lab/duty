@@ -200,7 +200,11 @@ def _proc_paths(with_fds: bool) -> tuple[list[Path], list[Path]]:
 
 # Общий предел двух вызовов docker (`ps` и `inspect`): зависший демон
 # не должен вешать хук и сценарии; второй вызов получает остаток срока.
-DOCKER_TIMEOUT_S = 10
+# Хук forbid (`hooks/hooks.json`, `timeout`) живёт 10 с: после старта и обхода
+# `/proc` ему нужен запас, чтобы успеть отказать (`DockerUnknown`) раньше,
+# чем Claude Code убьёт его (убитый хук пропускает команду). Срок docker —
+# не больше половины срока хука; связь проверяет test_dutylib.py.
+DOCKER_TIMEOUT_S = 5
 _clock = time.monotonic
 
 
@@ -217,9 +221,9 @@ class ProcIndex(dict[Path, Path]):
 def container_mounts() -> list[Path]:
     """Источники монтирования работающих контейнеров (`docker ps` и `docker inspect`).
 
-    Пусто — docker нет, демон не отвечает ошибкой или контейнеров нет.
-    Не уложились в общий срок `DOCKER_TIMEOUT_S` оба вызова вместе —
-    `DockerUnknown`: «неизвестно» не равно «пусто», вызывающий отказывает
+    Пусто — docker нет, `ps` завершился ошибкой (демона нет) или контейнеров нет.
+    Ошибка `inspect` или превышение общего срока `DOCKER_TIMEOUT_S` двумя
+    вызовами — `DockerUnknown`: «неизвестно» не равно «пусто», вызывающий отказывает
     (`proc_indexes` помечает индекс, `live_reason` по метке возвращает причину).
 
     Процессы контейнера rootless Docker принадлежат uid из подчинённого
@@ -255,8 +259,12 @@ def container_mounts() -> list[Path]:
         "{{range .Mounts}}{{println .Source}}{{end}}",
         *ids.stdout.split(),
     )
-    if info is None or info.returncode != 0:
+    if info is None:
         return []
+    if info.returncode != 0:
+        # Контейнер мог выйти между `ps` и `inspect`: часть монтирований
+        # потеряна, «пусто» было бы ложью.
+        raise DockerUnknown("docker inspect завершился с ошибкой")
     return [Path(row) for row in info.stdout.splitlines() if row.startswith("/")]
 
 

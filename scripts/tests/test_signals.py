@@ -2,7 +2,6 @@
 
 import json
 import os
-import select
 import signal
 import subprocess
 import sys
@@ -12,12 +11,12 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "signals.py"
-# Замер на станции (32 ядра), 5 прогонов: от запуска wait до его выхода
-# после signal — 0,14-0,19 с, самая долгая операция теста. Узел Jenkins
-# медленнее на ядро в 4,5 раза: 0,19 * 4,5 = 0,86 с; с двойным запасом
-# 1,7 с, округлено до 2 с. Предел — предохранитель от зависания, а не
-# время ожидания события.
-LIMIT_S = 2
+# --timeout-s у wait обязателен — это параметр продукта, а не срок ожидания
+# теста: тесты, которым он безразличен, задают значение, до которого дело
+# не доходит. Сами тесты срока не ставят: каждое ожидание — до события
+# (сигнал, конец процесса, строка готовности), зависание ловит внешний
+# предел прогона.
+WAIT_PARAM_S = 3600
 
 
 class Base(unittest.TestCase):
@@ -34,7 +33,7 @@ class Base(unittest.TestCase):
         for p in self.procs:
             if p.poll() is None:
                 p.kill()
-            p.wait(timeout=LIMIT_S)
+            p.wait()
             for f in (p.stdout, p.stderr):
                 if f:
                     f.close()
@@ -44,19 +43,18 @@ class Base(unittest.TestCase):
     ) -> subprocess.CompletedProcess:
         # Срок у wait обязателен; тесты, которым срок безразличен, получают общий.
         if argv[:1] == ("wait",) and "--timeout-s" not in argv:
-            argv = (*argv, "--timeout-s", str(LIMIT_S))
+            argv = (*argv, "--timeout-s", str(WAIT_PARAM_S))
         return subprocess.run(
             [sys.executable, "-I", str(SCRIPT), *argv],
             env=env or self.env,
             capture_output=True,
             text=True,
-            timeout=LIMIT_S,
             check=False,
         )
 
     def start_wait(self, *argv: str) -> subprocess.Popen:
         if "--timeout-s" not in argv:
-            argv = (*argv, "--timeout-s", str(LIMIT_S))
+            argv = (*argv, "--timeout-s", str(WAIT_PARAM_S))
         p = subprocess.Popen(
             [sys.executable, "-I", str(SCRIPT), "wait", *argv],
             env=self.env,
@@ -66,9 +64,8 @@ class Base(unittest.TestCase):
         )
         self.procs.append(p)
         assert p.stderr is not None
-        # wait печатает строку в stderr, когда наблюдение и отметка ожидания уже есть.
-        ready, _, _ = select.select([p.stderr], [], [], LIMIT_S)
-        self.assertTrue(ready, "wait не сообщил о готовности")
+        # wait печатает строку в stderr, когда наблюдение и отметка ожидания уже есть;
+        # чтение блокирует до этого события.
         self.assertIn("ждёт сигнал", p.stderr.readline())
         return p
 
@@ -102,7 +99,7 @@ class SignalsTest(Base):
         self.assertEqual(
             self.run_cmd("signal", "pr-merged-app-2584", "слит").returncode, 0
         )
-        out, _ = p.communicate(timeout=LIMIT_S)
+        out, _ = p.communicate()
         self.assertEqual(p.returncode, 0)
         self.assertIn("сигнал pr-merged-app-2584: слит", out)
         self.assertFalse(mark.exists())
@@ -128,12 +125,12 @@ class SignalsTest(Base):
             [("other-1", "w2", True)],
         )
         p.terminate()
-        p.communicate(timeout=LIMIT_S)
+        p.communicate()
 
     def test_clear(self) -> None:
         self.run_cmd("signal", "c1", "т")
         dead = subprocess.Popen([sys.executable, "-c", "pass"])
-        dead.wait(timeout=LIMIT_S)
+        dead.wait()
         (self.dir / "c1.waiting-old.1").write_text(
             json.dumps(
                 {
@@ -195,12 +192,12 @@ class SignalsTest(Base):
         first = self.start_wait("dup", "--holder", "w1", "--timeout-s", "1")
         second = self.start_wait("dup", "--holder", "w1")
         self.assertEqual(len(list(self.dir.glob("dup.waiting-w1.*"))), 2)
-        first.communicate(timeout=LIMIT_S)
+        first.communicate()
         self.assertEqual(first.returncode, 124)
         left = list(self.dir.glob("dup.waiting-w1.*"))
         self.assertEqual([m.name for m in left], [f"dup.waiting-w1.{second.pid}"])
         second.terminate()
-        second.communicate(timeout=LIMIT_S)
+        second.communicate()
         self.assertEqual(list(self.dir.glob("dup.waiting-*")), [])
 
     def test_list_waits_only(self) -> None:
@@ -215,7 +212,7 @@ class SignalsTest(Base):
         self.assertEqual(list(data), ["waits"])
         self.assertFalse(data["waits"][0]["given"])
         p.terminate()
-        p.communicate(timeout=LIMIT_S)
+        p.communicate()
 
     def test_corrupt_signal_files(self) -> None:
         for body in ("[]", '{"name": "bad", "te'):
@@ -242,7 +239,7 @@ class SignalsTest(Base):
         self.assertEqual(
             self.run_cmd("signal", "kw", "через keep", "--keep").returncode, 0
         )
-        out, _ = p.communicate(timeout=LIMIT_S)
+        out, _ = p.communicate()
         self.assertEqual(p.returncode, 0)
         self.assertIn("сигнал kw: через keep", out)
 
@@ -264,7 +261,7 @@ class SignalsTest(Base):
         mark = self.dir / f"t1.waiting-w1.{p.pid}"
         self.assertTrue(mark.exists())
         p.send_signal(signal.SIGTERM)
-        p.communicate(timeout=LIMIT_S)
+        p.communicate()
         self.assertEqual(p.returncode, 128 + signal.SIGTERM)
         self.assertFalse(mark.exists())
 
@@ -276,7 +273,7 @@ class SignalsTest(Base):
             f.flush()
             self.assertIsNone(p.poll())
             f.write('"from": "a", "task": "", "at_ms": 1}')
-        out, _ = p.communicate(timeout=LIMIT_S)
+        out, _ = p.communicate()
         self.assertEqual(p.returncode, 0)
         self.assertIn("сигнал pw: дописан", out)
 
@@ -304,7 +301,7 @@ class SignalsTest(Base):
         self.assertEqual(len(children), 1)
         p.send_signal(signal.SIGTERM)
         p.send_signal(signal.SIGTERM)
-        p.communicate(timeout=LIMIT_S)
+        p.communicate()
         self.assertEqual(p.returncode, 128 + signal.SIGTERM)
         self.assertEqual(list(self.dir.glob("ds.waiting-*")), [])
         # Наблюдатель завершён и собран родителем: каталога процесса нет.
@@ -316,7 +313,6 @@ class SignalsTest(Base):
             env=self.env,
             capture_output=True,
             text=True,
-            timeout=LIMIT_S,
             check=False,
         )
         self.assertEqual(r.returncode, 2)
@@ -393,7 +389,7 @@ class ProjectFlagTest(Base):
         p = self.start_wait("y-done", "--holder", "w1", "--project", "other")
         self.assertEqual(len(list(self.other.glob("y-done.waiting-w1.*"))), 1)
         self.run_cmd("signal", "y-done", "go", "--project", "other")
-        out, _ = p.communicate(timeout=LIMIT_S)
+        out, _ = p.communicate()
         self.assertEqual(p.returncode, 0)
         self.assertIn("сигнал y-done: go", out)
 

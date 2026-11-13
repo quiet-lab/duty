@@ -1275,5 +1275,83 @@ class UncoveredTest(unittest.TestCase):
         self.assertEqual([name for name, _, _ in left], ["a2"])
 
 
+class TranscriptTailTest(unittest.TestCase):
+    """RP-2445, п. 4: хвост транскрипта читается один раз на Stop."""
+
+    def setUp(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("task_guard", HOOK)
+        assert spec and spec.loader
+        self.tg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.tg)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.task = self.root / "task"
+        (self.task / "subtasks").mkdir(parents=True)
+
+    def test_unsettled_marks_read_tail_once(self) -> None:
+        from unittest import mock
+
+        names = [f"n{index}" for index in range(5)]
+        entries = []
+        for name in names:
+            record = {"at_ms": 1, "tool_use_id": f"toolu_{name}"}
+            path = self.task / "subtasks" / f"{name}.started"
+            path.write_text(json.dumps(record), encoding="utf-8")
+            block = {"type": "tool_result", "tool_use_id": f"toolu_{name}"}
+            entries.append(
+                {
+                    "type": "user",
+                    "message": {"content": [block]},
+                    "toolUseResult": {
+                        "status": "async_launched",
+                        "agentId": f"ag-{name}",
+                    },
+                }
+            )
+        transcript = self.root / "session.jsonl"
+        transcript.write_text(
+            "".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8"
+        )
+        real_open = Path.open
+        opened: list[str] = []
+
+        def counting_open(path: Path, *args: object, **kwargs: object):
+            if path == transcript:
+                opened.append(str(path))
+            return real_open(path, *args, **kwargs)
+
+        live = [{"id": f"ag-{name}", "status": "running"} for name in names]
+        with mock.patch.object(Path, "open", counting_open):
+            running, ended, unknown, unconfirmed = self.tg.launched_without_result(
+                self.task, live, str(transcript)
+            )
+        self.assertEqual(len(opened), 1)
+        # Поведение прежнее: каждый запуск подтверждён ответом из транскрипта.
+        self.assertEqual((running, ended, unknown, unconfirmed), (names, [], [], []))
+        record = json.loads(
+            (self.task / "subtasks" / "n3.started").read_text(encoding="utf-8")
+        )
+        self.assertEqual(record["agent_ids"], ["ag-n3"])
+
+    def test_last_turn_skill_reads_tail(self) -> None:
+        # Общий генератор: навык находится, обрезанная строка пропускается.
+        transcript = self.root / "skill.jsonl"
+        lines = [
+            '{"обрезанная',
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": "<command-name>/code-review</command-name>"},
+                }
+            ),
+        ]
+        transcript.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.assertEqual(self.tg.last_turn_skill(str(transcript)), "code-review")
+        self.assertIsNone(self.tg.last_turn_skill(str(self.root / "нет.jsonl")))
+
+
 if __name__ == "__main__":
     unittest.main()

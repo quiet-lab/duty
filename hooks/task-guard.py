@@ -71,6 +71,7 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 PLUGIN = Path(__file__).resolve().parent.parent
@@ -146,6 +147,29 @@ ASK_HINT = (
 )
 
 
+def transcript_entries(transcript: object) -> Iterator[dict[str, object]]:
+    """Записи хвоста транскрипта сессии от последней к первой.
+
+    Хвост (`TRANSCRIPT_TAIL_BYTES`) читается одним чтением при первом шаге;
+    обрезанная первая строка и записи не в JSON пропускаются, ошибка чтения —
+    ни одной записи.
+    """
+    try:
+        with Path(str(transcript)).open("rb") as stream:
+            size = stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
+            raw = stream.read()
+    except (OSError, ValueError):
+        return
+    for line in reversed(raw.decode("utf-8", errors="replace").splitlines()):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            yield entry
+
+
 def last_turn_skill(transcript: object) -> str | None:
     """Имя навыка, из которого идёт текущий ход; None — ход начат не навыком.
 
@@ -155,22 +179,9 @@ def last_turn_skill(transcript: object) -> str | None:
     (`<command-name>` в сообщении) либо вызов инструмента `Skill` после него.
     Любая ошибка чтения — None.
     """
-    try:
-        path = Path(str(transcript))
-        with path.open("rb") as stream:
-            size = stream.seek(0, os.SEEK_END)
-            stream.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
-            raw = stream.read()
-    except (OSError, ValueError):
-        return None
-    lines = raw.decode("utf-8", errors="replace").splitlines()
     skill: str | None = None
-    for line in reversed(lines):
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue  # обрезанная первая строка хвоста и посторонние записи
-        message = entry.get("message") if isinstance(entry, dict) else None
+    for entry in transcript_entries(transcript):
+        message = entry.get("message")
         if not isinstance(message, dict):
             continue
         content = message.get("content")
@@ -438,51 +449,56 @@ def is_live(ids: list[str], live: list[object]) -> bool:
     )
 
 
-def tool_result(transcript: object, tool_use_id: str) -> dict[str, object] | None:
-    """Запись `tool_result` вызова в транскрипте сессии; None — не найдена.
+def tool_results(transcript: object, wanted: set[str]) -> dict[str, dict[str, object]]:
+    """Записи `tool_result` вызовов `wanted` в транскрипте сессии по `tool_use_id`.
 
-    Возвращается `{"is_error": bool, "response": toolUseResult}`. Читается
-    хвост транскрипта, как у `last_turn_skill`; ошибка чтения — None.
+    Значение — `{"is_error": bool, "response": toolUseResult}` последней записи
+    вызова; не найденного вызова в словаре нет. Хвост транскрипта читается
+    один раз на все вызовы (`transcript_entries`); ошибка чтения — пустой словарь.
     """
-    try:
-        with Path(str(transcript)).open("rb") as stream:
-            size = stream.seek(0, os.SEEK_END)
-            stream.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
-            raw = stream.read()
-    except (OSError, ValueError):
-        return None
-    for line in reversed(raw.decode("utf-8", errors="replace").splitlines()):
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue  # обрезанная первая строка хвоста и посторонние записи
-        message = entry.get("message") if isinstance(entry, dict) else None
+    found: dict[str, dict[str, object]] = {}
+    if not transcript or not wanted:
+        return found
+    for entry in transcript_entries(transcript):
+        message = entry.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         for block in content if isinstance(content, list) else []:
-            if (
-                isinstance(block, dict)
-                and block.get("type") == "tool_result"
-                and block.get("tool_use_id") == tool_use_id
-            ):
-                return {
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            tool_use_id = block.get("tool_use_id")
+            if tool_use_id in wanted and tool_use_id not in found:
+                found[tool_use_id] = {
                     "is_error": block.get("is_error") is True,
                     "response": entry.get("toolUseResult"),
                 }
-    return None
+        if len(found) == len(wanted):
+            break
+    return found
 
 
-def settle(path: Path, transcript: object) -> dict[str, object] | None:
+def unsettled_id(record: dict[str, object]) -> str | None:
+    """`tool_use_id` отметки, которой ещё не пришёл ответ Agent; None — пришёл."""
+    tool_use_id = record.get("tool_use_id")
+    if "launch" in record or not isinstance(tool_use_id, str):
+        return None
+    return tool_use_id
+
+
+def settle(
+    path: Path, results: dict[str, dict[str, object]]
+) -> dict[str, object] | None:
     """Отметка `.started` после сверки запуска без ответа Agent с транскриптом.
 
-    Ответ найден — пишется в отметку. Вызов отклонён — прежние отметки
+    `results` — найденные в транскрипте ответы (`tool_results`). Ответ
+    найден — пишется в отметку. Вызов отклонён — прежние отметки
     возвращаются (`restore_previous`), и отдаётся вернувшаяся `.started`;
     её нет — None. Ответа нет — запуск не подтверждён.
     """
     record: dict[str, object] = dict(read_record(path))
-    tool_use_id = record.get("tool_use_id")
-    if "launch" in record or not isinstance(tool_use_id, str):
+    tool_use_id = unsettled_id(record)
+    if tool_use_id is None:
         return record
-    found = tool_result(transcript, tool_use_id) if transcript else None
+    found = results.get(tool_use_id)
     if found is not None and found["is_error"]:
         restore_previous(path.parent, path.stem)
         return dict(read_record(path)) if path.exists() else None
@@ -503,7 +519,8 @@ def launched_without_result(
     подтверждённые подзадачи попадают в «неизвестно», как и отметки прежней
     версии хука (без `tool_use_id` и идентификатора). Подзадача с `.stopped` —
     тоже «неизвестно»: её судит отметка остановки, а здесь она только
-    называется. Отметка без ответа Agent сверяется с транскриптом (`settle`).
+    называется. Отметки без ответа Agent сверяются с транскриптом (`settle`):
+    хвост читается один раз на все такие отметки.
     """
     directory = subtasks(task)
     running: list[str] = []
@@ -512,9 +529,16 @@ def launched_without_result(
     unconfirmed: list[str] = []
     if not directory.is_dir():
         return running, ended, unknown, unconfirmed
-    for path in sorted(directory.glob("*.started")):
+    paths = sorted(directory.glob("*.started"))
+    wanted = {
+        tool_use_id
+        for path in paths
+        if (tool_use_id := unsettled_id(read_record(path))) is not None
+    }
+    results = tool_results(transcript, wanted)
+    for path in paths:
         name = path.stem
-        record = settle(path, transcript)
+        record = settle(path, results)
         if record is None or (directory / f"{name}.done").exists():
             continue
         if (directory / f"{name}.stopped").exists():

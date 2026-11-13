@@ -26,7 +26,7 @@ import sys
 import time
 import urllib.parse
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -136,7 +136,7 @@ def set_lifetimes(root: Path, since_ms: int, now_ms: int) -> str:
 def jenkins_builds(env: dict[str, str], since_ms: int) -> list[dict]:
     """Сборки всех заданий с началом в периоде, кроме проверочных (`jenkins.fake_job`).
 
-    Дерево папок обходится по уровням, запросы уровня идут параллельно, лист
+    Дерево папок обходится по уровням, запрос дочернего узла уходит сразу по ответу на родителя, лист
     запрашивается один раз; порядок результата — порядок обхода.
     """
     fake = gates.config().get("jenkins.fake_job", "")
@@ -151,28 +151,45 @@ def jenkins_builds(env: dict[str, str], since_ms: int) -> list[dict]:
     def node(item: tuple[str, list[str]]) -> dict | None:
         return gates.jenkins(item[0].rstrip("/") + f"/api/json?tree={tree}", env)
 
-    out: list[dict] = []
+    # Запрос дочернего узла уходит сразу по ответу на родителя, без ожидания
+    # остальных узлов уровня. Порядок результата — порядок обхода по уровням:
+    # ключ узла — номера по порядку в родителях (длина ключа — глубина).
+    found: list[tuple[tuple[int, ...], list[dict]]] = []
     with ThreadPoolExecutor(8) as pool:
-        level = [(env["JENKINS_URL"], [])]
-        while level:
-            nxt: list[tuple[str, list[str]]] = []
-            for item, d in zip(level, pool.map(node, level), strict=True):
-                if d is None:
-                    raise ConnectionError(f"Jenkins не ответил на {item[0]}")
-                if d.get("jobs") is None:
-                    name = "/".join(item[1])
-                    for build in d.get("allBuilds", []):
-                        if build["timestamp"] >= since_ms:
-                            build["job"] = name
-                            out.append(build)
-                    continue
-                for job in d["jobs"]:
-                    path = [*item[1], job["name"]]
-                    # Проверочные задания и всё под ними не запрашиваются.
-                    if not (fake and fake in "/".join(path)):
-                        nxt.append((job["url"], path))
-            level = nxt
-    return out
+        root = (env["JENKINS_URL"], [])
+        pending = {pool.submit(node, root): (root[0], root[1], ())}
+        try:
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    url, path, order = pending.pop(future)
+                    d = future.result()
+                    if d is None:
+                        raise ConnectionError(f"Jenkins не ответил на {url}")
+                    if d.get("jobs") is None:
+                        name = "/".join(path)
+                        builds = [
+                            {**build, "job": name}
+                            for build in d.get("allBuilds", [])
+                            if build["timestamp"] >= since_ms
+                        ]
+                        found.append((order, builds))
+                        continue
+                    for number, job in enumerate(d["jobs"]):
+                        child = [*path, job["name"]]
+                        # Проверочные задания и всё под ними не запрашиваются.
+                        if fake and fake in "/".join(child):
+                            continue
+                        pending[pool.submit(node, (job["url"], child))] = (
+                            job["url"],
+                            child,
+                            (*order, number),
+                        )
+        finally:
+            for future in pending:
+                future.cancel()
+    found.sort(key=lambda item: (len(item[0]), item[0]))
+    return [build for _, builds in found for build in builds]
 
 
 def revision(build: dict) -> str:

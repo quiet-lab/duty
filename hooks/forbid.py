@@ -268,8 +268,59 @@ WRAPPERS = {
     "stdbuf": set(),
     "setsid": set(),
     "builtin": set(),
+    "busybox": set(),
+    "toybox": set(),
 }
-XARGS_VALUE_FLAGS = {"-n", "-P", "-I", "-d", "-L", "-s", "-E", "-a", "-l"}
+# Ключи GNU xargs (getopt «+0a:E:e::i::I:l::L:n:prP:xs:d:tv»): с обязательным
+# значением — отдельным словом или слитно; с необязательным — только слитно.
+XARGS_SHORT_VALUE = set("aEILnPsd")
+XARGS_SHORT_OPTIONAL = set("eil")
+# Длинные ключи: 0 — без значения, 1 — значение обязательно, 2 — только через `=`.
+XARGS_LONG = {
+    "null": 0,
+    "arg-file": 1,
+    "delimiter": 1,
+    "eof": 2,
+    "replace": 2,
+    "max-lines": 2,
+    "max-args": 1,
+    "max-procs": 1,
+    "max-chars": 1,
+    "process-slot-var": 1,
+    "interactive": 0,
+    "no-run-if-empty": 0,
+    "open-tty": 0,
+    "verbose": 0,
+    "exit": 0,
+    "show-limits": 0,
+    "help": 0,
+    "version": 0,
+}
+# Команды, которые удаляют или опустошают свои аргументы.
+DELETERS = {"rm", "unlink", "rmdir", "shred", "truncate"}
+# Оболочки, интерпретаторы и запускатели: что они выполнят над целями find и xargs,
+# до запуска неизвестно, поэтому под `-exec` и xargs они считаются удалением
+# с неизвестной целью (fail-closed).
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh"}
+INTERPRETER_RE = re.compile(
+    r"(pypy|perl|ruby|node|nodejs|php|lua|luajit|tclsh|wish|julia|Rscript|deno|bun"
+    r"|pwsh|osascript|awk|gawk|mawk|nawk)[0-9.]*"
+)
+LAUNCHERS = {
+    "npx",
+    "bunx",
+    "npm",
+    "pnpm",
+    "yarn",
+    "uv",
+    "uvx",
+    "pipx",
+    "poetry",
+    "pdm",
+    "hatch",
+    "make",
+    "just",
+}
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -716,12 +767,12 @@ def check_kill(name: str, args: list[Word]) -> str | None:
             return "kill"
         if kill_substitution(args):
             return "kill"
-    if name == "xargs":
-        i = 0
-        while i < len(texts) and texts[i].startswith("-"):
-            i += 2 if texts[i] in XARGS_VALUE_FLAGS else 1
-        if i < len(texts) and base(texts[i]) in KILL_COMMANDS | {"kill"}:
-            return "kill"
+    if (
+        name == "xargs"
+        and (tail := xargs_command(args)[0])
+        and resolve(tail)[0] in KILL_COMMANDS | {"kill"}
+    ):
+        return "kill"
     return None
 
 
@@ -786,22 +837,149 @@ def rm_targets(args: list[Word], cwd: str | None) -> list[Path]:
 FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
 
 
-def find_deletion(args: list[Word]) -> list[Word] | None:
-    """Начальные пути `find`, если он удаляет (`-delete`, `-exec rm`); иначе None.
+def xargs_command(args: list[Word]) -> tuple[list[Word] | None, set[str]]:
+    """Команда xargs с её аргументами после ключей (None — команды нет, `echo`)
+    и строки замены (`{}` и заданные `-I`, `-i`, `--replace`).
 
-    Ключи `-H`, `-L`, `-P`, `-D…`, `-O…` перед путями пропускаются; без путей
-    начальный каталог — текущий (пустой список).
+    Ключи разбираются как getopt GNU xargs: связки коротких (`-0n 1`), слитные
+    значения (`-n1`, `--max-args=1`), длинные ключи и их однозначные сокращения.
+    """
+    holders = {"{}"}
+    i = 0
+    while i < len(args):
+        text = args[i].text
+        if text == "--":
+            i += 1
+            break
+        if text.startswith("--"):
+            name, eq, value = text[2:].partition("=")
+            found = [k for k in XARGS_LONG if k == name] or [
+                k for k in XARGS_LONG if k.startswith(name)
+            ]
+            kind = XARGS_LONG[found[0]] if len(found) == 1 else 0
+            if found == ["replace"] and value:
+                holders.add(value)
+            i += 2 if kind == 1 and not eq else 1
+        elif text.startswith("-") and len(text) > 1:
+            i += 1
+            for j, ch in enumerate(text[1:], start=2):
+                if ch in XARGS_SHORT_VALUE:
+                    if j == len(text):  # значение — следующее слово
+                        if ch == "I" and i < len(args):
+                            holders.add(args[i].text)
+                        i += 1
+                    elif ch == "I":
+                        holders.add(text[j:])
+                    break
+                if ch in XARGS_SHORT_OPTIONAL:
+                    if ch == "i" and text[j:]:
+                        holders.add(text[j:])
+                    break
+        else:
+            break
+    holders.discard("")
+    return (args[i:] if i < len(args) else None), holders
+
+
+ANYWHERE = Path("/")  # цель неизвестна: проверяются все живые каталоги результатов
+
+
+def word_paths(words: list[Word], holders: set[str], cwd: str | None) -> list[Path]:
+    """Явные цели из аргументов: без слов со строкой замены (их цели — сами пути find
+    или стандартный ввод xargs)."""
+    return rm_targets([w for w in words if not any(h in w.text for h in holders)], cwd)
+
+
+def deletion_targets(
+    words: list[Word],
+    cwd: str | None,
+    holders: set[str],
+    from_stdin: bool,
+    depth: int = 0,
+) -> list[Path] | None:
+    """Цели, которые удалит команда под `find -exec` или xargs; None — не удаляет.
+
+    Обёртки (`env`, `sudo`, `nice`, `timeout`, `command`, `busybox` …) снимаются.
+    Удаление — команды `DELETERS`, find с удалением, xargs с удаляющей командой,
+    `git rm`/`git clean`, rsync с удалением источника или приёмника; их явные
+    цели возвращаются, вызывающий добавляет свои (пути find, корень для xargs).
+    Оболочка, интерпретатор и запускатель считаются удалением целей вызывающего
+    (fail-closed); явные пути в их строке проверяет рекурсивный разбор тела.
+    Имя команды, неизвестное до запуска (подстановка, шаблон, строка замены,
+    имя со стандартного ввода xargs после обёртки без команды), даёт корень `/`.
+    """
+    if depth > MAX_DEPTH:
+        return [ANYWHERE]
+    name, args, empty_env = resolve(words)
+    if not name or empty_env:
+        # обёртка без команды: под xargs имя придёт со стандартного ввода
+        wrapped = bool(words) and base(words[0].text) in WRAPPERS
+        return [ANYWHERE] if from_stdin and wrapped else None
+    command = words[len(words) - len(args) - 1]
+    if (
+        not command.literal
+        or re.search(r"[*?\[]", command.text)
+        or any(h in command.text for h in holders)
+    ):
+        return [ANYWHERE]
+    texts = [a.text for a in args]
+    if (
+        name in SHELLS
+        or name in LAUNCHERS
+        or PYTHON_RE.fullmatch(name)
+        or INTERPRETER_RE.fullmatch(name)
+    ):
+        return []  # явные цели строки `-c` проверяет рекурсивный разбор тела
+    if (
+        name in DELETERS
+        or name == "git"
+        and git_subcommand(texts)[0] in {"rm", "clean"}
+        or name == "rsync"
+        and any(t.startswith(("--remove-source-files", "--delete")) for t in texts)
+    ):
+        return word_paths(args, holders, cwd)
+    if name == "find":
+        return find_targets(args, cwd, depth + 1)
+    if name == "xargs":
+        tail, inner = xargs_command(args)
+        if tail is None or deletion_targets(tail, cwd, inner, True, depth + 1) is None:
+            return None
+        return [ANYWHERE]
+    return None
+
+
+def find_exec_bodies(args: list[Word]) -> list[list[Word]]:
+    """Команды `-exec`, `-execdir`, `-ok`, `-okdir` find; конец — `;` или `+` после `{}`."""
+    texts = [a.text for a in args]
+    bodies = []
+    for i, t in enumerate(texts):
+        if t in FIND_EXEC:
+            end = i + 1
+            while end < len(texts) and not (
+                texts[end] == ";" or texts[end] == "+" and texts[end - 1] == "{}"
+            ):
+                end += 1
+            bodies.append(args[i + 1 : end])
+    return bodies
+
+
+def find_targets(
+    args: list[Word], cwd: str | None, depth: int = 0
+) -> list[Path] | None:
+    """Цели удаления `find`: начальные пути и явные цели тела `-exec`; None — не удаляет.
+
+    Удаление — `-delete` и `-exec`/`-execdir`/`-ok`/`-okdir` с командой, для
+    которой `deletion_targets` не None. Ключи `-H`, `-L`, `-P`, `-D…`, `-O…` перед
+    путями пропускаются; без путей начальный каталог — текущий.
     """
     texts = [a.text for a in args]
-    deletes = False
-    for i, t in enumerate(texts):
-        if (
-            t == "-delete"
-            or t in FIND_EXEC
-            and i + 1 < len(texts)
-            and base(texts[i + 1]) == "rm"
-        ):
+    deletes = "-delete" in texts
+    extra: list[Path] = []
+    for body in find_exec_bodies(args):
+        found = deletion_targets(body, cwd, {"{}"}, False, depth)
+        if found is not None:
             deletes = True
+            extra += found
     if not deletes:
         return None
     i = 0
@@ -813,38 +991,29 @@ def find_deletion(args: list[Word]) -> list[Word] | None:
     ):
         starts.append(args[i])
         i += 1
-    return starts
-
-
-def xargs_rm_args(args: list[Word]) -> list[Word] | None:
-    """Аргументы `rm` из `xargs [ключи] rm …`; иначе None."""
-    i = 0
-    while i < len(args) and args[i].text.startswith("-"):
-        i += 2 if args[i].text in XARGS_VALUE_FLAGS else 1
-    if i < len(args) and base(args[i].text) == "rm":
-        return args[i + 1 :]
-    return None
+    return (rm_targets(starts, cwd) or rm_targets([Word(text=".")], cwd)) + extra
 
 
 def check_rm(name: str, args: list[Word], cfg: Settings) -> str | None:
     """Удаление внутри `paths.results` при живом каталоге: ключ `rm-results|<каталог>: <причина>`.
 
-    Удаляют `rm -r`, `find … -delete`, `find … -exec rm` и `xargs rm -r`; цели
-    `xargs` приходят со стандартного ввода и неизвестны, поэтому считаются корнем `/`
+    Удаляют `rm -r`, `find … -delete`, `find … -exec <удаление>` и
+    `xargs <удаление>` (`deletion_targets`). `find` обходит дерево, а цели `xargs`
+    приходят со стандартного ввода, поэтому под ними удалением считается любой
+    `rm`, не только рекурсивный. Цели `xargs` неизвестны и считаются корнем `/`
     (проверяются все живые каталоги результатов).
     """
     if not cfg.results:
         return None
     if name == "rm" and rm_recursive([a.text for a in args]):
         targets = rm_targets(args, cfg.cwd)
-    elif name == "find" and (starts := find_deletion(args)) is not None:
-        targets = rm_targets(starts, cfg.cwd) or rm_targets([Word(text=".")], cfg.cwd)
-    elif (
-        name == "xargs"
-        and (rm_args := xargs_rm_args(args)) is not None
-        and rm_recursive([a.text for a in rm_args])
-    ):
-        targets = [Path("/"), *rm_targets(rm_args, cfg.cwd)]
+    elif name == "find" and (found := find_targets(args, cfg.cwd)) is not None:
+        targets = found
+    elif name == "xargs" and (tail_holders := xargs_command(args))[0] is not None:
+        tail, holders = tail_holders
+        if deletion_targets(tail, cfg.cwd, holders, True) is None:
+            return None
+        targets = [ANYWHERE]
     else:
         return None
     results = Path(os.path.realpath(cfg.results))
@@ -1208,6 +1377,12 @@ def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
         if found:
             return found
         inner_texts = inner_commands(name, args)
+        if name == "find":  # тело -exec — команда со своими запретами
+            inner_texts += [
+                " ".join(shell_quote(w.text) for w in body)
+                for body in find_exec_bodies(args)
+                if body
+            ]
         if name in {"bash", "sh", "zsh", "dash"}:  # heredoc и here-string — их ввод
             inner_texts += cmd.stdin + [w.text for op, w in cmd.redirs if op == "<<<"]
         for inner in inner_texts:

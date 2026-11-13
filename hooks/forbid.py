@@ -268,8 +268,40 @@ WRAPPERS = {
     "stdbuf": set(),
     "setsid": set(),
     "builtin": set(),
+    "busybox": set(),
+    "toybox": set(),
 }
-XARGS_VALUE_FLAGS = {"-n", "-P", "-I", "-d", "-L", "-s", "-E", "-a", "-l"}
+# Ключи GNU xargs (getopt «+0a:E:e::i::I:l::L:n:prP:xs:d:tv»): с обязательным
+# значением — отдельным словом или слитно; с необязательным — только слитно.
+XARGS_SHORT_VALUE = set("aEILnPsd")
+XARGS_SHORT_OPTIONAL = set("eil")
+# Длинные ключи: 0 — без значения, 1 — значение обязательно, 2 — только через `=`.
+XARGS_LONG = {
+    "null": 0,
+    "arg-file": 1,
+    "delimiter": 1,
+    "eof": 2,
+    "replace": 2,
+    "max-lines": 2,
+    "max-args": 1,
+    "max-procs": 1,
+    "max-chars": 1,
+    "process-slot-var": 1,
+    "interactive": 0,
+    "no-run-if-empty": 0,
+    "open-tty": 0,
+    "verbose": 0,
+    "exit": 0,
+    "show-limits": 0,
+    "help": 0,
+    "version": 0,
+}
+# Команды, которые удаляют свои аргументы.
+DELETERS = {"rm", "unlink"}
+# Оболочки и интерпретаторы: что они выполнят над целями find и xargs, до запуска
+# неизвестно, поэтому под `-exec` и xargs они считаются удалением (fail-closed).
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh"}
+INTERPRETER_RE = re.compile(r"(python|pypy)[0-9.]*|perl[0-9.]*|ruby|node|php|lua|eval")
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -716,12 +748,12 @@ def check_kill(name: str, args: list[Word]) -> str | None:
             return "kill"
         if kill_substitution(args):
             return "kill"
-    if name == "xargs":
-        i = 0
-        while i < len(texts) and texts[i].startswith("-"):
-            i += 2 if texts[i] in XARGS_VALUE_FLAGS else 1
-        if i < len(texts) and base(texts[i]) in KILL_COMMANDS | {"kill"}:
-            return "kill"
+    if (
+        name == "xargs"
+        and (tail := xargs_command(args))
+        and resolve(tail)[0] in KILL_COMMANDS | {"kill"}
+    ):
+        return "kill"
     return None
 
 
@@ -786,22 +818,83 @@ def rm_targets(args: list[Word], cwd: str | None) -> list[Path]:
 FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
 
 
-def find_deletion(args: list[Word]) -> list[Word] | None:
-    """Начальные пути `find`, если он удаляет (`-delete`, `-exec rm`); иначе None.
+def xargs_command(args: list[Word]) -> list[Word] | None:
+    """Команда xargs с её аргументами после ключей; None — команды нет (`echo`).
 
-    Ключи `-H`, `-L`, `-P`, `-D…`, `-O…` перед путями пропускаются; без путей
-    начальный каталог — текущий (пустой список).
+    Ключи разбираются как getopt GNU xargs: связки коротких (`-0n 1`), слитные
+    значения (`-n1`, `--max-args=1`), длинные ключи и их однозначные сокращения.
+    """
+    i = 0
+    while i < len(args):
+        text = args[i].text
+        if text == "--":
+            i += 1
+            break
+        if text.startswith("--"):
+            name, eq, _ = text[2:].partition("=")
+            found = [k for k in XARGS_LONG if k == name] or [
+                k for k in XARGS_LONG if k.startswith(name)
+            ]
+            kind = XARGS_LONG[found[0]] if len(found) == 1 else 0
+            i += 2 if kind == 1 and not eq else 1
+        elif text.startswith("-") and len(text) > 1:
+            i += 1
+            for j, ch in enumerate(text[1:], start=2):
+                if ch in XARGS_SHORT_VALUE:
+                    if j == len(text):  # значение — следующее слово
+                        i += 1
+                    break
+                if ch in XARGS_SHORT_OPTIONAL:
+                    break
+        else:
+            break
+    return args[i:] if i < len(args) else None
+
+
+def runs_deletion(words: list[Word], depth: int = 0) -> bool:
+    """Команда под `find -exec` или xargs удаляет или может удалить свои цели.
+
+    Обёртки (`env`, `sudo`, `nice`, `timeout`, `command`, `busybox` …) снимаются;
+    удалением считаются rm и unlink, find с удалением, xargs с такой командой,
+    а также оболочка, интерпретатор и имя команды, неизвестное до запуска
+    (подстановка, `{}`): их действие над целями не разбирается (fail-closed).
+    """
+    if depth > MAX_DEPTH:
+        return True
+    name, args, _ = resolve(words)
+    if not name:
+        return False
+    command = words[len(words) - len(args) - 1]
+    if not command.literal or "{}" in command.text:
+        return True
+    if name in DELETERS or name in SHELLS or INTERPRETER_RE.fullmatch(name):
+        return True
+    if name == "find":
+        return find_deletion(args, depth + 1) is not None
+    if name == "xargs":
+        tail = xargs_command(args)
+        return tail is not None and runs_deletion(tail, depth + 1)
+    return False
+
+
+def find_deletion(args: list[Word], depth: int = 0) -> list[Word] | None:
+    """Начальные пути `find`, если он удаляет; иначе None.
+
+    Удаление — `-delete` и `-exec`/`-execdir`/`-ok`/`-okdir` с командой, для
+    которой `runs_deletion` истинно. Ключи `-H`, `-L`, `-P`, `-D…`, `-O…` перед
+    путями пропускаются; без путей начальный каталог — текущий (пустой список).
     """
     texts = [a.text for a in args]
     deletes = False
     for i, t in enumerate(texts):
-        if (
-            t == "-delete"
-            or t in FIND_EXEC
-            and i + 1 < len(texts)
-            and base(texts[i + 1]) == "rm"
-        ):
+        if t == "-delete":
             deletes = True
+        elif t in FIND_EXEC:
+            end = i + 1
+            while end < len(texts) and texts[end] not in {";", "+"}:
+                end += 1
+            if runs_deletion(args[i + 1 : end], depth):
+                deletes = True
     if not deletes:
         return None
     i = 0
@@ -816,21 +909,13 @@ def find_deletion(args: list[Word]) -> list[Word] | None:
     return starts
 
 
-def xargs_rm_args(args: list[Word]) -> list[Word] | None:
-    """Аргументы `rm` из `xargs [ключи] rm …`; иначе None."""
-    i = 0
-    while i < len(args) and args[i].text.startswith("-"):
-        i += 2 if args[i].text in XARGS_VALUE_FLAGS else 1
-    if i < len(args) and base(args[i].text) == "rm":
-        return args[i + 1 :]
-    return None
-
-
 def check_rm(name: str, args: list[Word], cfg: Settings) -> str | None:
     """Удаление внутри `paths.results` при живом каталоге: ключ `rm-results|<каталог>: <причина>`.
 
-    Удаляют `rm -r`, `find … -delete`, `find … -exec rm` и `xargs rm -r`; цели
-    `xargs` приходят со стандартного ввода и неизвестны, поэтому считаются корнем `/`
+    Удаляют `rm -r`, `find … -delete`, `find … -exec <удаление>` и
+    `xargs <удаление>` (`runs_deletion`). `find` обходит дерево, а цели `xargs`
+    приходят со стандартного ввода, поэтому под ними удалением считается любой
+    `rm`, не только рекурсивный. Цели `xargs` неизвестны и считаются корнем `/`
     (проверяются все живые каталоги результатов).
     """
     if not cfg.results:
@@ -841,10 +926,10 @@ def check_rm(name: str, args: list[Word], cfg: Settings) -> str | None:
         targets = rm_targets(starts, cfg.cwd) or rm_targets([Word(text=".")], cfg.cwd)
     elif (
         name == "xargs"
-        and (rm_args := xargs_rm_args(args)) is not None
-        and rm_recursive([a.text for a in rm_args])
+        and (tail := xargs_command(args)) is not None
+        and runs_deletion(tail)
     ):
-        targets = [Path("/"), *rm_targets(rm_args, cfg.cwd)]
+        targets = [Path("/")]
     else:
         return None
     results = Path(os.path.realpath(cfg.results))

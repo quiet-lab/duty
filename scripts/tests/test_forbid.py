@@ -625,11 +625,121 @@ class RmResultsTest(unittest.TestCase):
                 assert found is not None
                 self.assertTrue(found.startswith("rm-results|"), found)
 
-    def test_xargs_rm_allowed_when_not_recursive_or_idle(self) -> None:
-        self.assertIsNone(self.check("ls | xargs rm -f"))
+    def assert_denied(self, commands: list[str]) -> None:
+        for command in commands:
+            with self.subTest(command=command):
+                found = self.check(command)
+                assert found is not None, command
+                self.assertTrue(found.startswith("rm-results|"), found)
+
+    def test_xargs_rm_allowed_when_not_rm_or_idle(self) -> None:
         self.assertIsNone(self.check("ls | xargs echo rm -rf"))
+        self.assertIsNone(self.check("ls | xargs --max-args 1 echo rm -rf"))
+        self.assertIsNone(self.check("ls | xargs -n 1 env cat"))
         (self.live / "state.md").write_text("Шаг: завершено\n", encoding="utf-8")
         self.assertIsNone(self.check("ls | xargs rm -rf"))
+        self.assertIsNone(self.check("ls | xargs rm -f"))
+
+    def test_xargs_rm_without_recursive_denied_while_live(self) -> None:
+        """Цели xargs неизвестны: любой rm под xargs удаляет, как find -exec rm."""
+        self.assert_denied(
+            [
+                "ls | xargs rm -f",
+                "ls | xargs rm",
+                f"find {self.live} -type f | xargs rm -f",
+                "ls | xargs unlink",
+            ]
+        )
+
+    def test_xargs_long_and_clustered_value_flags(self) -> None:
+        self.assert_denied(
+            [
+                "ls | xargs --max-args 1 rm -rf",
+                "ls | xargs --max-args=1 rm -rf",
+                "ls | xargs --delimiter '\\n' rm -rf",
+                "ls | xargs --max-procs 4 rm -rf",
+                "ls | xargs --arg-file list.txt rm -r",
+                "xargs --arg-file=list.txt rm -r",
+                "ls | xargs --max-chars 100 rm -rf",
+                "ls | xargs --process-slot-var SLOT rm -rf",
+                "ls | xargs --max-a 1 rm -rf",
+                "ls | xargs -0n 1 rm -rf",
+                "ls | xargs -n1 rm -rf",
+                "ls | xargs -l rm -rf",
+                "ls | xargs -i rm -rf {}",
+                "ls | xargs -e rm -rf",
+                "ls | xargs --replace rm -rf {}",
+                "ls | xargs --replace={} rm -rf {}",
+                "ls | xargs --eof rm -rf",
+                "ls | xargs --max-lines rm -rf",
+                "ls | xargs --max-lines=1 rm -rf",
+                "ls | xargs --null -- rm -rf",
+            ]
+        )
+
+    def test_xargs_shell_and_wrappers_denied_while_live(self) -> None:
+        self.assert_denied(
+            [
+                "ls | xargs sh -c 'rm -rf \"$@\"' _",
+                "ls | xargs bash -c 'rm -rf $0'",
+                "ls | xargs -I{} zsh -c 'rm -rf {}'",
+                "ls | xargs dash -c 'echo $1' _",
+                "ls | xargs env rm -rf",
+                "ls | xargs env -i rm -f",
+                "ls | xargs sudo rm -r",
+                "ls | xargs sudo -u root rm -r",
+                "ls | xargs nice -n 5 rm -rf",
+                "ls | xargs timeout 5 rm -rf",
+                "ls | xargs command rm -rf",
+                "ls | xargs busybox rm -rf",
+                "ls | xargs xargs rm -f",
+                "ls | xargs find -delete",
+                "ls | xargs python3 -c 'import shutil,sys; shutil.rmtree(sys.argv[1])'",
+                "ls | xargs $CMD",
+            ]
+        )
+
+    def test_find_exec_shell_and_wrappers_denied_while_live(self) -> None:
+        live = self.live
+        self.assert_denied(
+            [
+                f"find {live} -exec sh -c 'rm -rf \"$1\"' _ {{}} \\;",
+                f"find {live} -exec bash -c 'echo {{}}' \\;",
+                f"find {live} -execdir zsh -c 'rm -f $0' {{}} \\;",
+                f"find {live} -exec dash -c 'x' {{}} +",
+                f"find {live} -exec /bin/sh script.sh {{}} +",
+                f"find {live} -exec env rm -rf {{}} +",
+                f"find {live} -exec /usr/bin/env -i rm {{}} +",
+                f"find {live} -exec env -S 'rm -rf' {{}} +",
+                f"find {live} -exec sudo rm -rf {{}} +",
+                f"find {live} -exec sudo -u root rm -rf {{}} +",
+                f"find {live} -exec nice -n 5 rm {{}} +",
+                f"find {live} -exec timeout 5 rm {{}} +",
+                f"find {live} -exec command rm {{}} +",
+                f"find {live} -exec busybox rm -rf {{}} +",
+                f"find {live} -exec xargs rm \\;",
+                f"find {live} -ok unlink {{}} \\;",
+                f"find {live} -okdir rm {{}} \\;",
+                f"find {live} -exec find {{}} -delete \\;",
+                f"find {live} -exec perl -e 'unlink @ARGV' {{}} +",
+                f"find {live} -exec python3 -c 'print(1)' {{}} +",
+                f'find {live} -exec "$CMD" {{}} +',
+                f"find {live} -name x -exec cat {{}} \\; -exec rm {{}} \\;",
+                f"busybox rm -rf {live}",
+                f"busybox find {live} -delete",
+            ]
+        )
+
+    def test_find_exec_allowed_outside_or_harmless(self) -> None:
+        live = self.live
+        self.assertIsNone(self.check(f"find {live} -exec env cat {{}} +"))
+        self.assertIsNone(self.check(f"find {live} -exec sudo grep -l x {{}} +"))
+        self.assertIsNone(self.check(f"find {live} -exec ls -l {{}} \\;"))
+        self.assertIsNone(
+            self.check(f"find {self.outside} -exec sh -c 'rm $1' _ {{}} \\;")
+        )
+        self.assertIsNone(self.check(f"find {self.idle} -exec env rm -rf {{}} +"))
+        self.assertIsNone(self.check(f"find {live} -name rm -print"))
 
     def test_open_paths_only_for_targets_inside_results(self) -> None:
         lib = forbid._dutylib()

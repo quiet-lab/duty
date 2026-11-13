@@ -197,8 +197,13 @@ def _proc_paths(with_fds: bool) -> tuple[list[Path], list[Path]]:
     return cwds, files
 
 
+# Предел одного вызова docker: зависший демон не должен вешать хук и сценарии.
+DOCKER_TIMEOUT_S = 10
+
+
 def container_mounts() -> list[Path]:
-    """Источники монтирования работающих контейнеров (`docker ps` и `docker inspect`); пусто — docker нет или контейнеров нет.
+    """Источники монтирования работающих контейнеров (`docker ps` и `docker inspect`); пусто — docker нет, контейнеров нет
+    или вызов не уложился в `DOCKER_TIMEOUT_S` (источники монтирования неизвестны).
 
     Процессы контейнера rootless Docker принадлежат uid из подчинённого
     диапазона: `/proc/<pid>/{cwd,fd}` их не отдаёт, и серия стенда,
@@ -211,6 +216,7 @@ def container_mounts() -> list[Path]:
             text=True,
             check=False,
             stdin=subprocess.DEVNULL,
+            timeout=DOCKER_TIMEOUT_S,
         )
         if ids.returncode != 0 or not ids.stdout.split():
             return []
@@ -226,8 +232,9 @@ def container_mounts() -> list[Path]:
             text=True,
             check=False,
             stdin=subprocess.DEVNULL,
+            timeout=DOCKER_TIMEOUT_S,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return []
     if info.returncode != 0:
         return []

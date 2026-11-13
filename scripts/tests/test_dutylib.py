@@ -214,6 +214,22 @@ class ContainerMountsTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PATH": "/nonexistent"}):
             self.assertEqual(dutylib.container_mounts(), [])
 
+    def test_docker_timeout_means_mounts_unknown(self) -> None:
+        self.with_docker("exit 0")
+        for stage in ("ps", "inspect"):
+            with self.subTest(stage=stage):
+                self.assertEqual(self.mounts_with_hung(stage), [])
+
+    def mounts_with_hung(self, stage: str) -> list[Path]:
+        def fake_run(cmd: list[str], **kwargs: object) -> object:
+            self.assertIn("timeout", kwargs)
+            if cmd[1] == stage:
+                raise subprocess.TimeoutExpired(cmd, 1)
+            return subprocess.CompletedProcess(cmd, 0, "abc\n", "")
+
+        with mock.patch.object(dutylib.subprocess, "run", fake_run):
+            return dutylib.container_mounts()
+
 
 if __name__ == "__main__":
     unittest.main()

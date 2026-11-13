@@ -223,6 +223,86 @@ class GuardTest(unittest.TestCase):
         reason = json.loads(self.hook("stop", {}).stdout)["reason"]
         self.assertNotIn("Запущены", reason)
 
+    def launch(self, name: str, description: str) -> None:
+        """Запуск подзадачи через pre-tool Agent с меткой и описанием."""
+        r = self.hook(
+            "pre-tool",
+            {
+                "tool_name": "Agent",
+                "tool_input": {
+                    "prompt": f"Подзадача: {name}\n" + GATE_LINES + "Сделай.",
+                    "description": description,
+                    "subagent_type": "general-purpose",
+                    "run_in_background": True,
+                },
+            },
+        )
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    @staticmethod
+    def live_agent(description: str, agent_type: str = "general-purpose") -> dict:
+        """Элемент background_tasks входа Stop для живого субагента."""
+        return {
+            "id": "a0b1c2",
+            "type": "subagent",
+            "status": "running",
+            "description": description,
+            "agent_type": agent_type,
+        }
+
+    def test_stop_live_subagent_does_not_block(self) -> None:
+        self.launch("a3", "правка хука")
+        record = json.loads((self.subtasks / "a3.started").read_text(encoding="utf-8"))
+        self.assertEqual(record["description"], "правка хука")
+        r = self.hook("stop", {"background_tasks": [self.live_agent("правка хука")]})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_stop_ended_without_result_blocks(self) -> None:
+        # Субагента нет среди живых, отметок .stopped и .done нет: он завершён
+        # без итога и без SubagentStop (сбой хука, обрыв сессии).
+        self.launch("a3", "правка хука")
+        for tasks in (
+            [],
+            [self.live_agent("другое")],
+            [self.live_agent("правка хука", "Explore")],
+        ):
+            with self.subTest(tasks=tasks):
+                r = self.hook("stop", {"background_tasks": tasks})
+                self.assertEqual(r.returncode, 0, r.stderr)
+                out = json.loads(r.stdout)
+                self.assertEqual(out["decision"], "block")
+                self.assertIn("Завершены без итога: a3", out["reason"])
+        (self.subtasks / "a3.done").write_text("итог\n", encoding="utf-8")
+        r = self.hook("stop", {"background_tasks": []})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_stop_names_live_next_to_blocking(self) -> None:
+        self.launch("a3", "правка хука")
+        self.launch("a4", "тесты")
+        self.write_stopped("a1")
+        r = self.hook("stop", {"background_tasks": [self.live_agent("тесты")]})
+        reason = json.loads(r.stdout)["reason"]
+        self.assertIn("a1 (agent_id id-1)", reason)
+        self.assertIn("Завершены без итога: a3", reason)
+        self.assertIn("Ещё идут: a4", reason)
+        self.assertNotIn("Запущены и ещё без итога", reason)
+
+    def test_stop_hook_active_names_ended_without_result(self) -> None:
+        self.launch("a3", "правка хука")
+        r = self.hook("stop", {"stop_hook_active": True, "background_tasks": []})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        shows = [c for c in self.herdr_calls() if c[:2] == ["notification", "show"]]
+        self.assertEqual(len(shows), 1)
+        self.assertIn("a3", shows[0][4])
+
+    def test_stop_started_without_description_is_not_judged(self) -> None:
+        # Отметка прежней версии хука без описания: живость не определить,
+        # ход не блокируется, как без поля background_tasks.
+        self.subtasks.mkdir()
+        (self.subtasks / "a5.started").write_text('{"at_ms": 1}', encoding="utf-8")
+        r = self.hook("stop", {"background_tasks": []})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
     def test_subagent_stop_marks_registered(self) -> None:
         transcript = self.transcript("Подзадача: a1\nСделай.")
         r = self.hook("subagent-stop", self.stop_data(agent_transcript_path=transcript))

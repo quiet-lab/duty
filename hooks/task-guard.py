@@ -16,16 +16,24 @@
   (поле `agent_id` есть только там) и снимает отметки подзадачи при её
   перезапуске (`Agent`: `SubagentStop` субагента на переднем плане пишет
   `.stopped` раньше `PostToolUse`, поэтому снятие — до вызова);
-- `pre-tool` при запуске подзадачи пишет отметку `subtasks/<имя>.started`;
-  `.started` без `.done` — запущена и ещё без итога (`launched_without_result`),
-  `Stop` называет такие подзадачи в причине блокировки, а `SubagentStop`
+- `pre-tool` при запуске подзадачи пишет отметку `subtasks/<имя>.started`
+  с описанием и типом субагента; `.started` без `.done` и `.stopped` — запущена
+  и ещё без итога (`launched_without_result`). `Stop` сверяет её с живыми
+  субагентами из поля `background_tasks` своего входа (тип `subagent`, то же
+  описание и тип): есть среди живых — ещё идёт, ход не блокирует (окончание
+  фонового субагента само будит сессию); нет — завершена без итога и без
+  `SubagentStop` (сбой хука, обрыв сессии), ход блокируется. Без поля
+  `background_tasks` и у отметки без описания живость не определить: такие
+  подзадачи только называются в причине блокировки. `SubagentStop`
   помечает `registered: false` в `.stopped`, если запуска не видел;
 - `post-tool` снимает отметку остановки после успешного `SendMessage`
   (возобновление): неудачная отправка отметку не теряет;
 - `subagent-stop` по метке `Подзадача: <имя>` в приглашении субагента проверяет
   отметку итога `subtasks/<имя>.done`; её нет — пишет `subtasks/<имя>.stopped`
   и шлёт координатору строку «возобнови или перезапусти»;
-- `stop` блокирует конец хода координатора, пока есть остановившаяся подзадача
+- `stop` блокирует конец хода координатора, пока есть подзадача, завершённая
+  без итога и без `SubagentStop` (ожидание её не покрывает: время окончания
+  неизвестно, а будить сессию некому), или остановившаяся подзадача
   без итога, для которой нет ожидания, начатого после её остановки: прогона
   во вкладке без `done` (`started_ms` в `meta.txt`), ожидания `signals.py wait`
   (`since_ms`). Ожидание, начатое раньше, к остановке подзадачи отношения
@@ -284,30 +292,71 @@ def pre_tool(data: dict[str, object]) -> None:
             # Перезапуск под тем же именем: прежние отметки к нему не относятся.
             for suffix in (".stopped", ".done"):
                 (subtasks(task) / f"{tag.group(1)}{suffix}").unlink(missing_ok=True)
-            mark_started(task, tag.group(1))
+            mark_started(task, tag.group(1), tool_input)
         elif tool_input.get("subagent_type") not in READ_ONLY_TYPES:
             has_line = TAG_LINE_RE.search(str(tool_input.get("prompt", "")))
             pre_tool_output(additionalContext=BAD_TAG if has_line else UNTAGGED)
 
 
-def mark_started(task: Path, name: str) -> None:
-    """Запуск подзадачи регистрируется отметкой `<имя>.started` со временем (мс)."""
+def mark_started(task: Path, name: str, tool_input: dict[str, object]) -> None:
+    """Запуск подзадачи регистрируется отметкой `<имя>.started`.
+
+    В отметке — время (мс), описание и тип субагента из вызова `Agent`: по ним
+    `Stop` находит подзадачу среди живых в `background_tasks` (там нет ни
+    приглашения, ни метки, а `agent_id` до запуска неизвестен).
+    """
     directory = subtasks(task)
     directory.mkdir(parents=True, exist_ok=True)
-    record = {"at_ms": time.time_ns() // 1_000_000}
-    (directory / f"{name}.started").write_text(json.dumps(record), encoding="utf-8")
+    record = {
+        "at_ms": time.time_ns() // 1_000_000,
+        "description": str(tool_input.get("description") or ""),
+        "subagent_type": str(tool_input.get("subagent_type") or ""),
+    }
+    (directory / f"{name}.started").write_text(
+        json.dumps(record, ensure_ascii=False), encoding="utf-8"
+    )
 
 
-def launched_without_result(task: Path) -> list[str]:
-    """Запущенные подзадачи без итога `.done` (сверка `.started` с `.done`)."""
+def is_live(record: dict[str, str], live: list[object]) -> bool:
+    """Подзадача из отметки `.started` есть среди живых субагентов сессии."""
+    kind = record.get("subagent_type")
+    return any(
+        isinstance(item, dict)
+        and item.get("type") == "subagent"
+        and item.get("description") == record.get("description")
+        and (not kind or item.get("agent_type") == kind)
+        for item in live
+    )
+
+
+def launched_without_result(
+    task: Path, live: list[object] | None
+) -> tuple[list[str], list[str], list[str]]:
+    """Подзадачи с `.started` без `.done` и `.stopped`: идут, завершены, неизвестно.
+
+    `live` — поле `background_tasks` входа `Stop`; None — поля нет, и все
+    подзадачи попадают в «неизвестно», как и отметки без описания.
+    """
     directory = subtasks(task)
+    running: list[str] = []
+    ended: list[str] = []
+    unknown: list[str] = []
     if not directory.is_dir():
-        return []
-    return [
-        path.stem
-        for path in sorted(directory.glob("*.started"))
-        if not (directory / f"{path.stem}.done").exists()
-    ]
+        return running, ended, unknown
+    for path in sorted(directory.glob("*.started")):
+        name = path.stem
+        if (directory / f"{name}.done").exists() or (
+            directory / f"{name}.stopped"
+        ).exists():
+            continue
+        record = read_record(path)
+        if live is None or "description" not in record:
+            unknown.append(name)
+        elif is_live(record, live):
+            running.append(name)
+        else:
+            ended.append(name)
+    return running, ended, unknown
 
 
 def post_tool(data: dict[str, object]) -> None:
@@ -491,10 +540,13 @@ def stop(data: dict[str, object]) -> None:
     task = task_dir()
     if task is None:
         return
+    raw_live = data.get("background_tasks")
+    live = raw_live if isinstance(raw_live, list) else None
+    running, ended, unknown = launched_without_result(task, live)
     pending = uncovered(task)
-    if not pending:
+    if not pending and not ended:
         return
-    names = ", ".join(name for name, _, _ in pending)
+    names = ", ".join([name for name, _, _ in pending] + ended)
     if data.get("stop_hook_active"):
         subprocess.run(
             [
@@ -512,17 +564,27 @@ def stop(data: dict[str, object]) -> None:
             check=False,
         )
         return
-    lines = "; ".join(f"{name} (agent_id {agent})" for name, agent, _ in pending)
-    stopped = {name for name, _, _ in pending}
-    running = [n for n in launched_without_result(task) if n not in stopped]
+    parts = []
+    if pending:
+        lines = "; ".join(f"{name} (agent_id {agent})" for name, agent, _ in pending)
+        parts.append(
+            "Подзадачи остановились без итога, и после их остановки не начато ни одно "
+            f"ожидание: {lines}"
+        )
+    if ended:
+        parts.append(
+            f"Завершены без итога: {', '.join(ended)} (субагента нет среди живых, "
+            "отметки остановки нет)"
+        )
     if running:
-        lines += f". Запущены и ещё без итога: {', '.join(running)}"
+        parts.append(f"Ещё идут: {', '.join(running)}")
+    if unknown:
+        parts.append(f"Запущены и ещё без итога: {', '.join(unknown)}")
     emit(
         {
             "decision": "block",
             "reason": (
-                f"Подзадачи остановились без итога, и после их остановки не начато ни одно "
-                f"ожидание: {lines}. Каждую возобнови "
+                ". ".join(parts) + ". Каждую остановившуюся и завершённую возобнови "
                 "(SendMessage), перезапусти или, если итог уже снят или подзадача снята, "
                 f"запиши отметку {subtasks(task)}/<имя>.done с одной строкой итога."
             ),

@@ -773,9 +773,10 @@ class RmResultsTest(unittest.TestCase):
         под xargs и find -exec ничего не удаляют (RP-2445, п. 1)."""
         live = self.live
         for command in [
-            "git ls-files | xargs bash -n",
-            "git ls-files '*.sh' | xargs -n1 sh -n",
-            "ls | xargs bash -nv",
+            "git ls-files | xargs -n1 bash -n --",
+            "git ls-files '*.sh' | xargs -n1 sh -n --",
+            "ls | xargs -I{} dash -n -- {}",
+            "ls | xargs -n1 bash -nv --",
             "ls | xargs python3 -m ruff check",
             "ls | xargs python3 -I -m ruff check --select E",
             "ls | xargs python3.14 -m ruff format --check",
@@ -787,7 +788,7 @@ class RmResultsTest(unittest.TestCase):
             "ls | xargs -n1 bash -c 'grep -c x \"$@\" || true' _",
             'ls | xargs sh -c \'test -s "$1" && cat "$1"\' _',
             'ls | xargs sh -c \'[ -s "$1" ] && wc -l "$1"\' _',
-            f"find {live} -name '*.sh' -exec bash -n {{}} +",
+            f"find {live} -name '*.sh' -exec bash -n -- {{}} +",
             f"find {live} -name '*.py' -exec python3 -I -m py_compile {{}} +",
             "ls | xargs sh -c 'for f; do head -1 \"$f\" 2>/dev/null; done' _",
             f"find {live} -exec sh -c 'wc -c \"$1\"' _ {{}} \\;",
@@ -843,7 +844,13 @@ class RmResultsTest(unittest.TestCase):
                 "ls | xargs bash -c 'echo \"${x:$1}\"' _",
                 "ls | xargs sh -c 'trap \"rm -rf $1\" EXIT' _",
                 "ls | xargs sh -c 'PATH=\"$1\" ls' _",
-                "ls | xargs env BASH_ENV=f bash -n",
+                "ls | xargs env BASH_ENV=f bash -n --",
+                # без «--» строка ввода +n снимает -n (решение координатора)
+                "git ls-files | xargs bash -n",
+                "ls | xargs -n1 sh -n",
+                "ls | xargs bash -nv",
+                f"find {self.live} -name '*.sh' -exec bash -n {{}} +",
+                "ls | xargs bash -n +n --",
                 "ls | xargs zsh -c 'echo $1' _",
                 'ls | xargs bash -c "echo $X"',
                 # находки ревью RP-2445: тело -c — перечень команд чтения
@@ -861,7 +868,7 @@ class RmResultsTest(unittest.TestCase):
                 "ls | xargs bash -c 'hash -p \"$1\" ls; ls' _",
                 "ls | xargs bash -c 'enable -f \"$1\" x' _",
                 "ls | xargs bash -c 'wait -n -p \"$1\"' _",
-                "ls | xargs env -S 'rm -rf x' bash -n",
+                "ls | xargs env -S 'rm -rf x' bash -n --",
                 "ls | xargs env -S 'rm -rf x' python3 -m mypy",
                 "ls | xargs env -S 'rm -rf' cat",
                 "ls | xargs python3 -m ruff check -o out.txt",

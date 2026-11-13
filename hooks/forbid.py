@@ -94,7 +94,9 @@ DENY = {
         "Запрещён ручной rm -r в каталоге результатов (paths.results), пока "
         "там есть живое: {live}. Уборка — /duty:cleanup (перечень с размерами, "
         "затем apply): навык проверяет то же признаки живого и не трогает "
-        "идущие задачи, прогоны и открытые файлы процессов."
+        "идущие задачи, прогоны и открытые файлы процессов. Проверка синтаксиса "
+        "под xargs и find — с «--» после -n: xargs -n1 bash -n -- (без «--» "
+        "строка ввода +n снимает -n)."
     ),
     "secret-file": (
         "Запрещён вывод содержимого файлов каталогов секретов (secrets.dirs: "
@@ -308,9 +310,9 @@ SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcs
 # иначе, чем его видит `parse`, — их тело не разбирается.
 PARSED_SHELLS = {"sh", "bash", "dash", "ash"}
 # Короткие ключи таких оболочек после `-` (`o` берёт имя следующим словом);
-# `-n` — разбор без исполнения; ключи с `+` (`+n`, `+o noexec`) — отказ.
-# Остаток риска: строки стандартного ввода xargs встают сразу за ключами, и строка
-# `+n` снимает `-n`; у find пути начинаются с начального каталога и ключом не станут.
+# `-n` — разбор без исполнения, только с `--` после ключей: строки стандартного
+# ввода xargs встают сразу за ключами, и без `--` строка `+n` снимает `-n`;
+# ключи с `+` (`+n`, `+o noexec`) — отказ.
 SHELL_FLAGS = set("ceuxvno")
 SHELL_LONG = {"--norc", "--noprofile", "--posix"}
 # Тело `-c` под find и xargs пропускается, только если каждая его простая команда —
@@ -1038,15 +1040,21 @@ def shell_reads_only(
     """Оболочка под `find -exec` и xargs ничего не удаляет: `-n` (разбор без
     исполнения) или тело `-c` из команд чтения (`body_reads_only`).
 
-    Только `PARSED_SHELLS` и ключи `SHELL_FLAGS`; файл сценария, стандартный ввод,
-    тело из подстановки, неизвестный ключ — False (удаление целей вызывающего).
+    Только `PARSED_SHELLS` и ключи `SHELL_FLAGS`; `-n` — только с `--` после
+    ключей. Файл сценария, стандартный ввод, тело из подстановки, неизвестный
+    ключ — False (удаление целей вызывающего).
     """
     if name not in PARSED_SHELLS:
         return False
     flags: set[str] = set()
+    ended = False  # `--`: дальше только операнды
     i = 0
     while i < len(args):
         word = args[i]
+        if word.text == "--":
+            ended = True
+            i += 1
+            break
         if word.text in SHELL_LONG:
             i += 1
         elif re.fullmatch(r"-[A-Za-z]+", word.text) and word.literal:
@@ -1060,7 +1068,7 @@ def shell_reads_only(
         else:
             break
     if "n" in flags:
-        return True
+        return ended
     if "c" not in flags or i >= len(args) or not args[i].literal:
         return False
     return body_reads_only(args[i].text, holders, depth + 1)

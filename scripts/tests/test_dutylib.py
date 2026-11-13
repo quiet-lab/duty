@@ -217,8 +217,54 @@ class ContainerMountsTest(unittest.TestCase):
     def test_docker_timeout_means_mounts_unknown(self) -> None:
         self.with_docker("exit 0")
         for stage in ("ps", "inspect"):
-            with self.subTest(stage=stage):
-                self.assertEqual(self.mounts_with_hung(stage), [])
+            with (
+                self.subTest(stage=stage),
+                self.assertRaises(dutylib.DockerUnknown),
+            ):
+                self.mounts_with_hung(stage)
+
+    def test_docker_timeout_blocks_live_reason(self) -> None:
+        """Таймаут docker — не «контейнеров нет»: любой каталог признаётся занятым."""
+        self.with_docker("exit 0")
+
+        def fake_run(cmd: list[str], **kwargs: object) -> object:
+            raise subprocess.TimeoutExpired(cmd, 1)
+
+        with mock.patch.object(dutylib.subprocess, "run", fake_run):
+            _, opened = dutylib.proc_indexes()
+        self.assertTrue(opened.docker_unknown)
+        why = dutylib.live_reason(Path("/data/results/run-1"), opened)
+        self.assertIn("docker не ответил", why)
+
+    def test_docker_calls_share_one_deadline(self) -> None:
+        """Второй вызов получает остаток общего срока, а не новый."""
+        now = [0.0]
+        seen: list[float] = []
+
+        def fake_run(cmd: list[str], **kwargs: object) -> object:
+            seen.append(kwargs["timeout"])  # type: ignore[arg-type]
+            now[0] += dutylib.DOCKER_TIMEOUT_S - 1  # первый вызов съел почти весь срок
+            return subprocess.CompletedProcess(cmd, 0, "abc\n", "")
+
+        with (
+            mock.patch.object(dutylib, "_clock", lambda: now[0]),
+            mock.patch.object(dutylib.subprocess, "run", fake_run),
+        ):
+            dutylib.container_mounts()
+            self.assertEqual(seen[0], dutylib.DOCKER_TIMEOUT_S)
+            self.assertEqual(seen[1], 1)
+            now[0] = 0.0
+            seen.clear()
+
+            def slow(cmd: list[str], **kwargs: object) -> object:
+                now[0] += dutylib.DOCKER_TIMEOUT_S  # срок исчерпан первым вызовом
+                return subprocess.CompletedProcess(cmd, 0, "abc\n", "")
+
+            with (
+                mock.patch.object(dutylib.subprocess, "run", slow),
+                self.assertRaises(dutylib.DockerUnknown),
+            ):
+                dutylib.container_mounts()
 
     def mounts_with_hung(self, stage: str) -> list[Path]:
         def fake_run(cmd: list[str], **kwargs: object) -> object:

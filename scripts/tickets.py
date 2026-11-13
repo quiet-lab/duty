@@ -176,11 +176,18 @@ def fetch(cfg, jql: str) -> dict[str, dict]:
     waiting = [k for k, t in out.items() if t["status"] in check]
     for i in range(0, len(waiting), PAGE):
         keys = ", ".join(waiting[i : i + PAGE])
-        for issues in pages(f"key in ({keys})", EXPAND):
-            for issue in issues:
-                t = out.get(issue["key"])
-                if t is not None:
-                    t["status_since"] = status_since(issue) or t["created"]
+        try:
+            for issues in pages(f"key in ({keys})", EXPAND):
+                for issue in issues:
+                    t = out.get(issue["key"])
+                    if t is not None:
+                        t["status_since"] = status_since(issue) or t["created"]
+        except urllib.error.HTTPError as e:
+            # 400 на пакетный запрос истории (например, ключ удалённого
+            # тикета): истории нет, возраст — по запасному `created`, уже
+            # записанному `normalize`. 401/403 пакет сюда не пускает.
+            if e.code != 400:
+                raise
     return out
 
 

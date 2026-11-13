@@ -300,8 +300,74 @@ XARGS_LONG = {
 DELETERS = {"rm", "unlink", "rmdir", "shred", "truncate"}
 # Оболочки, интерпретаторы и запускатели: что они выполнят над целями find и xargs,
 # до запуска неизвестно, поэтому под `-exec` и xargs они считаются удалением
-# с неизвестной целью (fail-closed).
+# с неизвестной целью (fail-closed). Исключения — `shell_reads_only` и
+# `python_checks_only`: проверка синтаксиса, тело `-c` из команд чтения, модули проверок.
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh"}
+# Оболочки, тело `-c` которых разбирается: синтаксис POSIX и bash. У zsh
+# (квалификаторы шаблонов, флаг `(e)`), ksh и прочих литерал тела исполняется
+# иначе, чем его видит `parse`, — их тело не разбирается.
+PARSED_SHELLS = {"sh", "bash", "dash", "ash"}
+# Короткие ключи таких оболочек после `-` (`o` берёт имя следующим словом);
+# `-n` — разбор без исполнения; ключи с `+` (`+n`, `+o noexec`) — отказ.
+# Остаток риска: строки стандартного ввода xargs встают сразу за ключами, и строка
+# `+n` снимает `-n`; у find пути начинаются с начального каталога и ключом не станут.
+SHELL_FLAGS = set("ceuxvno")
+SHELL_LONG = {"--norc", "--noprofile", "--posix"}
+# Тело `-c` под find и xargs пропускается, только если каждая его простая команда —
+# из перечня команд чтения: без записи, исполнения чужого кода и вычисления имён
+# (перечень разрешённого, а не запрещённого, — ревью RP-2445: запрещённое у bash
+# не перечислить). `for`, `fi`, `done` — слова управления; у printf, test и `[`
+# ключ `-v` вычисляет имя переменной и запрещён.
+BODY_COMMANDS = {
+    "echo",
+    "printf",
+    "test",
+    "[",
+    "true",
+    "false",
+    ":",
+    "for",
+    "fi",
+    "done",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "grep",
+    "egrep",
+    "fgrep",
+    "cut",
+    "tr",
+    "basename",
+    "dirname",
+    "realpath",
+    "readlink",
+    "stat",
+    "ls",
+    "du",
+    "cmp",
+    "diff",
+    "md5sum",
+    "sha1sum",
+    "sha256sum",
+    "b2sum",
+    "cksum",
+    "nl",
+    "tac",
+    "rev",
+}
+# Арифметика, `[[ ]]` и любые `${…}` (косвенная ссылка `${!1}`, `${1@P}`, срез,
+# индекс): данные в них исполняются как код.
+BODY_DATA_EVAL_RE = re.compile(r"\(\(|\[\[|\$\[|\$\{")
+# `python -m <модуль>` под find и xargs: модули проверок, которые читают файлы
+# и не удаляют их; ключи записи (`BODY_PY_WRITES`) — отказ.
+PYTHON_CHECK_MODULES = {"py_compile", "tabnanny", "pyflakes", "pycodestyle", "mypy"}
+PYTHON_FLAGS = set("BEIOPSbqsu")
+# Ключи модулей проверок, которые пишут или правят файлы.
+PY_WRITE_FLAGS = re.compile(
+    r"-o|--output|--add-noqa|--fix|--unsafe-fixes|--watch|-w$|--junit-xml"
+    r"|--cache-dir|--install-types|--[a-z-]*-report|--write"
+)
 INTERPRETER_RE = re.compile(
     r"(pypy|perl|ruby|node|nodejs|php|lua|luajit|tclsh|wish|julia|Rscript|deno|bun"
     r"|pwsh|osascript|awk|gawk|mawk|nawk)[0-9.]*"
@@ -904,7 +970,8 @@ def deletion_targets(
     `git rm`/`git clean`, rsync с удалением источника или приёмника; их явные
     цели возвращаются, вызывающий добавляет свои (пути find, корень для xargs).
     Оболочка, интерпретатор и запускатель считаются удалением целей вызывающего
-    (fail-closed); явные пути в их строке проверяет рекурсивный разбор тела.
+    (fail-closed), кроме `shell_reads_only` (`-n`, тело `-c` из команд чтения) и
+    `python_checks_only` (модуль проверки); `env -S` даёт корень `/`.
     Имя команды, неизвестное до запуска (подстановка, шаблон, строка замены,
     имя со стандартного ввода xargs после обёртки без команды), даёт корень `/`.
     """
@@ -918,18 +985,24 @@ def deletion_targets(
     command = words[len(words) - len(args) - 1]
     if (
         not command.literal
-        or re.search(r"[*?\[]", command.text)
+        or command.text != "["
+        and re.search(r"[$*?\[{]", command.text)  # `$1`, шаблон, `{rm,-rf,x}`
         or any(h in command.text for h in holders)
     ):
         return [ANYWHERE]
     texts = [a.text for a in args]
-    if (
-        name in SHELLS
-        or name in LAUNCHERS
-        or PYTHON_RE.fullmatch(name)
-        or INTERPRETER_RE.fullmatch(name)
-    ):
-        return []  # явные цели строки `-c` проверяет рекурсивный разбор тела
+    prefix = words[: len(words) - len(args) - 1]
+    if env_split(prefix):  # `env -S 'строка'`: настоящая команда — в строке
+        return [ANYWHERE]
+    if name in SHELLS:  # исключения — только без обёрток и присваиваний впереди
+        return (
+            None if not prefix and shell_reads_only(name, args, holders, depth) else []
+        )
+    if PYTHON_RE.fullmatch(name):
+        safe = not prefix and python_checks_only(args, from_stdin)
+        return None if safe else []
+    if name in LAUNCHERS or INTERPRETER_RE.fullmatch(name):
+        return []
     if (
         name in DELETERS
         or name == "git"
@@ -946,6 +1019,124 @@ def deletion_targets(
             return None
         return [ANYWHERE]
     return None
+
+
+def env_split(prefix: list[Word]) -> bool:
+    """Среди обёрток перед командой — `env -S`/`--split-string` (строка — команда)."""
+    after_env = False
+    for word in prefix:
+        if base(word.text) == "env":
+            after_env = True
+        elif after_env and re.match(r"-[A-Za-z]*S|--sp", word.text):
+            return True
+    return False
+
+
+def shell_reads_only(
+    name: str, args: list[Word], holders: set[str], depth: int
+) -> bool:
+    """Оболочка под `find -exec` и xargs ничего не удаляет: `-n` (разбор без
+    исполнения) или тело `-c` из команд чтения (`body_reads_only`).
+
+    Только `PARSED_SHELLS` и ключи `SHELL_FLAGS`; файл сценария, стандартный ввод,
+    тело из подстановки, неизвестный ключ — False (удаление целей вызывающего).
+    """
+    if name not in PARSED_SHELLS:
+        return False
+    flags: set[str] = set()
+    i = 0
+    while i < len(args):
+        word = args[i]
+        if word.text in SHELL_LONG:
+            i += 1
+        elif re.fullmatch(r"-[A-Za-z]+", word.text) and word.literal:
+            letters = set(word.text[1:])
+            if not letters <= SHELL_FLAGS:
+                return False
+            flags |= letters
+            i += 2 if "o" in letters else 1
+        elif word.text.startswith(("-", "+")):
+            return False
+        else:
+            break
+    if "n" in flags:
+        return True
+    if "c" not in flags or i >= len(args) or not args[i].literal:
+        return False
+    return body_reads_only(args[i].text, holders, depth + 1)
+
+
+def body_reads_only(body: str, holders: set[str], depth: int) -> bool:
+    """Тело `sh -c` под `find -exec` и xargs состоит из команд чтения.
+
+    Каждая простая команда — из `BODY_COMMANDS` литералом в начале (без обёрток
+    и присваиваний), перенаправления — только ввод и `/dev/null`, без heredoc;
+    подстановки проверяются так же. Строка замены в теле — код из данных;
+    `${…}`, арифметика и `[[ ]]` — отказ.
+    """
+    if depth > MAX_DEPTH or any(h in body for h in holders):
+        return False
+    if BODY_DATA_EVAL_RE.search(body):
+        return False
+    for cmd in parse(body):
+        if cmd.stdin:
+            return False
+        for op, target in cmd.redirs:
+            if op not in {"<", "<<<"} and target.text != "/dev/null":
+                return False
+        for word in cmd.words + [w for _, w in cmd.redirs]:
+            if not all(body_reads_only(inner, set(), depth + 1) for inner in word.subs):
+                return False
+        words = [w for w in cmd.words if w.text not in RESERVED]
+        if not words:
+            continue
+        head = words[0]
+        if not head.literal or "$" in head.text or head.text not in BODY_COMMANDS:
+            return False
+        if head.text in {"printf", "test", "["} and any(
+            w.text == "-v" for w in words[1:]
+        ):
+            return False
+    return True
+
+
+def python_checks_only(args: list[Word], from_stdin: bool) -> bool:
+    """`python -m <модуль проверки>` (`PYTHON_CHECK_MODULES`, `ruff check`,
+    `ruff format --check|--diff`) без ключей записи `PY_WRITE_FLAGS`.
+
+    Под find (`-execdir` запускает в каталоге найденного) нужен `-I` или `-P`:
+    без них модуль ищется и в текущем каталоге.
+    """
+    texts = [a.text for a in args]
+    flags = ""
+    i = 0
+    while i < len(texts) and texts[i] != "-m":
+        text = texts[i]
+        if text in {"-W", "-X"}:
+            i += 2
+        elif re.fullmatch(r"-[WX].+", text):
+            i += 1
+        elif re.fullmatch(r"-[A-Za-z]+", text) and set(text[1:]) <= PYTHON_FLAGS:
+            flags += text[1:]
+            i += 1
+        else:
+            return False
+    if i + 1 >= len(texts) or not all(a.literal for a in args):
+        return False
+    if not from_stdin and not set(flags) & {"I", "P"}:
+        return False
+    module, rest = texts[i + 1], texts[i + 2 :]
+    if any(PY_WRITE_FLAGS.match(t) for t in rest):
+        return False
+    if module in PYTHON_CHECK_MODULES:
+        return True
+    if module != "ruff" or not rest:
+        return False
+    return (
+        rest[0] == "check"
+        or rest[0] == "format"
+        and ("--check" in rest or "--diff" in rest)
+    )
 
 
 def find_exec_bodies(args: list[Word]) -> list[list[Word]]:
@@ -1383,6 +1574,9 @@ def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
                 for body in find_exec_bodies(args)
                 if body
             ]
+        if name == "xargs" and (tail := xargs_command(args)[0]):
+            # команда xargs — со своими запретами, как тело -exec find
+            inner_texts.append(" ".join(shell_quote(w.text) for w in tail))
         if name in {"bash", "sh", "zsh", "dash"}:  # heredoc и here-string — их ввод
             inner_texts += cmd.stdin + [w.text for op, w in cmd.redirs if op == "<<<"]
         for inner in inner_texts:

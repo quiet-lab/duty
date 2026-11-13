@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1]
@@ -64,6 +65,22 @@ def build(
     }
 
 
+class ParallelPool(ThreadPoolExecutor):
+    """Пул, отвергающий размер меньше двух: двойник не получил бы второго участника.
+
+    Обход Jenkins с пулом на одного исполнителя зависал бы на барьере без
+    сообщения; здесь он падает при создании пула, с причиной и без срока.
+    """
+
+    def __init__(self, max_workers: int | None = None, *args, **kwargs) -> None:
+        if max_workers is not None and max_workers < 2:
+            raise AssertionError(
+                f"пул обхода Jenkins на {max_workers} исполнителя: "
+                "запросы к двойнику не могут идти одновременно"
+            )
+        super().__init__(max_workers, *args, **kwargs)
+
+
 def in_pool(release) -> None:
     """Запрос двойнику пришёл не из пула потоков — обход последовательный.
 
@@ -80,9 +97,11 @@ class WeekStatsTest(unittest.TestCase):
         # Сборки двух заданий запрашиваются одновременно: двойник отвечает
         # на запрос сборок, только когда пришли оба. Барьер без срока
         # (запись решения о сроках ожидания в тестах): запрос листа
-        # из главного потока ломает барьер, и тест падает с причиной; обход
-        # по одному в пуле потоков зависает, его ловит внешний предел
-        # прогона целиком.
+        # из главного потока ломает барьер, и тест падает с причиной; пул
+        # на одного исполнителя отвергает `ParallelPool`. Остаток: обход
+        # по одному внутри пула нормального размера (submit с ожиданием
+        # результата) без срока не отличить от медленного ответа, его ловит
+        # внешний предел прогона целиком.
         barrier = threading.Barrier(2)
         folders = {
             "http://j/": {"jobs": [{"name": "d", "url": "http://j/d/"}]},
@@ -115,6 +134,8 @@ class WeekStatsTest(unittest.TestCase):
         old = ws.gates.jenkins
         ws.gates.jenkins = fake_jenkins
         self.addCleanup(setattr, ws.gates, "jenkins", old)
+        self.addCleanup(setattr, ws, "ThreadPoolExecutor", ws.ThreadPoolExecutor)
+        ws.ThreadPoolExecutor = ParallelPool
         old_config = ws.gates.config
         ws.gates.config = lambda *_: {"jenkins.fake_job": "fake"}
         self.addCleanup(setattr, ws.gates, "config", old_config)
@@ -158,6 +179,8 @@ class WeekStatsTest(unittest.TestCase):
         old = ws.gates.jenkins
         ws.gates.jenkins = fake_jenkins
         self.addCleanup(setattr, ws.gates, "jenkins", old)
+        self.addCleanup(setattr, ws, "ThreadPoolExecutor", ws.ThreadPoolExecutor)
+        ws.ThreadPoolExecutor = ParallelPool
         old_config = ws.gates.config
         ws.gates.config = lambda *_: {"jenkins.fake_job": ""}
         self.addCleanup(setattr, ws.gates, "config", old_config)

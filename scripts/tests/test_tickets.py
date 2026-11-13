@@ -499,10 +499,46 @@ class JiraTest(Base):
         item["changelog"] = {}
         self.assertEqual(mod.normalize(item, [])["status_since"], "2026-09-01")
 
-    def test_expand_changelog_requested(self) -> None:
+    def test_changelog_not_requested_without_check_statuses(self) -> None:
         self.serve([(200, {"total": 1, "issues": [issue("RP-1", "Первый")]})])
         self.run_script()
-        self.assertIn("expand=changelog", FakeJira.seen[0])
+        self.assertEqual(len(FakeJira.seen), 1)
+        self.assertNotIn("expand", FakeJira.seen[0])
+
+    def test_changelog_only_for_tickets_in_check_statuses(self) -> None:
+        # История нужна только для возраста в статусе проверки: основной запрос
+        # идёт без expand, история запрашивается по ключам тикетов в статусе
+        # из check_statuses.
+        waiting = issue("RP-2", "Второй")
+        waiting["fields"]["status"] = {"name": "To Test"}
+        waiting["fields"]["created"] = "2026-09-01T10:00:00.000+0300"
+        with_history = {
+            **waiting,
+            "changelog": {
+                "histories": [
+                    {
+                        "created": "2026-10-10T10:00:00.000+0300",
+                        "items": [{"field": "status"}],
+                    }
+                ]
+            },
+        }
+        self.serve(
+            [
+                (200, {"total": 2, "issues": [issue("RP-1", "Первый"), waiting]}),
+                (200, {"total": 1, "issues": [with_history]}),
+            ]
+        )
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(FakeJira.seen), 2)
+        self.assertNotIn("expand", FakeJira.seen[0])
+        self.assertIn("expand=changelog", FakeJira.seen[1])
+        self.assertIn("RP-2", FakeJira.seen[1])
+        self.assertNotIn("RP-1", FakeJira.seen[1])
+        path = Path(r.stdout.strip().splitlines()[-1].removeprefix("Отчёт: "))
+        export = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        self.assertEqual(export["RP-2"]["status_since"], "2026-10-10")
 
 
 if __name__ == "__main__":

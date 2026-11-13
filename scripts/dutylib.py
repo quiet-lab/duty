@@ -21,6 +21,7 @@ import signal
 import ssl
 import subprocess
 import sys
+import time
 from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
@@ -197,40 +198,73 @@ def _proc_paths(with_fds: bool) -> tuple[list[Path], list[Path]]:
     return cwds, files
 
 
+# Общий предел двух вызовов docker (`ps` и `inspect`): зависший демон
+# не должен вешать хук и сценарии; второй вызов получает остаток срока.
+# Хук forbid (`hooks/hooks.json`, `timeout`) живёт 10 с: после старта и обхода
+# `/proc` ему нужен запас, чтобы успеть отказать (`DockerUnknown`) раньше,
+# чем Claude Code убьёт его (убитый хук пропускает команду). Срок docker —
+# не больше половины срока хука; связь проверяет test_dutylib.py.
+DOCKER_TIMEOUT_S = 5
+_clock = time.monotonic
+
+
+class DockerUnknown(RuntimeError):
+    """Docker не ответил в срок: источники монтирования контейнеров неизвестны."""
+
+
+class ProcIndex(dict[Path, Path]):
+    """Индекс «каталог → путь внутри него»; `docker_unknown` — монтирования контейнеров не получены."""
+
+    docker_unknown = False
+
+
 def container_mounts() -> list[Path]:
-    """Источники монтирования работающих контейнеров (`docker ps` и `docker inspect`); пусто — docker нет или контейнеров нет.
+    """Источники монтирования работающих контейнеров (`docker ps` и `docker inspect`).
+
+    Пусто — docker нет, `ps` завершился ошибкой (демона нет) или контейнеров нет.
+    Ошибка `inspect` или превышение общего срока `DOCKER_TIMEOUT_S` двумя
+    вызовами — `DockerUnknown`: «неизвестно» не равно «пусто», вызывающий отказывает
+    (`proc_indexes` помечает индекс, `live_reason` по метке возвращает причину).
 
     Процессы контейнера rootless Docker принадлежат uid из подчинённого
     диапазона: `/proc/<pid>/{cwd,fd}` их не отдаёт, и серия стенда,
     пишущая в смонтированный каталог результатов, в обходе `/proc` не видна.
     """
-    try:
-        ids = subprocess.run(
-            ["docker", "ps", "-q"],
-            capture_output=True,
-            text=True,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-        if ids.returncode != 0 or not ids.stdout.split():
-            return []
-        info = subprocess.run(
-            [
-                "docker",
-                "inspect",
-                "--format",
-                "{{range .Mounts}}{{println .Source}}{{end}}",
-                *ids.stdout.split(),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except OSError:
+    deadline = _clock() + DOCKER_TIMEOUT_S
+
+    def docker(*args: str) -> subprocess.CompletedProcess[str] | None:
+        left = deadline - _clock()
+        if left <= 0:
+            raise DockerUnknown("срок вызовов docker исчерпан")
+        try:
+            return subprocess.run(
+                ["docker", *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                timeout=left,
+            )
+        except subprocess.TimeoutExpired:
+            raise DockerUnknown("docker не ответил в срок") from None
+        except OSError:
+            return None  # docker не установлен или не запускается
+
+    ids = docker("ps", "-q")
+    if ids is None or ids.returncode != 0 or not ids.stdout.split():
+        return []
+    info = docker(
+        "inspect",
+        "--format",
+        "{{range .Mounts}}{{println .Source}}{{end}}",
+        *ids.stdout.split(),
+    )
+    if info is None:
         return []
     if info.returncode != 0:
-        return []
+        # Контейнер мог выйти между `ps` и `inspect`: часть монтирований
+        # потеряна, «пусто» было бы ложью.
+        raise DockerUnknown("docker inspect завершился с ошибкой")
     return [Path(row) for row in info.stdout.splitlines() if row.startswith("/")]
 
 
@@ -259,7 +293,14 @@ def open_paths() -> dict[Path, Path]:
 def proc_indexes() -> tuple[dict[Path, Path], dict[Path, Path]]:
     """Индексы `cwd_index` и `open_paths` за один обход `/proc`."""
     cwds, files = _proc_paths(True)
-    return _with_ancestors(cwds), _with_ancestors([*cwds, *files, *container_mounts()])
+    try:
+        mounts = container_mounts()
+        unknown = False
+    except DockerUnknown:
+        mounts, unknown = [], True
+    opened = ProcIndex(_with_ancestors([*cwds, *files, *mounts]))
+    opened.docker_unknown = unknown
+    return _with_ancestors(cwds), opened
 
 
 # Строка шага state.md: «Шаг: …» или «**Шаг:** …» (как `task_step` в dispatch.sh).
@@ -336,8 +377,12 @@ def live_reason(top: Path, opened: dict[Path, Path] | None = None) -> str:
     (серия стенда пишет журнал, итог `summary.json` появляется только
     в конце); прогон tab-run.sh в `runs/*` без `done` с живым PID;
     задача (`brief.md`) со `state.md`, где шаг не завершён (`task_finished`).
+    Индекс с `docker_unknown` (docker не ответил) — признак для любого каталога:
+    монтирования контейнеров неизвестны, убирать нельзя.
     """
     index = open_paths() if opened is None else opened
+    if getattr(index, "docker_unknown", False):
+        return "docker не ответил в срок: монтирования контейнеров неизвестны"
     if top in index:
         return f"открыт файл процесса ({index[top]})"
     for meta in sorted(top.glob("runs/*/meta.txt")):

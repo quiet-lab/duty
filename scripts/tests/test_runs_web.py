@@ -16,7 +16,6 @@ TAB_RUN = Path(__file__).resolve().parents[1] / "tab-run.sh"
 # Узел Jenkins медленнее на ядро в 4,5 раза: 0,05 * 4,5 = 0,23 с; с двойным запасом
 # 0,5 с, округлено до 5 с. Предел — предохранитель от зависания, а не время
 # ожидания события.
-LIMIT_S = 5
 
 spec = importlib.util.spec_from_file_location("runs_web", SCRIPT)
 assert spec and spec.loader
@@ -206,13 +205,13 @@ class FollowTest(unittest.TestCase):
 
         worker = threading.Thread(target=rw.follow_log, args=(d, send))
         worker.start()
-        self.assertTrue(seen_first.wait(LIMIT_S))
+        seen_first.wait()
         with open(d / "out.log", "a", encoding="utf-8") as f:
             f.write("second\n")
-        self.assertTrue(seen_second.wait(LIMIT_S))
+        seen_second.wait()
         (d / ".done.tmp").write_text("0\n")
         (d / ".done.tmp").rename(d / "done")
-        worker.join(LIMIT_S)
+        worker.join()
         self.assertFalse(worker.is_alive())
         self.assertEqual(got[-1], rw.sse_frame("done", "0"))
         self.assertEqual(sum(f.count(b"second") for f in got[:-1]), 1)
@@ -229,9 +228,9 @@ class FollowTest(unittest.TestCase):
 
         worker = threading.Thread(target=rw.follow_log, args=(d, send, server_side))
         worker.start()
-        self.assertTrue(seen.wait(LIMIT_S))
+        seen.wait()
         client_side.close()
-        worker.join(LIMIT_S)
+        worker.join()
         self.assertFalse(worker.is_alive(), "слежение пережило уход клиента")
 
 
@@ -249,11 +248,11 @@ class HttpTest(unittest.TestCase):
 
     def stop(self) -> None:
         self.server.shutdown()
-        self.thread.join(LIMIT_S)
+        self.thread.join()
         self.server.server_close()
 
     def get(self, path: str) -> tuple[int, str]:
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=LIMIT_S * 6)
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
         try:
             conn.request("GET", path)
             resp = conn.getresponse()
@@ -284,7 +283,7 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(self.get("/other")[0], 404)
 
     def test_foreign_host_rejected(self) -> None:
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=LIMIT_S)
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
         try:
             conn.request("GET", "/", headers={"Host": "evil.example"})
             self.assertEqual(conn.getresponse().status, 403)

@@ -17,12 +17,8 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 TAB_RUN = SCRIPTS / "tab-run.sh"
 WAIT_DONE = SCRIPTS / "wait-done.sh"
 PUSH = SCRIPTS / "push-agent.sh"
-# Замер на станции (32 ядра), 5 прогонов: tab-run.sh с командой, отправкой и
-# выходом вкладки — 0,3-0,5 с, wait-done.sh с --timeout-s 1 — 1,1 с, самая
-# долгая операция теста; узел Jenkins медленнее на ядро в 4,5 раза: 5 с,
-# с двойным запасом 10 с. Предел — предохранитель от зависания, а не время
-# ожидания события.
-LIMIT_S = 10
+# Срока ожидания у тестов нет: каждое ожидание — до события (done, файл-отметка,
+# конец процесса), зависание ловит внешний предел прогона.
 
 BRIEF = """# Задача probe
 
@@ -81,7 +77,7 @@ def wait_gone(pid: int) -> bool:
     except ProcessLookupError:
         return True
     try:
-        ready, _, _ = select.select([fd], [], [], LIMIT_S)
+        ready, _, _ = select.select([fd], [], [])
     finally:
         os.close(fd)
     return bool(ready)
@@ -126,7 +122,7 @@ class TabRunTest(unittest.TestCase):
         for p in self.procs:
             if p.poll() is None:
                 p.kill()
-            p.wait(timeout=LIMIT_S)
+            p.wait()
             for f in (p.stdout, p.stderr):
                 if f:
                     f.close()
@@ -139,7 +135,6 @@ class TabRunTest(unittest.TestCase):
             env=env or self.env,
             capture_output=True,
             text=True,
-            timeout=LIMIT_S,
             check=False,
         )
 
@@ -160,7 +155,7 @@ class TabRunTest(unittest.TestCase):
 
     def test_exit_code_and_push(self) -> None:
         run_dir = self.tab_run("r1", "exit 7")
-        waited = self.run_script(WAIT_DONE, str(run_dir), "--timeout-s", str(LIMIT_S))
+        waited = self.run_script(WAIT_DONE, str(run_dir))
         self.assertEqual(waited.returncode, 7, waited.stderr)
         self.assertEqual(waited.stdout.strip(), f"done rc=7 {run_dir}")
         # Отправка идёт после done: ждём конца всей вкладки.
@@ -193,7 +188,7 @@ class TabRunTest(unittest.TestCase):
         r = self.run_script(TAB_RUN, "r1", "--", f'touch "{flag}"', env=tab_env)
         self.assertEqual(r.returncode, 0, r.stderr)
         run_dir = Path(json.loads(r.stdout)["run_dir"])
-        waited = self.run_script(WAIT_DONE, str(run_dir), "--timeout-s", str(LIMIT_S))
+        waited = self.run_script(WAIT_DONE, str(run_dir))
         self.assertEqual(waited.stdout.strip(), f"done rc=0 {run_dir}")
 
     def test_tab_closed_mid_run(self) -> None:
@@ -204,7 +199,7 @@ class TabRunTest(unittest.TestCase):
         reader = os.open(ready, os.O_RDONLY | os.O_NONBLOCK)
         try:
             run_dir = self.tab_run("r1", f'echo up > "{ready}"; read -r _ < "{gate}"')
-            ok, _, _ = select.select([reader], [], [], LIMIT_S)
+            ok, _, _ = select.select([reader], [], [])
             self.assertTrue(ok, "команда не запустилась")
         finally:
             os.close(reader)
@@ -220,7 +215,7 @@ class TabRunTest(unittest.TestCase):
         """Строка не принята (код 3) — уведомление herdr со звуком request."""
         (self.fake / "get_missing").touch()
         run_dir = self.tab_run("r1", "true")
-        waited = self.run_script(WAIT_DONE, str(run_dir), "--timeout-s", str(LIMIT_S))
+        waited = self.run_script(WAIT_DONE, str(run_dir))
         self.assertEqual(waited.returncode, 0, waited.stderr)
         self.assertTrue(wait_gone(self.pane_pid()))
         shows = self.calls("notification", "show")
@@ -237,7 +232,7 @@ class TabRunTest(unittest.TestCase):
         reader = os.open(ready, os.O_RDONLY | os.O_NONBLOCK)
         try:
             run_dir = self.tab_run("r1", "true")
-            ok, _, _ = select.select([reader], [], [], LIMIT_S)
+            ok, _, _ = select.select([reader], [], [])
             self.assertTrue(ok, "herdr agent wait не запустился")
             waiter = int(os.read(reader, 64))
         finally:
@@ -257,7 +252,7 @@ class TabRunTest(unittest.TestCase):
         reader = os.open(ready, os.O_RDONLY | os.O_NONBLOCK)
         try:
             run_dir = self.tab_run("r1", "true")
-            ok, _, _ = select.select([reader], [], [], LIMIT_S)
+            ok, _, _ = select.select([reader], [], [])
             self.assertTrue(ok, "herdr agent prompt не запустился")
         finally:
             os.close(reader)
@@ -289,7 +284,7 @@ class TabRunTest(unittest.TestCase):
         reader = os.open(ready, os.O_RDONLY | os.O_NONBLOCK)
         try:
             run_dir = self.tab_run("r1", f'echo up > "{ready}"; read -r _ < "{gate}"')
-            ok, _, _ = select.select([reader], [], [], LIMIT_S)
+            ok, _, _ = select.select([reader], [], [])
             self.assertTrue(ok, "команда не запустилась")
         finally:
             os.close(reader)
@@ -372,7 +367,7 @@ class TabRunTest(unittest.TestCase):
                 text=True,
             )
             self.procs.append(p)
-            ok, _, _ = select.select([reader], [], [], LIMIT_S)
+            ok, _, _ = select.select([reader], [], [])
             self.assertTrue(ok, "наблюдатель не запустился")
             return p, int(os.read(reader, 64))
         finally:
@@ -383,7 +378,7 @@ class TabRunTest(unittest.TestCase):
         run_dir.mkdir()
         p, watcher = self.start_wait(run_dir)
         p.kill()
-        p.wait(timeout=LIMIT_S)
+        p.wait()
         self.assertTrue(wait_gone(watcher), "inotifywait пережил wait-done.sh")
 
     def test_wait_done_finish_stops_watcher(self) -> None:
@@ -391,7 +386,7 @@ class TabRunTest(unittest.TestCase):
         run_dir.mkdir()
         p, watcher = self.start_wait(run_dir)
         (run_dir / "done").write_text("0\n", encoding="utf-8")
-        out, _ = p.communicate(timeout=LIMIT_S)
+        out, _ = p.communicate()
         self.assertEqual(p.returncode, 0)
         self.assertIn("done rc=0", out)
         self.assertTrue(wait_gone(watcher), "inotifywait остался после done")

@@ -132,38 +132,63 @@ def fetch(cfg, jql: str) -> dict[str, dict]:
     token = dutylib.access_file("jira", "token_file", "тикеты").read_text().strip()
     base = url.rstrip("/") + "/rest/api/2/search?"
     dup_types = cfg.get("tickets.duplicate_links", [])
-    out: dict[str, dict] = {}
-    start = 0
-    while True:
-        query = urllib.parse.urlencode(
-            {
-                "jql": jql,
+    check = cfg.get("tickets.check_statuses", [])
+
+    def pages(query_jql: str, expand: str):
+        """Страницы выдачи Jira: по одной на запрос."""
+        start = 0
+        while True:
+            params = {
+                "jql": query_jql,
                 "fields": FIELDS,
-                "expand": EXPAND,
                 "maxResults": PAGE,
                 "startAt": start,
             }
-        )
-        req = urllib.request.Request(
-            base + query, headers={"Authorization": f"Bearer {token}"}
-        )
-        try:
-            with urllib.request.urlopen(
-                req, timeout=30, context=dutylib.ssl_context(cfg)
-            ) as r:
-                page = json.load(r)
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
-                raise JiraDenied(f"Jira ответил {e.code}") from None
-            raise
-        issues = page.get("issues") or []
+            if expand:
+                params["expand"] = expand
+            req = urllib.request.Request(
+                base + urllib.parse.urlencode(params),
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            try:
+                with urllib.request.urlopen(
+                    req, timeout=30, context=dutylib.ssl_context(cfg)
+                ) as r:
+                    page = json.load(r)
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403):
+                    raise JiraDenied(f"Jira ответил {e.code}") from None
+                raise
+            issues = page.get("issues") or []
+            yield issues
+            start += len(issues)
+            if not issues or start >= page.get("total", 0):
+                return
+
+    out: dict[str, dict] = {}
+    for issues in pages(jql, ""):
         for issue in issues:
             t = normalize(issue, dup_types)
             t["desc"] = t["desc"][:DESC_KEEP]
             out[t["key"]] = t
-        start += len(issues)
-        if not issues or start >= page.get("total", 0):
-            return out
+    # История переходов нужна только для возраста в статусе проверки:
+    # запрашивается по ключам тикетов в этих статусах.
+    waiting = [k for k, t in out.items() if t["status"] in check]
+    for i in range(0, len(waiting), PAGE):
+        keys = ", ".join(waiting[i : i + PAGE])
+        try:
+            for issues in pages(f"key in ({keys})", EXPAND):
+                for issue in issues:
+                    t = out.get(issue["key"])
+                    if t is not None:
+                        t["status_since"] = status_since(issue) or t["created"]
+        except urllib.error.HTTPError as e:
+            # 400 на пакетный запрос истории (например, ключ удалённого
+            # тикета): истории нет, возраст — по запасному `created`, уже
+            # записанному `normalize`. 401/403 пакет сюда не пускает.
+            if e.code != 400:
+                raise
+    return out
 
 
 # --- Разбор --------------------------------------------------------------------

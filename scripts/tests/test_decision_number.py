@@ -10,11 +10,6 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "decision-number.sh"
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
-# Замер на станции (32 ядра), 5 прогонов: проверка ожидания замка целиком —
-# 0,23-0,25 с; узел Jenkins медленнее на ядро в 4,5 раза: 1,1 с; с двойным
-# запасом 2,2 с, округлено до 3 с. Предел — предохранитель от зависания.
-LIMIT_S = 3
-
 # Двойник renumber-decisions.py insert: как настоящий сценарий, переносит
 # записи через временные имена и пишет указатель в одной транзакции
 # с журналом отката; при ошибке и сигнале TERM или HUP отменяет только свои
@@ -266,7 +261,7 @@ class DecisionNumberTest(unittest.TestCase):
         # Сообщение о занятом замке печатается перед ожиданием события.
         self.assertIn("замок", proc.stderr.readline())
         lock.rmdir()
-        out, _ = proc.communicate(timeout=LIMIT_S)
+        out, _ = proc.communicate()
         self.assertEqual(proc.returncode, 0)
         self.assertTrue(out.strip().endswith("0099-locked.md"))
 
@@ -452,7 +447,7 @@ class DecisionNumberTest(unittest.TestCase):
                 # обрывается переданным ей TERM, а не записью в канал.
                 proc.send_signal(sig)
                 rest = proc.stderr.read()
-                self.assertEqual(proc.wait(timeout=LIMIT_S), 2, rest)
+                self.assertEqual(proc.wait(), 2, rest)
                 self.assertIn(f"получен сигнал {sig.name[3:]}", rest)
                 self.assertIn("каталог возвращён в исходное состояние", rest)
                 self.assertEqual(self.snapshot(), before)

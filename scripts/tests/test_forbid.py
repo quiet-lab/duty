@@ -588,6 +588,68 @@ class RmResultsTest(unittest.TestCase):
         self.cfg.results = ""
         self.assertIsNone(self.check(f"rm -rf {self.live}"))
 
+    def test_find_delete_and_exec_rm_denied_while_live(self) -> None:
+        for command in (
+            f"find {self.live} -delete",
+            f"find {self.live} -name '*.md' -delete",
+            f"find {self.results} -mindepth 1 -delete",
+            f"find {self.live} -type f -exec rm -f {{}} +",
+            f"find {self.live} -type d -execdir rm -rf {{}} \\;",
+            f"sudo find {self.live} -delete",
+            f"bash -c 'find {self.live} -delete'",
+        ):
+            with self.subTest(command=command):
+                found = self.check(command)
+                assert found is not None
+                self.assertTrue(found.startswith("rm-results|"), found)
+        self.cfg.cwd = str(self.live)
+        self.assertIsNotNone(self.check("find . -delete"))
+        self.assertIsNotNone(self.check("find -delete"))
+
+    def test_find_allowed_without_delete_or_outside_or_idle(self) -> None:
+        self.assertIsNone(self.check(f"find {self.live} -name '*.md'"))
+        self.assertIsNone(self.check(f"find {self.live} -exec cat {{}} +"))
+        self.assertIsNone(self.check(f"find {self.outside} -delete"))
+        self.assertIsNone(self.check(f"find {self.idle} -delete"))
+        (self.live / "state.md").write_text("Шаг: завершено\n", encoding="utf-8")
+        self.assertIsNone(self.check(f"find {self.live} -delete"))
+
+    def test_xargs_rm_recursive_denied_while_live(self) -> None:
+        for command in (
+            f"find {self.idle} -name x | xargs rm -rf",
+            f"ls {self.live} | xargs -I{{}} rm -r {{}}",
+            "ls | xargs -0 -n 1 rm -rf --",
+            "ls | xargs /bin/rm -R",
+        ):
+            with self.subTest(command=command):
+                found = self.check(command)
+                assert found is not None
+                self.assertTrue(found.startswith("rm-results|"), found)
+
+    def test_xargs_rm_allowed_when_not_recursive_or_idle(self) -> None:
+        self.assertIsNone(self.check("ls | xargs rm -f"))
+        self.assertIsNone(self.check("ls | xargs echo rm -rf"))
+        (self.live / "state.md").write_text("Шаг: завершено\n", encoding="utf-8")
+        self.assertIsNone(self.check("ls | xargs rm -rf"))
+
+    def test_open_paths_only_for_targets_inside_results(self) -> None:
+        lib = forbid._dutylib()
+        calls: list[int] = []
+        real = lib.open_paths
+
+        def counting() -> object:
+            calls.append(1)
+            return real()
+
+        lib.open_paths = counting
+        self.addCleanup(setattr, lib, "open_paths", real)
+        self.assertIsNone(self.check(f"rm -rf {self.outside}"))
+        self.assertIsNone(self.check("rm -rf /tmp/duty-nonexistent-dir"))
+        self.assertIsNone(self.check(f"find {self.outside} -delete"))
+        self.assertEqual(calls, [])
+        self.assertIsNotNone(self.check(f"rm -rf {self.live}"))
+        self.assertEqual(calls, [1])
+
 
 class ConfigTest(unittest.TestCase):
     def test_defaults_without_config(self) -> None:

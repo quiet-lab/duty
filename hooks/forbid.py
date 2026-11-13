@@ -783,14 +783,74 @@ def rm_targets(args: list[Word], cwd: str | None) -> list[Path]:
     return out
 
 
+FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
+
+
+def find_deletion(args: list[Word]) -> list[Word] | None:
+    """Начальные пути `find`, если он удаляет (`-delete`, `-exec rm`); иначе None.
+
+    Ключи `-H`, `-L`, `-P`, `-D…`, `-O…` перед путями пропускаются; без путей
+    начальный каталог — текущий (пустой список).
+    """
+    texts = [a.text for a in args]
+    deletes = False
+    for i, t in enumerate(texts):
+        if (
+            t == "-delete"
+            or t in FIND_EXEC
+            and i + 1 < len(texts)
+            and base(texts[i + 1]) == "rm"
+        ):
+            deletes = True
+    if not deletes:
+        return None
+    i = 0
+    while i < len(texts) and re.fullmatch(r"-([HLP]|[DO]\w*)", texts[i]):
+        i += 1
+    starts: list[Word] = []
+    while i < len(texts) and not (
+        texts[i].startswith(("-", "(", "\\(")) or texts[i] in {"!", "\\!"}
+    ):
+        starts.append(args[i])
+        i += 1
+    return starts
+
+
+def xargs_rm_args(args: list[Word]) -> list[Word] | None:
+    """Аргументы `rm` из `xargs [ключи] rm …`; иначе None."""
+    i = 0
+    while i < len(args) and args[i].text.startswith("-"):
+        i += 2 if args[i].text in XARGS_VALUE_FLAGS else 1
+    if i < len(args) and base(args[i].text) == "rm":
+        return args[i + 1 :]
+    return None
+
+
 def check_rm(name: str, args: list[Word], cfg: Settings) -> str | None:
-    """`rm -r` внутри `paths.results` при живом каталоге: ключ `rm-results|<каталог>: <причина>`."""
-    if name != "rm" or not cfg.results or not rm_recursive([a.text for a in args]):
+    """Удаление внутри `paths.results` при живом каталоге: ключ `rm-results|<каталог>: <причина>`.
+
+    Удаляют `rm -r`, `find … -delete`, `find … -exec rm` и `xargs rm -r`; цели
+    `xargs` приходят со стандартного ввода и неизвестны, поэтому считаются корнем `/`
+    (проверяются все живые каталоги результатов).
+    """
+    if not cfg.results:
+        return None
+    if name == "rm" and rm_recursive([a.text for a in args]):
+        targets = rm_targets(args, cfg.cwd)
+    elif name == "find" and (starts := find_deletion(args)) is not None:
+        targets = rm_targets(starts, cfg.cwd) or rm_targets([Word(text=".")], cfg.cwd)
+    elif (
+        name == "xargs"
+        and (rm_args := xargs_rm_args(args)) is not None
+        and rm_recursive([a.text for a in rm_args])
+    ):
+        targets = [Path("/"), *rm_targets(rm_args, cfg.cwd)]
+    else:
         return None
     results = Path(os.path.realpath(cfg.results))
     lib = _dutylib()
-    opened = lib.open_paths()  # type: ignore[attr-defined]
-    for target in rm_targets(args, cfg.cwd):
+    opened = None
+    for target in targets:
         target = Path(os.path.realpath(target))
         if target.is_relative_to(results) and target != results:
             tops = [results / target.relative_to(results).parts[0]]
@@ -802,6 +862,8 @@ def check_rm(name: str, args: list[Word], cfg: Settings) -> str | None:
             )
         else:
             continue
+        if opened is None:  # обход /proc — только для цели внутри результатов
+            opened = lib.open_paths()  # type: ignore[attr-defined]
         for top in tops:
             why = lib.live_reason(top.resolve(), opened)  # type: ignore[attr-defined]
             if why:

@@ -1,5 +1,6 @@
 """Проверки общих помощников `dutylib`: запуск `python3 -I scripts/tests/test_dutylib.py`."""
 
+import json
 import os
 import subprocess
 import sys
@@ -265,6 +266,36 @@ class ContainerMountsTest(unittest.TestCase):
                 self.assertRaises(dutylib.DockerUnknown),
             ):
                 dutylib.container_mounts()
+
+    def test_docker_deadline_below_forbid_hook_timeout(self) -> None:
+        """Срок docker меньше срока хука forbid: иначе хук убьют раньше отказа (fail-open)."""
+        hooks = json.loads(
+            (Path(__file__).resolve().parents[2] / "hooks/hooks.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        timeouts = [
+            h["timeout"]
+            for group in hooks["hooks"]["PreToolUse"]
+            for h in group["hooks"]
+            if "forbid.py" in h["command"]
+        ]
+        self.assertTrue(timeouts)
+        self.assertLessEqual(dutylib.DOCKER_TIMEOUT_S * 2, min(timeouts))
+
+    def test_inspect_failure_is_unknown_not_empty(self) -> None:
+        """Контейнер вышел между ps и inspect: rc != 0 с частичным выводом — не «пусто»."""
+
+        def fake_run(cmd: list[str], **kwargs: object) -> object:
+            if cmd[1] == "inspect":
+                return subprocess.CompletedProcess(cmd, 1, "/data/other\n", "gone")
+            return subprocess.CompletedProcess(cmd, 0, "abc\ndef\n", "")
+
+        with (
+            mock.patch.object(dutylib.subprocess, "run", fake_run),
+            self.assertRaises(dutylib.DockerUnknown),
+        ):
+            dutylib.container_mounts()
 
     def mounts_with_hung(self, stage: str) -> list[Path]:
         def fake_run(cmd: list[str], **kwargs: object) -> object:

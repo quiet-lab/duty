@@ -64,11 +64,25 @@ def build(
     }
 
 
+def in_pool(release) -> None:
+    """Запрос двойнику пришёл не из пула потоков — обход последовательный.
+
+    Ожидание в главном потоке не дождалось бы второго участника: release
+    снимает ожидание остальных, проверка падает с причиной, а не зависает.
+    """
+    if threading.current_thread() is threading.main_thread():
+        release()
+        raise AssertionError("обход Jenkins идёт в главном потоке, а не в пуле")
+
+
 class WeekStatsTest(unittest.TestCase):
     def test_jenkins_walk_is_parallel(self) -> None:
         # Сборки двух заданий запрашиваются одновременно: двойник отвечает
-        # на запрос сборок, только когда пришли оба (барьер без срока: обход
-        # по одному зависает, его ловит внешний предел прогона целиком).
+        # на запрос сборок, только когда пришли оба. Барьер без срока
+        # (запись решения о сроках ожидания в тестах): запрос листа
+        # из главного потока ломает барьер, и тест падает с причиной; обход
+        # по одному в пуле потоков зависает, его ловит внешний предел
+        # прогона целиком.
         barrier = threading.Barrier(2)
         folders = {
             "http://j/": {"jobs": [{"name": "d", "url": "http://j/d/"}]},
@@ -89,7 +103,13 @@ class WeekStatsTest(unittest.TestCase):
             if base in folders:
                 return folders[base]
             # Лист: сборки приходят в том же ответе, что и признак задания.
-            barrier.wait()
+            in_pool(barrier.abort)
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                raise AssertionError(
+                    f"барьер сломан: второй лист не запрошен ({base})"
+                ) from None
             return {"_class": "job", "allBuilds": [{"timestamp": 5, "number": 1}]}
 
         old = ws.gates.jenkins
@@ -106,6 +126,44 @@ class WeekStatsTest(unittest.TestCase):
             sorted(requests),
             ["http://j/", "http://j/d/", "http://j/d/a/", "http://j/d/b/"],
         )
+
+    def test_jenkins_walk_has_no_level_barrier(self) -> None:
+        # Ответ на «y» двойник отдаёт, только когда уже запрошен лист «x/a»:
+        # дочерний запрос уходит сразу по ответу на «x», не дожидаясь
+        # остальных узлов своего уровня (обход по уровням зависает, его
+        # ловит внешний предел прогона целиком).
+        leaf_requested = threading.Event()
+        folders = {
+            "http://j/": {
+                "jobs": [
+                    {"name": "x", "url": "http://j/x/"},
+                    {"name": "y", "url": "http://j/y/"},
+                ]
+            },
+            "http://j/x/": {"jobs": [{"name": "a", "url": "http://j/x/a/"}]},
+            "http://j/y/": {"jobs": [{"name": "b", "url": "http://j/y/b/"}]},
+        }
+
+        def fake_jenkins(url: str, env: dict) -> dict | None:
+            base = url.split("/api/json")[0] + "/"
+            if base == "http://j/y/":
+                in_pool(leaf_requested.set)
+                leaf_requested.wait()
+            if base in folders:
+                return folders[base]
+            if base == "http://j/x/a/":
+                leaf_requested.set()
+            return {"_class": "job", "allBuilds": [{"timestamp": 5, "number": 1}]}
+
+        old = ws.gates.jenkins
+        ws.gates.jenkins = fake_jenkins
+        self.addCleanup(setattr, ws.gates, "jenkins", old)
+        old_config = ws.gates.config
+        ws.gates.config = lambda *_: {"jenkins.fake_job": ""}
+        self.addCleanup(setattr, ws.gates, "config", old_config)
+        builds = ws.jenkins_builds({"JENKINS_URL": "http://j/"}, 0)
+        # Порядок результата — порядок обхода, а не порядок ответов.
+        self.assertEqual([b["job"] for b in builds], ["x/a", "y/b"])
 
     def test_busy_merges_overlaps(self) -> None:
         builds = [

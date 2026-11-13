@@ -51,7 +51,6 @@ class NotConfiguredTest(unittest.TestCase):
             text=True,
             env=env,
             check=False,
-            timeout=60,
         )
 
     def test_gates_bitbucket_without_token_file(self) -> None:

@@ -2,7 +2,6 @@
 
 import json
 import os
-import select
 import shutil
 import signal
 import subprocess
@@ -15,11 +14,9 @@ from pathlib import Path
 PLUGIN = Path(__file__).resolve().parents[2]
 HOOK = PLUGIN / "hooks" / "task-guard.py"
 SIGNALS = PLUGIN / "scripts" / "signals.py"
-# Замер на станции (32 ядра), 5 прогонов: хук stop с опросом signals.py
-# и отправкой через push-agent.sh — 0,25-0,4 с, самая долгая операция теста;
-# узел Jenkins медленнее на ядро в 4,5 раза: 1,8 с, с двойным запасом 3,6 с,
-# округлено до 4 с. Предел — предохранитель от зависания, а не время ожидания.
-LIMIT_S = 4
+# signals.py wait требует --timeout-s (параметр продукта); тест его не ждёт:
+# событие — строка готовности в stderr, зависание ловит внешний предел прогона.
+WAIT_TERM_S = 86400
 
 BRIEF = """# Задача probe
 
@@ -85,7 +82,7 @@ class GuardTest(unittest.TestCase):
         for p in self.procs:
             if p.poll() is None:
                 p.kill()
-            p.wait(timeout=LIMIT_S)
+            p.wait()
             for f in (p.stdout, p.stderr, p.stdin):
                 if f:
                     f.close()
@@ -100,7 +97,6 @@ class GuardTest(unittest.TestCase):
             env=env or self.env,
             capture_output=True,
             text=True,
-            timeout=LIMIT_S,
             check=False,
         )
 
@@ -193,7 +189,11 @@ class GuardTest(unittest.TestCase):
             },
         )
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
-        self.assertEqual([p.name for p in self.subtasks.iterdir()], ["a1.started"])
+        # Прежние отметки отложены до подтверждения запуска, а не стёрты.
+        self.assertEqual(
+            sorted(p.name for p in self.subtasks.iterdir()),
+            ["a1.done.prev", "a1.started", "a1.stopped.prev"],
+        )
 
     def test_agent_with_tag_writes_started_and_stop_names_it(self) -> None:
         r = self.hook(
@@ -222,6 +222,417 @@ class GuardTest(unittest.TestCase):
         (self.subtasks / "a2.done").write_text("итог\n", encoding="utf-8")
         reason = json.loads(self.hook("stop", {}).stdout)["reason"]
         self.assertNotIn("Запущены", reason)
+
+    def launch(
+        self,
+        name: str,
+        description: str,
+        agent_id: str | None = None,
+        tool_use_id: str | None = None,
+        confirm: bool = True,
+    ) -> None:
+        """Запуск подзадачи: pre-tool Agent с меткой, затем PostToolUse с agentId."""
+        agent_id = agent_id or f"ag-{name}"
+        tool_use_id = tool_use_id or f"toolu_{name}"
+        r = self.hook(
+            "pre-tool",
+            {
+                "tool_name": "Agent",
+                "tool_use_id": tool_use_id,
+                "tool_input": {
+                    "prompt": f"Подзадача: {name}\n" + GATE_LINES + "Сделай.",
+                    "description": description,
+                    "subagent_type": "general-purpose",
+                    "run_in_background": True,
+                },
+            },
+        )
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        if confirm:
+            r = self.post_launch(name, self.async_launched(agent_id), tool_use_id)
+            self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    @staticmethod
+    def live_agent(
+        description: str,
+        agent_type: str = "general-purpose",
+        agent_id: str = "a0b1c2",
+        status: str = "running",
+    ) -> dict:
+        """Элемент background_tasks входа Stop для живого субагента."""
+        return {
+            "id": agent_id,
+            "type": "subagent",
+            "status": status,
+            "description": description,
+            "agent_type": agent_type,
+        }
+
+    def test_stop_live_subagent_does_not_block(self) -> None:
+        self.launch("a3", "правка хука")
+        record = json.loads((self.subtasks / "a3.started").read_text(encoding="utf-8"))
+        self.assertEqual(record["description"], "правка хука")
+        live = [self.live_agent("правка хука", agent_id="ag-a3")]
+        r = self.hook("stop", {"background_tasks": live})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_stop_ended_without_result_blocks(self) -> None:
+        # Субагента нет среди живых, отметок .stopped и .done нет: он завершён
+        # без итога и без SubagentStop (сбой хука, обрыв сессии).
+        self.launch("a3", "правка хука")
+        for tasks in (
+            [],
+            [self.live_agent("другое")],
+            [self.live_agent("правка хука", "Explore")],
+        ):
+            with self.subTest(tasks=tasks):
+                r = self.hook("stop", {"background_tasks": tasks})
+                self.assertEqual(r.returncode, 0, r.stderr)
+                out = json.loads(r.stdout)
+                self.assertEqual(out["decision"], "block")
+                self.assertIn("Завершены без итога: a3", out["reason"])
+        (self.subtasks / "a3.done").write_text("итог\n", encoding="utf-8")
+        r = self.hook("stop", {"background_tasks": []})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_stop_names_live_next_to_blocking(self) -> None:
+        self.launch("a3", "правка хука")
+        self.launch("a4", "тесты")
+        self.write_stopped("a1")
+        live = [self.live_agent("тесты", agent_id="ag-a4")]
+        r = self.hook("stop", {"background_tasks": live})
+        reason = json.loads(r.stdout)["reason"]
+        self.assertIn("a1 (agent_id id-1)", reason)
+        self.assertIn("Завершены без итога: a3", reason)
+        self.assertIn("Ещё идут: a4", reason)
+        self.assertNotIn("Запущены и ещё без итога", reason)
+
+    def test_stop_hook_active_names_ended_without_result(self) -> None:
+        self.launch("a3", "правка хука")
+        r = self.hook("stop", {"stop_hook_active": True, "background_tasks": []})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        shows = [c for c in self.herdr_calls() if c[:2] == ["notification", "show"]]
+        self.assertEqual(len(shows), 1)
+        self.assertIn("a3", shows[0][4])
+
+    def test_stop_empty_description_judged_by_agent_id(self) -> None:
+        # Живость судится по agentId, описание вызова не нужно.
+        self.launch("a6", "")
+        live = [self.live_agent("Сделай.", agent_id="ag-a6")]
+        r = self.hook("stop", {"background_tasks": live})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_stop_names_covered_stopped_as_launched(self) -> None:
+        # Остановившаяся и покрытая ожиданием подзадача называется, как прежде.
+        self.launch("a2", "правка хука")
+        self.write_stopped("a2")
+        self.start_run()
+        self.write_stopped("a1", at_ms=time.time_ns() // 1_000_000 + 60_000)
+        r = self.hook("stop", {"background_tasks": []})
+        reason = json.loads(r.stdout)["reason"]
+        self.assertIn("a1 (agent_id id-1)", reason)
+        self.assertIn("Запущены и ещё без итога: a2", reason)
+        self.assertNotIn("Завершены без итога", reason)
+        self.assertIn("Каждую возобнови", reason)
+
+    def test_stop_started_without_description_is_not_judged(self) -> None:
+        # Отметка прежней версии хука без описания: живость не определить,
+        # ход не блокируется, как без поля background_tasks.
+        self.subtasks.mkdir()
+        (self.subtasks / "a5.started").write_text('{"at_ms": 1}', encoding="utf-8")
+        r = self.hook("stop", {"background_tasks": []})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    # --- RP-2417: запуск подтверждается ответом Agent (agentId) ---
+
+    def post_launch(
+        self, name: str, response: object, tool_use_id: str = "toolu_1"
+    ) -> subprocess.CompletedProcess:
+        """PostToolUse на Agent: ответ инструмента с agentId и status."""
+        return self.hook(
+            "post-tool",
+            {
+                "tool_name": "Agent",
+                "tool_use_id": tool_use_id,
+                "tool_input": {"prompt": f"Подзадача: {name}\n" + GATE_LINES},
+                "tool_response": response,
+            },
+        )
+
+    @staticmethod
+    def async_launched(agent_id: str) -> dict:
+        return {"status": "async_launched", "agentId": agent_id, "description": "d"}
+
+    def session_transcript(self, entries: list[dict]) -> str:
+        path = self.root / "session.jsonl"
+        path.write_text(
+            "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries),
+            encoding="utf-8",
+        )
+        return str(path)
+
+    def test_rejected_launch_forgets_started(self) -> None:
+        # Вызов Agent отклонён после pre-tool (другой хук, отказ в разрешении):
+        # PostToolUse не приходит, в транскрипте — tool_result с ошибкой.
+        self.launch("r1", "правка", tool_use_id="toolu_r1", confirm=False)
+        transcript = self.session_transcript(
+            [
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_r1",
+                                "is_error": True,
+                                "content": "Error: отклонено",
+                            }
+                        ]
+                    },
+                    "toolUseResult": "Error: отклонено",
+                }
+            ]
+        )
+        r = self.hook("stop", {"background_tasks": [], "transcript_path": transcript})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        self.assertFalse((self.subtasks / "r1.started").exists())
+        # Ошибка выполнения Agent приходит PostToolUseFailure: отметка снимается.
+        self.launch("r2", "правка", tool_use_id="toolu_r2", confirm=False)
+        r = self.hook(
+            "post-tool-failure",
+            {
+                "tool_name": "Agent",
+                "tool_use_id": "toolu_r2",
+                "tool_input": {"prompt": "Подзадача: r2\n" + GATE_LINES},
+                "error": "Subagent nesting limit reached",
+            },
+        )
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        self.assertFalse((self.subtasks / "r2.started").exists())
+        r = self.hook("stop", {"background_tasks": []})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_rejected_relaunch_restores_previous_marks(self) -> None:
+        # Перезапуск остановившейся подзадачи отклонён: прежние отметки
+        # (.stopped, .done, подтверждённый .started) возвращаются, подзадача
+        # не теряется.
+        def failure(name: str, tool_use_id: str) -> None:
+            self.hook(
+                "post-tool-failure",
+                {
+                    "tool_name": "Agent",
+                    "tool_use_id": tool_use_id,
+                    "tool_input": {"prompt": f"Подзадача: {name}\n" + GATE_LINES},
+                    "error": "отказ",
+                },
+            )
+
+        def rejected_in_transcript(tool_use_id: str) -> str:
+            return self.session_transcript(
+                [
+                    {
+                        "type": "user",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_use_id,
+                                    "is_error": True,
+                                }
+                            ]
+                        },
+                        "toolUseResult": "Error: отклонено",
+                    }
+                ]
+            )
+
+        # Отказ через PostToolUseFailure.
+        self.launch("a1", "правка", agent_id="ag-old", tool_use_id="toolu_old")
+        self.write_stopped("a1", "ag-old")
+        self.launch("a1", "правка", tool_use_id="toolu_new", confirm=False)
+        failure("a1", "toolu_new")
+        r = self.hook("stop", {"background_tasks": []})
+        out = json.loads(r.stdout)
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("a1 (agent_id ag-old)", out["reason"])
+        record = json.loads((self.subtasks / "a1.started").read_text(encoding="utf-8"))
+        self.assertEqual(record["agent_ids"], ["ag-old"])
+        # Отказ без PostToolUse: Stop находит ошибку в транскрипте.
+        self.launch("a1", "правка", tool_use_id="toolu_new2", confirm=False)
+        transcript = rejected_in_transcript("toolu_new2")
+        r = self.hook("stop", {"background_tasks": [], "transcript_path": transcript})
+        out = json.loads(r.stdout)
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("a1 (agent_id ag-old)", out["reason"])
+        # Итог был записан: отклонённый перезапуск его не стирает.
+        self.launch("a2", "тесты", tool_use_id="toolu_a2")
+        (self.subtasks / "a2.done").write_text("итог\n", encoding="utf-8")
+        self.launch("a2", "тесты", tool_use_id="toolu_a2b", confirm=False)
+        failure("a2", "toolu_a2b")
+        self.assertTrue((self.subtasks / "a2.done").exists())
+        # Подтверждённый перезапуск снимает прежние отметки.
+        self.launch("a1", "правка", agent_id="ag-new", tool_use_id="toolu_new3")
+        self.assertFalse((self.subtasks / "a1.stopped").exists())
+        live = [self.live_agent("x", agent_id="ag-new")]
+        r = self.hook("stop", {"background_tasks": live})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_unconfirmed_launch_blocks(self) -> None:
+        # Ответа нет ни в PostToolUse, ни в транскрипте: отказ (fail-closed).
+        self.launch("u1", "правка", tool_use_id="toolu_u1", confirm=False)
+        transcript = self.session_transcript([])
+        r = self.hook(
+            "stop",
+            {
+                "background_tasks": [self.live_agent("правка")],
+                "transcript_path": transcript,
+            },
+        )
+        out = json.loads(r.stdout)
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("Запуск не подтверждён: u1", out["reason"])
+        # Ответ найден в транскрипте: agentId записывается, подзадача живая.
+        transcript = self.session_transcript(
+            [
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [{"type": "tool_result", "tool_use_id": "toolu_u1"}]
+                    },
+                    "toolUseResult": self.async_launched("ag-u1"),
+                }
+            ]
+        )
+        r = self.hook(
+            "stop",
+            {
+                "background_tasks": [self.live_agent("x", agent_id="ag-u1")],
+                "transcript_path": transcript,
+            },
+        )
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        record = json.loads((self.subtasks / "u1.started").read_text(encoding="utf-8"))
+        self.assertEqual(record["agent_ids"], ["ag-u1"])
+
+    def test_same_description_matched_by_agent_id(self) -> None:
+        self.launch("b1", "правка хука", agent_id="ag-1", tool_use_id="toolu_b1")
+        self.launch("b2", "правка хука", agent_id="ag-2", tool_use_id="toolu_b2")
+        live = [self.live_agent("правка хука", agent_id="ag-1")]
+        r = self.hook("stop", {"background_tasks": live})
+        out = json.loads(r.stdout)
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("Завершены без итога: b2 (agent_id ag-2)", out["reason"])
+        self.assertIn("Ещё идут: b1", out["reason"])
+
+    def test_teammate_and_remote_are_live(self) -> None:
+        self.launch("t1", "команда", confirm=False, tool_use_id="toolu_t1")
+        self.post_launch(
+            "t1",
+            {
+                "status": "teammate_spawned",
+                "agentId": "t1@team",
+                "teammate_id": "tm-1",
+                "prompt": "p",
+            },
+            "toolu_t1",
+        )
+        self.launch("c1", "облако", confirm=False, tool_use_id="toolu_c1")
+        self.post_launch(
+            "c1",
+            {
+                "status": "remote_launched",
+                "taskId": "r-9",
+                "sessionUrl": "u",
+                "description": "облако",
+                "prompt": "p",
+                "outputFile": "o",
+            },
+            "toolu_c1",
+        )
+        live = [
+            {"id": "tm-1", "type": "teammate", "status": "running", "description": "x"},
+            {
+                "id": "r-9",
+                "type": "cloud session",
+                "status": "running",
+                "description": "y",
+            },
+        ]
+        r = self.hook("stop", {"background_tasks": live})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_terminal_status_is_not_live(self) -> None:
+        self.launch("s1", "правка", agent_id="ag-s1", tool_use_id="toolu_s1")
+        for status in ("completed", "failed", "killed"):
+            with self.subTest(status=status):
+                live = [self.live_agent("правка", agent_id="ag-s1", status=status)]
+                r = self.hook("stop", {"background_tasks": live})
+                out = json.loads(r.stdout)
+                self.assertEqual(out["decision"], "block")
+                self.assertIn("Завершены без итога: s1", out["reason"])
+        r = self.hook(
+            "stop", {"background_tasks": [self.live_agent("x", agent_id="ag-s1")]}
+        )
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_response_status_checked(self) -> None:
+        # Ответ Agent без известного статуса или без идентификатора — запуск
+        # не подтверждён, даже если среди живых есть субагент с тем же описанием.
+        for response in (
+            {"status": "weird", "agentId": "ag-w"},
+            {"status": "async_launched"},
+            {"status": "remote_launched", "agentId": "ag-w"},
+            "строка",
+            None,
+        ):
+            with self.subTest(response=response):
+                self.launch("w1", "правка", confirm=False, tool_use_id="toolu_w1")
+                r = self.post_launch("w1", response, "toolu_w1")
+                self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+                r = self.hook(
+                    "stop",
+                    {"background_tasks": [self.live_agent("правка", agent_id="ag-w")]},
+                )
+                out = json.loads(r.stdout)
+                self.assertEqual(out["decision"], "block")
+                self.assertIn("Запуск не подтверждён: w1", out["reason"])
+
+    def test_stop_before_subagent_stop_names_agent_id(self) -> None:
+        # Stop раньше SubagentStop только что закончившегося агента: отметки
+        # остановки ещё нет, но agentId из PostToolUse даёт координатору адрес
+        # для возобновления.
+        self.launch("e1", "правка", agent_id="ag-e1", tool_use_id="toolu_e1")
+        r = self.hook("stop", {"background_tasks": []})
+        out = json.loads(r.stdout)
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("e1 (agent_id ag-e1)", out["reason"])
+        # SubagentStop пришёл следом: подзадача судится отметкой остановки.
+        transcript = self.transcript("Подзадача: e1\nСделай.")
+        self.hook(
+            "subagent-stop",
+            self.stop_data(agent_id="ag-e1", agent_transcript_path=transcript),
+        )
+        r = self.hook("stop", {"background_tasks": []})
+        reason = json.loads(r.stdout)["reason"]
+        self.assertIn("e1 (agent_id ag-e1)", reason)
+        self.assertNotIn("Завершены без итога", reason)
+
+    def test_subagent_post_tool_ignored(self) -> None:
+        # Agent, запущенный субагентом: отметки координатора не трогаются.
+        self.launch("v1", "правка", agent_id="ag-v1", tool_use_id="toolu_v1")
+        before = (self.subtasks / "v1.started").read_text(encoding="utf-8")
+        data = {
+            "tool_name": "Agent",
+            "agent_id": "id-9",
+            "tool_use_id": "toolu_v1",
+            "tool_input": {"prompt": "Подзадача: v1\n"},
+            "tool_response": self.async_launched("ag-x"),
+        }
+        self.hook("post-tool", data)
+        self.hook("post-tool-failure", {**data, "error": "x"})
+        self.assertEqual(
+            (self.subtasks / "v1.started").read_text(encoding="utf-8"), before
+        )
 
     def test_subagent_stop_marks_registered(self) -> None:
         transcript = self.transcript("Подзадача: a1\nСделай.")
@@ -469,7 +880,7 @@ class GuardTest(unittest.TestCase):
                 "--holder",
                 "probe",
                 "--timeout-s",
-                str(LIMIT_S),
+                str(WAIT_TERM_S),
             ],
             env=self.env,
             stdout=subprocess.PIPE,
@@ -482,8 +893,6 @@ class GuardTest(unittest.TestCase):
         self.addCleanup(lambda: os.killpg(waiter.pid, signal.SIGKILL))
         assert waiter.stderr is not None
         # wait печатает строку в stderr, когда отметка ожидания уже записана.
-        ready, _, _ = select.select([waiter.stderr], [], [], LIMIT_S)
-        self.assertTrue(ready, "wait не сообщил о готовности")
         self.assertIn("ждёт сигнал", waiter.stderr.readline())
         r = self.hook("stop", {})
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
@@ -803,9 +1212,17 @@ class GuardTest(unittest.TestCase):
         guard = entries["Monitor|Bash"]["hooks"][0]["command"]
         self.assertIn("DUTY_ROLE", guard)
         (post,) = config["hooks"]["PostToolUse"]
-        self.assertEqual(post["matcher"], "SendMessage")
+        # Agent и Task — подтверждение запуска agentId (RP-2417), SendMessage —
+        # возобновление.
+        self.assertEqual(
+            set(post["matcher"].split("|")), {"SendMessage", "Agent", "Task"}
+        )
         self.assertIn("DUTY_ROLE", post["hooks"][0]["command"])
         self.assertTrue(post["hooks"][0]["command"].endswith("post-tool"))
+        (failure,) = config["hooks"]["PostToolUseFailure"]
+        self.assertEqual(set(failure["matcher"].split("|")), {"Agent", "Task"})
+        self.assertIn("DUTY_ROLE", failure["hooks"][0]["command"])
+        self.assertTrue(failure["hooks"][0]["command"].endswith("post-tool-failure"))
 
     # --- испорченный ввод ---
 

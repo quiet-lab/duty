@@ -13,7 +13,6 @@ from unittest import mock
 PLUGIN = Path(__file__).resolve().parents[2]
 LINT = PLUGIN / "scripts" / "rules-lint.py"
 # Замер: запуск на двойниках — 0,05 с; предел — предохранитель от зависания.
-LIMIT_S = 10
 
 
 # Переменные среды запуска, которые меняют поиск корня проекта, слой
@@ -65,7 +64,6 @@ class RulesLintTest(unittest.TestCase):
             input=stdin,
             capture_output=True,
             text=True,
-            timeout=LIMIT_S,
             check=False,
             env=env
             or {
@@ -236,7 +234,6 @@ class RulesLintTest(unittest.TestCase):
             },
             capture_output=True,
             text=True,
-            timeout=LIMIT_S,
             check=False,
         )
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

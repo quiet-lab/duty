@@ -83,7 +83,7 @@ scripts/wait-remote-node.sh  часть wait-remote.sh на узле: наблю
 scripts/state-waits.py       просроченные ожидания из раздела «Ожидания» state.md
 scripts/push-agent.sh        сообщение агенту задачи в панель herdr
 hooks/task-guard.py          сторожа сессии агента задачи
-hooks/forbid.py              запреты команд Bash агента задачи (туннель, kill по образцу, git, herdr, секреты, rm -r в results при живом)
+hooks/forbid.py              запреты команд Bash агента задачи (туннель, kill по образцу, git, herdr, секреты, удаление в results при живом)
 scripts/jwait.sh, jwait.py   ожидание конца сборки Jenkins: report.md, done
 scripts/decision-number.sh   номер и вставка записи решения в тематический каталог
 reference/config.md          схема `duty.toml`, слои и поиск корня, расширения `.duty/`
@@ -134,10 +134,12 @@ check`) и печатает строку предупреждения при н�
 | Хук | Условие | Действие |
 |---|---|---|
 | `PreToolUse` | `Monitor` или `Bash` с `run_in_background: true` в субагенте (есть поле `agent_id`) | отказ с подсказкой ждать внутри хода |
-| `PreToolUse` | приглашение `Agent`, прошедшее ворота, со строкой `Подзадача: <имя>` | снимает прежние отметки подзадачи; без строки и не `Explore`, `Plan`, `claude-code-guide`, `duty:inspector` — напоминание координатору |
+| `PreToolUse` | приглашение `Agent`, прошедшее ворота, со строкой `Подзадача: <имя>` | откладывает прежние отметки подзадачи в `<отметка>.prev` и пишет `subtasks/<имя>.started` (время, `description`, `subagent_type` и `tool_use_id` вызова); без строки и не `Explore`, `Plan`, `claude-code-guide`, `duty:inspector` — напоминание координатору |
+| `PostToolUse` | `Agent`/`Task` с отметкой запуска | подтверждает запуск по `tool_response`: `status` и идентификатор — `agentId` у `async_launched`, `completed` и `teammate_spawned` (с `teammate_id`), `taskId` у `remote_launched` — пишутся в отметку (`agent_ids`), отложенные отметки удаляются; другой `status` или нет идентификатора — `launch: unconfirmed` |
 | `PostToolUse` | успешный `SendMessage` субагенту с отметкой остановки (`tool_response.success`) | снимает `.stopped`; неудачная отправка отметку оставляет |
+| `PostToolUseFailure` | `Agent`/`Task` | ошибка выполнения: субагент не запущен, отложенные отметки возвращаются на место |
 | `SubagentStop` | подзадача с меткой без `subtasks/<имя>.done` | пишет `subtasks/<имя>.stopped`, координатору строка «возобнови или перезапусти» (`push-agent.sh --no-wait`, итог — `subtasks/push.log`) |
-| `Stop` | есть `.stopped` без `.done`, и после остановки подзадачи (`at_ms` отметки) не начато ожидание: прогон без `done` с живым `cmd.sh` (строки `pid:` и `started_ms:` в `meta.txt`), ожидание `signals.py wait` этой задачи (`since_ms`) | блокирует конец хода с перечнем таких подзадач; повторная остановка (`stop_hook_active`) проходит с уведомлением herdr «застой» |
+| `Stop` | есть `.stopped` без `.done`, и после остановки подзадачи (`at_ms` отметки) не начато ожидание: прогон без `done` с живым `cmd.sh` (строки `pid:` и `started_ms:` в `meta.txt`), ожидание `signals.py wait` этой задачи (`since_ms`); либо есть `.started` без `.done` и `.stopped`, и среди задач `background_tasks` входа (любой тип) нет записи с её идентификатором (`id`) и статусом `running` или `pending` — она завершена без итога и без `SubagentStop`; либо запуск не подтверждён | блокирует конец хода с перечнем таких подзадач и идущих (`running`/`pending` в `background_tasks`); идущая подзадача одна ход не блокирует; без поля `background_tasks` и у отметки прежней версии хука живость не определяется, и `.started` только называется; отказ в вызове (другой хук `PreToolUse`, отказ в разрешении) ни `PostToolUse`, ни `PostToolUseFailure` не даёт: `Stop` сверяет отметку по `tool_use_id` с транскриптом — `tool_result` с ошибкой возвращает отложенные отметки, ответ с идентификатором подтверждает запуск, ответа нет — запуск не подтверждён; повторная остановка (`stop_hook_active`) проходит с уведомлением herdr «застой» |
 
 `hooks/forbid.py` (`PreToolUse` для `Bash`, только `DUTY_ROLE=worker`) отвергает
 команды, запрещённые правилами задач: переключение туннеля и сети станции
@@ -157,7 +159,13 @@ push и push в ветви `git.protected`, `herdr tab create`/`pane run`/`pane 
 `SECRET_PARTS`), пароль литералом в `curl -u` и `sshpass -p`,
 ручной `rm -r` (`-rf`, `-fr`, `-R`, `--recursive`) в `paths.results`, пока
 `dutylib.live_reason` каталога непуста (та же проверка у навыка `cleanup`;
-убирать — `/duty:cleanup`),
+убирать — `/duty:cleanup`); отказ действует и для любого `rm`, `unlink`,
+`rmdir`, `shred`, `truncate`, `git rm`, `git clean`, `rsync` с удалением под
+`find -exec`/`-execdir`/`-ok`/`-okdir` и под `xargs`, для оболочек,
+интерпретаторов и запускателей под ними и для обёрток (`env`, `sudo`, `nice`,
+`timeout`, `command`, `busybox`): что они выполнят, до запуска неизвестно
+(fail-closed); имя команды, неизвестное до запуска, под `find`/`xargs` тоже
+отказ, пока есть живая задача,
 а также образцы проекта из `[[forbid.rules]]`. Команда разбирается по
 словам и конвейерам; подстановки, `bash -c`, `eval` и команда после `--`
 у `tab-run.sh` проверяются рекурсивно. Отказ называет запрет и правило, но не

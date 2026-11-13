@@ -12,7 +12,6 @@ PLUGIN = Path(__file__).resolve().parents[2]
 DISPATCH = PLUGIN / "scripts" / "dispatch.sh"
 # Замер: отказ до herdr — 0,1 с, полный путь с двойником до первого сбоя — 0,5 с;
 # узел Jenkins медленнее в 4,5 раза; предел — предохранитель от зависания.
-LIMIT_S = 20
 
 # Двойник herdr: пишет argv строкой и отвечает пустыми списками.
 FAKE_HERDR = """#!/usr/bin/env bash
@@ -98,7 +97,6 @@ class DispatchGateTest(unittest.TestCase):
             env=self.env,
             capture_output=True,
             text=True,
-            timeout=LIMIT_S,
             check=False,
         )
 

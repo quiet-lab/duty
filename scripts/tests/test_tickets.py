@@ -98,7 +98,6 @@ class Base(unittest.TestCase):
             text=True,
             env=self.env,
             check=False,
-            timeout=60,
         )
 
 
@@ -323,7 +322,6 @@ class ReviewFixesTest(Base):
             text=True,
             env=self.env,
             check=False,
-            timeout=60,
         )
         self.assertIn("tickets.groups «Записи»: pattern", r.stdout + r.stderr)
 

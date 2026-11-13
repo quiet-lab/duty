@@ -2,7 +2,6 @@
 
 import json
 import os
-import select
 import shutil
 import signal
 import subprocess
@@ -15,11 +14,9 @@ from pathlib import Path
 PLUGIN = Path(__file__).resolve().parents[2]
 HOOK = PLUGIN / "hooks" / "task-guard.py"
 SIGNALS = PLUGIN / "scripts" / "signals.py"
-# Замер на станции (32 ядра), 5 прогонов: хук stop с опросом signals.py
-# и отправкой через push-agent.sh — 0,25-0,4 с, самая долгая операция теста;
-# узел Jenkins медленнее на ядро в 4,5 раза: 1,8 с, с двойным запасом 3,6 с,
-# округлено до 4 с. Предел — предохранитель от зависания, а не время ожидания.
-LIMIT_S = 4
+# signals.py wait требует --timeout-s (параметр продукта); тест его не ждёт:
+# событие — строка готовности в stderr, зависание ловит внешний предел прогона.
+WAIT_TERM_S = 86400
 
 BRIEF = """# Задача probe
 
@@ -85,7 +82,7 @@ class GuardTest(unittest.TestCase):
         for p in self.procs:
             if p.poll() is None:
                 p.kill()
-            p.wait(timeout=LIMIT_S)
+            p.wait()
             for f in (p.stdout, p.stderr, p.stdin):
                 if f:
                     f.close()
@@ -100,7 +97,6 @@ class GuardTest(unittest.TestCase):
             env=env or self.env,
             capture_output=True,
             text=True,
-            timeout=LIMIT_S,
             check=False,
         )
 
@@ -469,7 +465,7 @@ class GuardTest(unittest.TestCase):
                 "--holder",
                 "probe",
                 "--timeout-s",
-                str(LIMIT_S),
+                str(WAIT_TERM_S),
             ],
             env=self.env,
             stdout=subprocess.PIPE,
@@ -482,8 +478,6 @@ class GuardTest(unittest.TestCase):
         self.addCleanup(lambda: os.killpg(waiter.pid, signal.SIGKILL))
         assert waiter.stderr is not None
         # wait печатает строку в stderr, когда отметка ожидания уже записана.
-        ready, _, _ = select.select([waiter.stderr], [], [], LIMIT_S)
-        self.assertTrue(ready, "wait не сообщил о готовности")
         self.assertIn("ждёт сигнал", waiter.stderr.readline())
         r = self.hook("stop", {})
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)

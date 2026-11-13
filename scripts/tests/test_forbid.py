@@ -683,7 +683,6 @@ class RmResultsTest(unittest.TestCase):
                 "ls | xargs sh -c 'rm -rf \"$@\"' _",
                 "ls | xargs bash -c 'rm -rf $0'",
                 "ls | xargs -I{} zsh -c 'rm -rf {}'",
-                "ls | xargs dash -c 'echo $1' _",
                 "ls | xargs env rm -rf",
                 "ls | xargs env -i rm -f",
                 "ls | xargs sudo rm -r",
@@ -706,7 +705,7 @@ class RmResultsTest(unittest.TestCase):
                 f"find {live} -exec sh -c 'rm -rf \"$1\"' _ {{}} \\;",
                 f"find {live} -exec bash -c 'echo {{}}' \\;",
                 f"find {live} -execdir zsh -c 'rm -f $0' {{}} \\;",
-                f"find {live} -exec dash -c 'x' {{}} +",
+                f"find {live} -exec dash -c 'rm \"$1\"' _ {{}} +",
                 f"find {live} -exec /bin/sh script.sh {{}} +",
                 f"find {live} -exec env rm -rf {{}} +",
                 f"find {live} -exec /usr/bin/env -i rm {{}} +",
@@ -740,7 +739,7 @@ class RmResultsTest(unittest.TestCase):
                 f"find {out} -maxdepth 0 -exec rm -f {live}/brief.md \\;",
                 f"find {out} -maxdepth 0 -exec sh -c 'rm -rf {live}' \\;",
                 f"find {out} -maxdepth 0 -exec find {live} -delete \\;",
-                f"find {live} -exec sh -c 'x' + {{}} \\;",
+                f"find {live} -exec sh -c 'rm -f \"$1\"' + {{}} \\;",
                 "echo rm -rf x | xargs env",
                 "echo rm -rf x | xargs sudo",
                 "echo rm -rf x | xargs nice",
@@ -768,6 +767,131 @@ class RmResultsTest(unittest.TestCase):
                 "ls | xargs pypy3 x.py",
             ]
         )
+
+    def test_xargs_read_only_shell_and_interpreter_allowed_while_live(self) -> None:
+        """Тело `sh -c` без удаления, `bash -n` и `python3 -m <модуль проверки>`
+        под xargs и find -exec ничего не удаляют (RP-2445, п. 1)."""
+        live = self.live
+        for command in [
+            "git ls-files | xargs -n1 bash -n --",
+            "git ls-files '*.sh' | xargs -n1 sh -n --",
+            "ls | xargs -I{} dash -n -- {}",
+            "ls | xargs -n1 bash -nv --",
+            "ls | xargs python3 -m ruff check",
+            "ls | xargs python3 -I -m ruff check --select E",
+            "ls | xargs python3.14 -m ruff format --check",
+            "ls | xargs python3 -m py_compile",
+            "ls | xargs python3 -m mypy --strict",
+            "xargs sh -c 'echo $1' _",
+            "ls | xargs dash -c 'echo $1' _",
+            "ls | xargs bash -euo pipefail -c 'wc -l \"$1\" | head -1' _",
+            "ls | xargs -n1 bash -c 'grep -c x \"$@\" || true' _",
+            'ls | xargs sh -c \'test -s "$1" && cat "$1"\' _',
+            'ls | xargs sh -c \'[ -s "$1" ] && wc -l "$1"\' _',
+            f"find {live} -name '*.sh' -exec bash -n -- {{}} +",
+            f"find {live} -name '*.py' -exec python3 -I -m py_compile {{}} +",
+            "ls | xargs sh -c 'for f; do head -1 \"$f\" 2>/dev/null; done' _",
+            f"find {live} -exec sh -c 'wc -c \"$1\"' _ {{}} \\;",
+        ]:
+            with self.subTest(command=command):
+                self.assertIsNone(self.check(command))
+
+    def test_xargs_shell_body_deleting_or_unparsed_denied_while_live(self) -> None:
+        """Удаление в теле `-c`, тело или команда из данных, неизвестные ключи,
+        интерпретатор без перечня проверок — по-прежнему отказ (fail-closed)."""
+        self.assert_denied(
+            [
+                "ls | xargs bash -c 'rm -rf \"$1\"' _",
+                "ls | xargs sh -c 'rm \"$1\"' _",
+                'ls | xargs sh -c "$(cat body.sh)"',
+                "ls | xargs sh -c `cat body.sh`",
+                'ls | xargs sh -c "$BODY"',
+                "ls | xargs sh -c",
+                "ls | xargs bash",
+                "ls | xargs bash script.sh",
+                "ls | xargs sh -c 'eval \"$1\"' _",
+                "ls | xargs sh -c '. \"$1\"' _",
+                "ls | xargs bash -c 'source \"$1\"' _",
+                "ls | xargs sh -c '\"$1\" -rf x' _",
+                "ls | xargs sh -c 'exec \"$@\"' _",
+                "ls | xargs -I{} sh -c 'echo {}'",
+                "ls | xargs -I% bash -c 'test -d % && echo ok'",
+                "ls | xargs sh -c 'echo $(rm -rf \"$1\")' _",
+                "ls | xargs sh -c 'echo `unlink \"$1\"`' _",
+                'ls | xargs sh -c \'printf "%s\\n" "$1" | xargs rm\' _',
+                "ls | xargs sh -c 'bash -c \"$1\"' _",
+                "ls | xargs sh -c 'sh \"$1\"' _",
+                "ls | xargs sh -c 'for f; do rm -r \"$f\"; done' _",
+                "ls | xargs sh -c 'find \"$1\" -delete' _",
+                "ls | xargs sh -c 'python3 -c \"print(1)\"' _",
+                "ls | xargs bash -O extglob -c 'echo $1' _",
+                "ls | xargs bash --rcfile x -c 'echo $1' _",
+                "ls | xargs fish -c 'echo $argv'",
+                "ls | xargs tcsh -n",
+                "ls | xargs python3 -m pytest",
+                "ls | xargs python3 -m ruff clean",
+                "ls | xargs python3 -m ruff check --fix",
+                "ls | xargs python3 -m ruff format",
+                "ls | xargs python3 -m",
+                "ls | xargs python3 x.py",
+                "ls | xargs python3 -X dev -c 'pass'",
+                "ls | xargs python3 -m shutil",
+                "ls | xargs sh -c '{rm,-rf,x}'",
+                "ls | xargs sh -c 'env -S \"rm -rf x\"'",
+                "ls | xargs sh -c 'echo $(($1))' _",
+                "ls | xargs bash -c 'a[$1]=x' _",
+                "ls | xargs bash -c 'printf -v \"$1\" x' _",
+                "ls | xargs bash -c 'echo \"${x:$1}\"' _",
+                "ls | xargs sh -c 'trap \"rm -rf $1\" EXIT' _",
+                "ls | xargs sh -c 'PATH=\"$1\" ls' _",
+                "ls | xargs env BASH_ENV=f bash -n --",
+                # без «--» строка ввода +n снимает -n (решение координатора)
+                "git ls-files | xargs bash -n",
+                "ls | xargs -n1 sh -n",
+                "ls | xargs bash -nv",
+                f"find {self.live} -name '*.sh' -exec bash -n {{}} +",
+                "ls | xargs bash -n +n --",
+                "ls | xargs zsh -c 'echo $1' _",
+                'ls | xargs bash -c "echo $X"',
+                # находки ревью RP-2445: тело -c — перечень команд чтения
+                'ls | xargs bash -c \'function f { rm -rf "$1"; }; f "$1"\' _',
+                "ls | xargs bash -c 'coproc C { rm -rf \"$1\"; }' _",
+                "ls | xargs bash -c 'time -p rm -rf \"$1\"' _",
+                "ls | xargs sh -c 'cat <<E\n$(rm -rf \"$1\")\nE' _",
+                "ls | xargs bash -n +n -c 'rm -rf \"$1\"' _",
+                "ls | xargs bash -n +o noexec -c 'rm -rf \"$1\"' _",
+                "ls | xargs bash -c 'echo \"${!1}\"' _",
+                "ls | xargs bash -c 'echo \"${1@P}\"' _",
+                "ls | xargs bash -c 'declare -i n; n=$1' _",
+                "ls | xargs bash -c 'RANDOM=$1' _",
+                "ls | xargs bash -xc 'PS4=$1; true' _",
+                "ls | xargs bash -c 'hash -p \"$1\" ls; ls' _",
+                "ls | xargs bash -c 'enable -f \"$1\" x' _",
+                "ls | xargs bash -c 'wait -n -p \"$1\"' _",
+                "ls | xargs env -S 'rm -rf x' bash -n --",
+                "ls | xargs env -S 'rm -rf x' python3 -m mypy",
+                "ls | xargs env -S 'rm -rf' cat",
+                "ls | xargs python3 -m ruff check -o out.txt",
+                "ls | xargs python3 -m ruff check --output-file out.txt",
+                "ls | xargs python3 -m ruff check --add-noqa",
+                "ls | xargs python3 -m mypy --junit-xml out.xml",
+                "ls | xargs bash -c ': >\"$1\"' _",
+                "ls | xargs bash -c 'printf x >\"$1\"' _",
+                "ls | xargs sh -c 'strace -f rm -rf \"$1\"' _",
+                "ls | xargs sh -c 'flock /tmp/l rm -rf \"$1\"' _",
+                "ls | xargs sh -c 'echo \"$1\" | tee x' _",
+                f"find {self.live} -execdir python3 -m py_compile {{}} +",
+            ]
+        )
+
+    def test_xargs_command_checked_as_command(self) -> None:
+        """Команда xargs проверяется всеми запретами, как тело -exec find."""
+        (self.live / "state.md").write_text("Шаг: завершено\n", encoding="utf-8")
+        self.assertEqual(self.check("ls | xargs git stash"), "git-stash")
+        self.assertEqual(
+            self.check("ls | xargs sh -c 'git push --force origin x'"), "git-force"
+        )
+        self.assertEqual(self.check("ls | xargs -n1 sh -c 'pkill x'"), "kill")
 
     def test_find_exec_body_checked_as_command(self) -> None:
         self.assertEqual(self.check(f"find {self.outside} -exec pkill x \\;"), "kill")

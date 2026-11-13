@@ -189,7 +189,11 @@ class GuardTest(unittest.TestCase):
             },
         )
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
-        self.assertEqual([p.name for p in self.subtasks.iterdir()], ["a1.started"])
+        # Прежние отметки отложены до подтверждения запуска, а не стёрты.
+        self.assertEqual(
+            sorted(p.name for p in self.subtasks.iterdir()),
+            ["a1.done.prev", "a1.started", "a1.stopped.prev"],
+        )
 
     def test_agent_with_tag_writes_started_and_stop_names_it(self) -> None:
         r = self.hook(
@@ -406,6 +410,71 @@ class GuardTest(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
         self.assertFalse((self.subtasks / "r2.started").exists())
         r = self.hook("stop", {"background_tasks": []})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_rejected_relaunch_restores_previous_marks(self) -> None:
+        # Перезапуск остановившейся подзадачи отклонён: прежние отметки
+        # (.stopped, .done, подтверждённый .started) возвращаются, подзадача
+        # не теряется.
+        def failure(name: str, tool_use_id: str) -> None:
+            self.hook(
+                "post-tool-failure",
+                {
+                    "tool_name": "Agent",
+                    "tool_use_id": tool_use_id,
+                    "tool_input": {"prompt": f"Подзадача: {name}\n" + GATE_LINES},
+                    "error": "отказ",
+                },
+            )
+
+        def rejected_in_transcript(tool_use_id: str) -> str:
+            return self.session_transcript(
+                [
+                    {
+                        "type": "user",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_use_id,
+                                    "is_error": True,
+                                }
+                            ]
+                        },
+                        "toolUseResult": "Error: отклонено",
+                    }
+                ]
+            )
+
+        # Отказ через PostToolUseFailure.
+        self.launch("a1", "правка", agent_id="ag-old", tool_use_id="toolu_old")
+        self.write_stopped("a1", "ag-old")
+        self.launch("a1", "правка", tool_use_id="toolu_new", confirm=False)
+        failure("a1", "toolu_new")
+        r = self.hook("stop", {"background_tasks": []})
+        out = json.loads(r.stdout)
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("a1 (agent_id ag-old)", out["reason"])
+        record = json.loads((self.subtasks / "a1.started").read_text(encoding="utf-8"))
+        self.assertEqual(record["agent_ids"], ["ag-old"])
+        # Отказ без PostToolUse: Stop находит ошибку в транскрипте.
+        self.launch("a1", "правка", tool_use_id="toolu_new2", confirm=False)
+        transcript = rejected_in_transcript("toolu_new2")
+        r = self.hook("stop", {"background_tasks": [], "transcript_path": transcript})
+        out = json.loads(r.stdout)
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("a1 (agent_id ag-old)", out["reason"])
+        # Итог был записан: отклонённый перезапуск его не стирает.
+        self.launch("a2", "тесты", tool_use_id="toolu_a2")
+        (self.subtasks / "a2.done").write_text("итог\n", encoding="utf-8")
+        self.launch("a2", "тесты", tool_use_id="toolu_a2b", confirm=False)
+        failure("a2", "toolu_a2b")
+        self.assertTrue((self.subtasks / "a2.done").exists())
+        # Подтверждённый перезапуск снимает прежние отметки.
+        self.launch("a1", "правка", agent_id="ag-new", tool_use_id="toolu_new3")
+        self.assertFalse((self.subtasks / "a1.stopped").exists())
+        live = [self.live_agent("x", agent_id="ag-new")]
+        r = self.hook("stop", {"background_tasks": live})
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
 
     def test_unconfirmed_launch_blocks(self) -> None:

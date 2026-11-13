@@ -134,7 +134,7 @@ check`) и печатает строку предупреждения при н�
 | Хук | Условие | Действие |
 |---|---|---|
 | `PreToolUse` | `Monitor` или `Bash` с `run_in_background: true` в субагенте (есть поле `agent_id`) | отказ с подсказкой ждать внутри хода |
-| `PreToolUse` | приглашение `Agent`, прошедшее ворота, со строкой `Подзадача: <имя>` | откладывает прежние отметки подзадачи в `<отметка>.prev` и пишет `subtasks/<имя>.started` (время, `description`, `subagent_type` и `tool_use_id` вызова); без строки и не `Explore`, `Plan`, `claude-code-guide`, `duty:inspector` — напоминание координатору |
+| `PreToolUse` | приглашение `Agent`, прошедшее ворота, со строкой `Подзадача: <имя>` | откладывает прежние отметки подзадачи в `<отметка>.prev` и пишет `subtasks/<имя>.started` (время, `description`, `subagent_type` и `tool_use_id` вызова); если под тем же именем идёт другой вызов `Agent` без ответа (нет ни `PostToolUse`, ни `tool_result` в транскрипте сессии) — отказ с просьбой взять другое имя; без строки и не `Explore`, `Plan`, `claude-code-guide`, `duty:inspector` — напоминание координатору |
 | `PostToolUse` | `Agent`/`Task` с отметкой запуска | подтверждает запуск по `tool_response`: `status` и идентификатор — `agentId` у `async_launched`, `completed` и `teammate_spawned` (с `teammate_id`), `taskId` у `remote_launched` — пишутся в отметку (`agent_ids`), отложенные отметки удаляются; другой `status` или нет идентификатора — `launch: unconfirmed` |
 | `PostToolUse` | успешный `SendMessage` субагенту с отметкой остановки (`tool_response.success`) | снимает `.stopped`; неудачная отправка отметку оставляет |
 | `PostToolUseFailure` | `Agent`/`Task` | ошибка выполнения: субагент не запущен, отложенные отметки возвращаются на место |

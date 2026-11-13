@@ -477,6 +477,82 @@ class GuardTest(unittest.TestCase):
         r = self.hook("stop", {"background_tasks": live})
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
 
+    def pre_agent(
+        self, name: str, tool_use_id: str, transcript: str | None = None
+    ) -> subprocess.CompletedProcess:
+        """PreToolUse на Agent с меткой и транскриптом сессии."""
+        data: dict[str, object] = {
+            "tool_name": "Agent",
+            "tool_use_id": tool_use_id,
+            "tool_input": {
+                "prompt": f"Подзадача: {name}\n" + GATE_LINES + "Сделай.",
+                "description": "правка",
+                "subagent_type": "general-purpose",
+            },
+        }
+        if transcript is not None:
+            data["transcript_path"] = transcript
+        return self.hook("pre-tool", data)
+
+    def test_concurrent_launch_same_tag_denied(self) -> None:
+        # RP-2445, п. 3: два вызова Agent с одной меткой в одном сообщении.
+        # Второй отклоняется, пока первый не получил ответа: иначе он
+        # перезаписал бы tool_use_id, и PostToolUse первого был бы отброшен.
+        transcript = self.session_transcript([])
+        r = self.pre_agent("x", "toolu_x1", transcript)
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        r = self.pre_agent("x", "toolu_x2", transcript)
+        out = json.loads(r.stdout)["hookSpecificOutput"]
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.assertIn("x", out["permissionDecisionReason"])
+        record = json.loads((self.subtasks / "x.started").read_text(encoding="utf-8"))
+        self.assertEqual(record["tool_use_id"], "toolu_x1")
+        r = self.post_launch("x", self.async_launched("ag-x1"), "toolu_x1")
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        record = json.loads((self.subtasks / "x.started").read_text(encoding="utf-8"))
+        self.assertEqual(record["agent_ids"], ["ag-x1"])
+        # Без транскрипта ответ первого вызова не найти: отказ (fail-closed).
+        self.pre_agent("y", "toolu_y1")
+        r = self.pre_agent("y", "toolu_y2")
+        self.assertIn('"deny"', r.stdout)
+
+    def test_retry_after_rejected_call_same_tag_allowed(self) -> None:
+        # Первый вызов отклонён другим хуком (ошибка в транскрипте, PostToolUse
+        # нет): повтор под тем же именем разрешён, прежние отметки возвращаются
+        # и снова откладываются.
+        self.launch("z", "правка", agent_id="ag-old", tool_use_id="toolu_old")
+        self.write_stopped("z", "ag-old")
+        self.pre_agent("z", "toolu_z1", self.session_transcript([]))
+        transcript = self.session_transcript(
+            [
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_z1",
+                                "is_error": True,
+                            }
+                        ]
+                    },
+                    "toolUseResult": "Error: отклонено",
+                }
+            ]
+        )
+        r = self.pre_agent("z", "toolu_z2", transcript)
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        record = json.loads((self.subtasks / "z.started").read_text(encoding="utf-8"))
+        self.assertEqual(record["tool_use_id"], "toolu_z2")
+        prev = json.loads(
+            (self.subtasks / "z.started.prev").read_text(encoding="utf-8")
+        )
+        self.assertEqual(prev["agent_ids"], ["ag-old"])
+        self.assertTrue((self.subtasks / "z.stopped.prev").exists())
+        # Повтор того же вызова (тот же tool_use_id) не отклоняется.
+        r = self.pre_agent("z", "toolu_z2", transcript)
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
     def test_unconfirmed_launch_blocks(self) -> None:
         # Ответа нет ни в PostToolUse, ни в транскрипте: отказ (fail-closed).
         self.launch("u1", "правка", tool_use_id="toolu_u1", confirm=False)

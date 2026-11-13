@@ -19,7 +19,9 @@
   освобождается до вызова); подтверждённый запуск отложенные удаляет,
   отклонённый возвращает на место;
 - `pre-tool` при запуске подзадачи пишет отметку `subtasks/<имя>.started`
-  со временем, описанием, типом субагента и `tool_use_id` вызова;
+  со временем, описанием, типом субагента и `tool_use_id` вызова; второй
+  вызов под тем же именем отклоняется, пока у первого нет ответа Agent ни
+  в PostToolUse, ни в транскрипте сессии;
 - `post-tool` на `Agent` подтверждает запуск: из ответа инструмента
   (`tool_response`) берутся `status` и идентификатор — `agentId` у
   `async_launched`, `completed` и `teammate_spawned` (с `teammate_id`),
@@ -123,6 +125,12 @@ BAD_TAG = (
     "[a-z0-9][a-z0-9_.-]* (до 64 знаков, строчные латинские буквы), например "
     "«Подзадача: fx-duty». Остановка без итога не отслеживается "
     "(agents/worker.md, п. 3)."
+)
+
+BUSY_TAG = (
+    "Подзадача «{name}» уже запускается другим вызовом Agent, ответа которого ещё "
+    "нет: две подзадачи с одной меткой делили бы одни отметки. Дай этой подзадаче "
+    "другое имя в строке «Подзадача: <имя>» (agents/worker.md, п. 3)."
 )
 
 
@@ -332,11 +340,41 @@ def pre_tool(data: dict[str, object]) -> None:
     if tool in SUBAGENT_TOOLS:
         tag = TAG_RE.search(str(tool_input.get("prompt", "")))
         if tag:
-            set_aside(task, tag.group(1))
-            mark_started(task, tag.group(1), tool_input, data.get("tool_use_id"))
+            name = tag.group(1)
+            tool_use_id = data.get("tool_use_id")
+            if in_flight(task, name, tool_use_id, data.get("transcript_path")):
+                pre_tool_output(
+                    permissionDecision="deny",
+                    permissionDecisionReason=BUSY_TAG.format(name=name),
+                )
+                return
+            set_aside(task, name)
+            mark_started(task, name, tool_input, tool_use_id)
         elif tool_input.get("subagent_type") not in READ_ONLY_TYPES:
             has_line = TAG_LINE_RE.search(str(tool_input.get("prompt", "")))
             pre_tool_output(additionalContext=BAD_TAG if has_line else UNTAGGED)
+
+
+def in_flight(task: Path, name: str, tool_use_id: object, transcript: object) -> bool:
+    """Под именем уже идёт другой вызов Agent, ещё не получивший ответа.
+
+    Два вызова с одной меткой в одном сообщении делили бы одну отметку:
+    второй перезаписал бы `tool_use_id`, и PostToolUse первого был бы отброшен
+    (`started_for`), а `.done` и `.stopped` одного закрывали бы обоих. Отметка
+    другого вызова без ответа Agent сверяется с транскриптом (`settle`):
+    ответ есть — вызов окончен (отказ возвращает прежние отметки), повтор
+    разрешён; ответа нет или транскрипт не прочитан — вызов идёт (отказ при
+    сомнении).
+    """
+    path = subtasks(task) / f"{name}.started"
+    known = unsettled_id(read_record(path))
+    if known is None or known == tool_use_id:
+        return False
+    results = tool_results(transcript, {known})
+    if known not in results:
+        return True
+    settle(path, results)
+    return False
 
 
 MARK_SUFFIXES = (".started", ".stopped", ".done")

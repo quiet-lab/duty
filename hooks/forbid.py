@@ -94,9 +94,7 @@ DENY = {
         "Запрещён ручной rm -r в каталоге результатов (paths.results), пока "
         "там есть живое: {live}. Уборка — /duty:cleanup (перечень с размерами, "
         "затем apply): навык проверяет то же признаки живого и не трогает "
-        "идущие задачи, прогоны и открытые файлы процессов. Проверка синтаксиса "
-        "под xargs и find — с «--» после -n: xargs -n1 bash -n -- (без «--» "
-        "строка ввода +n снимает -n)."
+        "идущие задачи, прогоны и открытые файлы процессов."
     ),
     "secret-file": (
         "Запрещён вывод содержимого файлов каталогов секретов (secrets.dirs: "
@@ -391,6 +389,15 @@ LAUNCHERS = {
 }
 
 
+# Команды, меняющие окружение следующих команд строки (`env_touched`).
+ENV_SETTERS = {"export", "declare", "typeset", "readonly", "set", "source", ".", "eval"}
+# Совет в отказе на оболочку под find и xargs (ключ `rm-results|…|sh`).
+SHELL_HINT = (
+    " Проверка синтаксиса под xargs и find — с «--» после -n: xargs -n1 bash -n -- "
+    "(без «--» строка ввода +n снимает -n); тело -c — только из команд чтения "
+    "(BODY_COMMANDS)."
+)
+
 PLUGIN = Path(__file__).resolve().parents[1]
 RULE_NOTE = "правило проекта (.duty/duty.toml, [[forbid.rules]])"
 HOME_FORMS = ("~", "$HOME", "${HOME}")
@@ -430,6 +437,9 @@ class Settings:
     cwd: str | None = (
         ""  # None: каталог после `cd` вычислить нельзя; каталог вызова хука: от него считаются относительные пути rm
     )
+    # окружение изменено раньше в той же строке (export, присваивание, source):
+    # исключения для оболочки и python -m под find и xargs не действуют
+    env_touched: bool = False
     secret_dirs: list[str] = field(default_factory=list)
     secret_res: list["re.Pattern[str]"] = field(default_factory=list)
     rules: list[tuple[tuple[str, ...], str]] = field(default_factory=list)
@@ -500,7 +510,10 @@ def load_settings(cwd: str | None = None) -> Settings:
 def deny_text(key: str, cfg: Settings) -> str:
     """Текст отказа: подстановка актуальных перечней из конфигурации."""
     if key.startswith("rm-results|"):
-        return DENY["rm-results"].replace("{live}", key.partition("|")[2])
+        live = key.partition("|")[2]
+        hint = SHELL_HINT if live.endswith("|sh") else ""
+        live = live.removesuffix("|sh")
+        return DENY["rm-results"].replace("{live}", live) + hint
     if key.startswith("rule-"):
         reason = cfg.rules[int(key[5:])][1]
         return f"Запрещено: {reason} — {RULE_NOTE}."
@@ -964,8 +977,12 @@ def deletion_targets(
     holders: set[str],
     from_stdin: bool,
     depth: int = 0,
+    clean: bool = True,
 ) -> list[Path] | None:
     """Цели, которые удалит команда под `find -exec` или xargs; None — не удаляет.
+
+    `clean` — перед find или xargs нет присваиваний и `env` (`env_taints`): иначе
+    исключения для оболочки и python -m не действуют.
 
     Обёртки (`env`, `sudo`, `nice`, `timeout`, `command`, `busybox` …) снимаются.
     Удаление — команды `DELETERS`, find с удалением, xargs с удаляющей командой,
@@ -996,12 +1013,15 @@ def deletion_targets(
     prefix = words[: len(words) - len(args) - 1]
     if env_split(prefix):  # `env -S 'строка'`: настоящая команда — в строке
         return [ANYWHERE]
+    clean = clean and not env_taints(prefix)
     if name in SHELLS:  # исключения — только без обёрток и присваиваний впереди
         return (
-            None if not prefix and shell_reads_only(name, args, holders, depth) else []
+            None
+            if clean and not prefix and shell_reads_only(name, args, holders, depth)
+            else []
         )
     if PYTHON_RE.fullmatch(name):
-        safe = not prefix and python_checks_only(args, from_stdin)
+        safe = clean and not prefix and python_checks_only(args, from_stdin, holders)
         return None if safe else []
     if name in LAUNCHERS or INTERPRETER_RE.fullmatch(name):
         return []
@@ -1014,13 +1034,22 @@ def deletion_targets(
     ):
         return word_paths(args, holders, cwd)
     if name == "find":
-        return find_targets(args, cwd, depth + 1)
+        return find_targets(args, cwd, depth + 1, clean)
     if name == "xargs":
         tail, inner = xargs_command(args)
-        if tail is None or deletion_targets(tail, cwd, inner, True, depth + 1) is None:
+        if (
+            tail is None
+            or deletion_targets(tail, cwd, inner, True, depth + 1, clean) is None
+        ):
             return None
         return [ANYWHERE]
     return None
+
+
+def env_taints(prefix: list[Word]) -> bool:
+    """Перед командой — присваивание или `env`: окружение (BASH_ENV, PYTHONPATH …)
+    задаёт строка, и оболочка или python исполнит по нему чужой файл."""
+    return any(ASSIGN_RE.match(w.text) or base(w.text) == "env" for w in prefix)
 
 
 def env_split(prefix: list[Word]) -> bool:
@@ -1046,27 +1075,16 @@ def shell_reads_only(
     """
     if name not in PARSED_SHELLS:
         return False
-    flags: set[str] = set()
-    ended = False  # `--`: дальше только операнды
-    i = 0
-    while i < len(args):
-        word = args[i]
-        if word.text == "--":
-            ended = True
-            i += 1
-            break
-        if word.text in SHELL_LONG:
-            i += 1
-        elif re.fullmatch(r"-[A-Za-z]+", word.text) and word.literal:
-            letters = set(word.text[1:])
-            if not letters <= SHELL_FLAGS:
-                return False
-            flags |= letters
-            i += 2 if "o" in letters else 1
-        elif word.text.startswith(("-", "+")):
+    flags, i, ended, options = shell_options(args)
+    for word in options:
+        text = word.text
+        if not word.literal or text.startswith("+"):
             return False
-        else:
-            break
+        if text.startswith("--"):
+            if text not in SHELL_LONG:
+                return False
+        elif not set(text[1:]) <= SHELL_FLAGS:
+            return False
     if "n" in flags:
         return ended
     if "c" not in flags or i >= len(args) or not args[i].literal:
@@ -1101,19 +1119,21 @@ def body_reads_only(body: str, holders: set[str], depth: int) -> bool:
         head = words[0]
         if not head.literal or "$" in head.text or head.text not in BODY_COMMANDS:
             return False
-        if head.text in {"printf", "test", "["} and any(
-            w.text == "-v" for w in words[1:]
-        ):
+        if head.text == "printf" and any(w.text.startswith("-v") for w in words[1:]):
+            return False  # и слитный -vИМЯ
+        if head.text in {"test", "["} and any(w.text == "-v" for w in words[1:]):
             return False
     return True
 
 
-def python_checks_only(args: list[Word], from_stdin: bool) -> bool:
+def python_checks_only(args: list[Word], from_stdin: bool, holders: set[str]) -> bool:
     """`python -m <модуль проверки>` (`PYTHON_CHECK_MODULES`, `ruff check`,
     `ruff format --check|--diff`) без ключей записи `PY_WRITE_FLAGS`.
 
     Под find (`-execdir` запускает в каталоге найденного) нужен `-I` или `-P`:
-    без них модуль ищется и в текущем каталоге.
+    без них модуль ищется и в текущем каталоге. Под xargs нужен `--` после ключей
+    модуля, и строка замены — только после него: строки ввода иначе встают
+    ключами модуля (`--config-file=…`, `--python-executable=…`).
     """
     texts = [a.text for a in args]
     flags = ""
@@ -1134,6 +1154,12 @@ def python_checks_only(args: list[Word], from_stdin: bool) -> bool:
     if not from_stdin and not set(flags) & {"I", "P"}:
         return False
     module, rest = texts[i + 1], texts[i + 2 :]
+    if from_stdin:
+        if "--" not in rest:
+            return False
+        rest = rest[: rest.index("--")]
+        if any(h in t for t in rest for h in holders):
+            return False
     if any(PY_WRITE_FLAGS.match(t) for t in rest):
         return False
     if module in PYTHON_CHECK_MODULES:
@@ -1163,7 +1189,7 @@ def find_exec_bodies(args: list[Word]) -> list[list[Word]]:
 
 
 def find_targets(
-    args: list[Word], cwd: str | None, depth: int = 0
+    args: list[Word], cwd: str | None, depth: int = 0, clean: bool = True
 ) -> list[Path] | None:
     """Цели удаления `find`: начальные пути и явные цели тела `-exec`; None — не удаляет.
 
@@ -1175,7 +1201,7 @@ def find_targets(
     deletes = "-delete" in texts
     extra: list[Path] = []
     for body in find_exec_bodies(args):
-        found = deletion_targets(body, cwd, {"{}"}, False, depth)
+        found = deletion_targets(body, cwd, {"{}"}, False, depth, clean)
         if found is not None:
             deletes = True
             extra += found
@@ -1193,28 +1219,40 @@ def find_targets(
     return (rm_targets(starts, cwd) or rm_targets([Word(text=".")], cwd)) + extra
 
 
-def check_rm(name: str, args: list[Word], cfg: Settings) -> str | None:
+def check_rm(
+    name: str, args: list[Word], cfg: Settings, prefix: list[Word] | None = None
+) -> str | None:
     """Удаление внутри `paths.results` при живом каталоге: ключ `rm-results|<каталог>: <причина>`.
 
     Удаляют `rm -r`, `find … -delete`, `find … -exec <удаление>` и
     `xargs <удаление>` (`deletion_targets`). `find` обходит дерево, а цели `xargs`
     приходят со стандартного ввода, поэтому под ними удалением считается любой
     `rm`, не только рекурсивный. Цели `xargs` неизвестны и считаются корнем `/`
-    (проверяются все живые каталоги результатов).
+    (проверяются все живые каталоги результатов). `prefix` — слова перед
+    командой: присваивания и `env` там (или раньше в строке, `cfg.env_touched`)
+    снимают исключения для оболочки и python -m. Отказ на оболочку под find
+    и xargs несёт совет `SHELL_HINT` (суффикс ключа `|sh`).
     """
     if not cfg.results:
         return None
+    clean = not cfg.env_touched and not env_taints(prefix or [])
+    bodies: list[list[Word]] = []
     if name == "rm" and rm_recursive([a.text for a in args]):
         targets = rm_targets(args, cfg.cwd)
-    elif name == "find" and (found := find_targets(args, cfg.cwd)) is not None:
+    elif (
+        name == "find" and (found := find_targets(args, cfg.cwd, 0, clean)) is not None
+    ):
         targets = found
+        bodies = find_exec_bodies(args)
     elif name == "xargs" and (tail_holders := xargs_command(args))[0] is not None:
         tail, holders = tail_holders
-        if deletion_targets(tail, cfg.cwd, holders, True) is None:
+        if deletion_targets(tail, cfg.cwd, holders, True, 0, clean) is None:
             return None
         targets = [ANYWHERE]
+        bodies = [tail]
     else:
         return None
+    hint = "|sh" if any(resolve(b)[0] in SHELLS for b in bodies) else ""
     results = Path(os.path.realpath(cfg.results))
     lib = _dutylib()
     opened = None
@@ -1235,7 +1273,7 @@ def check_rm(name: str, args: list[Word], cfg: Settings) -> str | None:
         for top in tops:
             why = lib.live_reason(top.resolve(), opened)  # type: ignore[attr-defined]
             if why:
-                return f"rm-results|{top}: {why}"
+                return f"rm-results|{top}: {why}{hint}"
     return None
 
 
@@ -1474,22 +1512,47 @@ def check_secrets(
     return None
 
 
+SHELL_VALUE_LONG = {"--rcfile", "--init-file"}
+
+
+def shell_options(args: list[Word]) -> tuple[set[str], int, bool, list[Word]]:
+    """Ключи оболочки по правилам bash: буквы ключей с `-`, индекс первого
+    операнда (тело при `-c`), признак конца ключей `--`/`-` и слова ключей
+    без их значений.
+
+    `-c` может стоять среди ключей: тело — первый операнд после всех ключей;
+    каждая буква `o`/`O` берёт имя следующим словом, `--rcfile`/`--init-file` — значение.
+    """
+    flags: set[str] = set()
+    words: list[Word] = []
+    i = 0
+    while i < len(args):
+        text = args[i].text
+        if text in {"--", "-"}:
+            return flags, i + 1, True, words
+        if text.startswith("--"):
+            words.append(args[i])
+            i += 2 if text in SHELL_VALUE_LONG else 1
+        elif re.fullmatch(r"[-+][A-Za-z]+", text):
+            words.append(args[i])
+            if text[0] == "-":
+                flags |= set(text[1:])
+            i += 1 + sum(ch in "oO" for ch in text[1:])
+        else:
+            break
+    return flags, i, False, words
+
+
 def inner_commands(name: str, args: list[Word]) -> list[str]:
     """Строки, которые команда сама выполнит: `bash -c`, `eval`, `tab-run.sh`."""
     texts = [a.text for a in args]
     if name in {"bash", "sh", "zsh", "dash"}:
-        skip = False
-        for i, t in enumerate(texts):
-            if skip:
-                skip = False
-            elif t in {"-o", "-O", "--rcfile", "--init-file"}:
-                skip = True
-            elif re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", t) and i + 1 < len(texts):
-                return [texts[i + 1]]
-            elif not t.startswith("-"):
-                if base(t) == "tab-run.sh":
-                    return inner_commands("tab-run.sh", args[i + 1 :])
-                break
+        flags, i, _, _ = shell_options(args)
+        if i < len(texts):
+            if "c" in flags:
+                return [texts[i]]
+            if base(texts[i]) == "tab-run.sh":
+                return inner_commands("tab-run.sh", args[i + 1 :])
     if name == "eval":
         return [" ".join(texts)]
     if name == "tab-run.sh" and "--" in texts:
@@ -1530,14 +1593,22 @@ def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
         return None
     commands = parse(src)
     cwd = cfg.cwd
+    env_touched = cfg.env_touched
     for index, cmd in enumerate(commands):
-        cfg = replace(cfg, cwd=cwd)
+        cfg = replace(cfg, cwd=cwd, env_touched=env_touched)
         for word in cmd.words + [w for _, w in cmd.redirs]:
             for inner in word.subs:
                 found = check(inner, cfg, depth + 1)
                 if found:
                     return found
         name, args, empty_env = resolve(cmd.words)
+        prefix = cmd.words[: len(cmd.words) - len(args) - 1] if name else cmd.words
+        if (
+            name in ENV_SETTERS
+            or not name
+            and any(ASSIGN_RE.match(w.text) for w in prefix)
+        ):
+            env_touched = True  # действует на следующие команды строки
         if not name:
             continue
         texts = [a.text for a in args]
@@ -1558,7 +1629,7 @@ def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
         found = (
             (check_network(name, texts) if cfg.network else None)
             or check_kill(name, args)
-            or check_rm(name, args, cfg)
+            or check_rm(name, args, cfg, prefix)
             or (check_git(args, cfg) if name == "git" else None)
             or (check_herdr(texts) if name == "herdr" and cfg.herdr else None)
             or check_rules(name, texts, cfg)

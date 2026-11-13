@@ -777,11 +777,13 @@ class RmResultsTest(unittest.TestCase):
             "git ls-files '*.sh' | xargs -n1 sh -n --",
             "ls | xargs -I{} dash -n -- {}",
             "ls | xargs -n1 bash -nv --",
-            "ls | xargs python3 -m ruff check",
-            "ls | xargs python3 -I -m ruff check --select E",
-            "ls | xargs python3.14 -m ruff format --check",
-            "ls | xargs python3 -m py_compile",
-            "ls | xargs python3 -m mypy --strict",
+            "ls | xargs python3 -m ruff check --",
+            "ls | xargs python3 -I -m ruff check --select E --",
+            "ls | xargs python3.14 -m ruff format --check --",
+            "ls | xargs python3 -m py_compile --",
+            "ls | xargs python3 -m mypy --strict --",
+            "ls | xargs -I{} python3 -m mypy -- {}",
+            "ls | xargs bash -c -e 'wc -l \"$1\"' _",
             "xargs sh -c 'echo $1' _",
             "ls | xargs dash -c 'echo $1' _",
             "ls | xargs bash -euo pipefail -c 'wc -l \"$1\" | head -1' _",
@@ -892,6 +894,50 @@ class RmResultsTest(unittest.TestCase):
             self.check("ls | xargs sh -c 'git push --force origin x'"), "git-force"
         )
         self.assertEqual(self.check("ls | xargs -n1 sh -c 'pkill x'"), "kill")
+
+    def test_final_review_findings(self) -> None:
+        """Итоговое ревью пакета RP-2445: тело `-c` после ключей, слитный
+        `printf -vИМЯ`, окружение перед find и xargs, ключи из ввода python -m."""
+        live = self.live
+        self.assert_denied(
+            [
+                # п. 2: слитный -vИМЯ вычисляет индекс с подстановкой
+                "ls | xargs bash -c \"printf '-va[\\$(rm -rf r)]' %s 1\" _",
+                # п. 3: присваивания и env перед find и xargs
+                f"BASH_ENV=./x.sh find {live} -exec bash -c 'cat \"$1\"' _ {{}} \\;",
+                "ls | PYTHONPATH=. xargs python3 -m mypy --",
+                "ls | env BASH_ENV=./x.sh xargs -n1 bash -n --",
+                "export BASH_ENV=./x.sh; ls | xargs -n1 bash -n --",
+                # п. 4: строки ввода встают ключами модуля
+                "ls | xargs python3 -m mypy",
+                "ls | xargs python3 -m ruff check",
+                "ls | xargs -I{} python3 -m mypy {}",
+                "ls | xargs -I{} python3 -m mypy {} --",
+            ]
+        )
+
+    def test_shell_body_after_flags_checked(self) -> None:
+        """П. 1: тело `-c` — первый операнд после всех ключей, как у bash."""
+        (self.live / "state.md").write_text("Шаг: завершено\n", encoding="utf-8")
+        self.assertEqual(
+            self.check("bash -c -x 'git push --force origin main'"), "git-force"
+        )
+        self.assertEqual(
+            self.check("ls | xargs sh -c -e 'git push --force origin main' _"),
+            "git-force",
+        )
+        self.assertEqual(
+            forbid.check(f"find . -exec sh -c -e 'cat {SECRET_ENV}' \\;", CFG),
+            "secret-file",
+        )
+
+    def test_shell_hint_only_for_shell(self) -> None:
+        """П. 5: совет про `-n --` — только в отказе на оболочку."""
+        shell = self.check("ls | xargs bash -n")
+        plain = self.check("ls | xargs rm -f")
+        assert shell is not None and plain is not None
+        self.assertIn("bash -n --", forbid.deny_text(shell, self.cfg))
+        self.assertNotIn("bash -n --", forbid.deny_text(plain, self.cfg))
 
     def test_find_exec_body_checked_as_command(self) -> None:
         self.assertEqual(self.check(f"find {self.outside} -exec pkill x \\;"), "kill")

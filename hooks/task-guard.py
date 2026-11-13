@@ -17,23 +17,39 @@
   перезапуске (`Agent`: `SubagentStop` субагента на переднем плане пишет
   `.stopped` раньше `PostToolUse`, поэтому снятие — до вызова);
 - `pre-tool` при запуске подзадачи пишет отметку `subtasks/<имя>.started`
-  с описанием и типом субагента; `.started` без `.done` и `.stopped` — запущена
-  и ещё без итога (`launched_without_result`). `Stop` сверяет её с живыми
-  субагентами из поля `background_tasks` своего входа (тип `subagent`, то же
-  описание и тип): есть среди живых — ещё идёт, ход не блокирует (окончание
-  фонового субагента само будит сессию); нет — завершена без итога и без
-  `SubagentStop` (сбой хука, обрыв сессии), ход блокируется. Без поля
-  `background_tasks` и у отметки без описания живость не определить: такие
-  подзадачи только называются в причине блокировки. `SubagentStop`
-  помечает `registered: false` в `.stopped`, если запуска не видел;
+  со временем, описанием, типом субагента и `tool_use_id` вызова;
+- `post-tool` на `Agent` подтверждает запуск: из ответа инструмента
+  (`tool_response`) берутся `status` и идентификатор — `agentId` у
+  `async_launched`, `completed` и `teammate_spawned` (с `teammate_id`),
+  `taskId` у `remote_launched` — и пишутся в отметку (`agent_ids`). Ответ
+  с другим статусом или без идентификатора — запуск не подтверждён
+  (`launch: unconfirmed`). Ошибка выполнения `Agent` (`post-tool-failure`)
+  снимает `.started`: субагент не запущен. Отказ в вызове (другой хук
+  PreToolUse, отказ в разрешении) ни PostToolUse, ни PostToolUseFailure
+  не даёт: такую отметку `Stop` сверяет по `tool_use_id` с транскриптом
+  сессии — `tool_result` с ошибкой снимает её, ответ с идентификатором
+  подтверждает запуск, ответа нет — запуск не подтверждён, ход блокируется;
 - `post-tool` снимает отметку остановки после успешного `SendMessage`
   (возобновление): неудачная отправка отметку не теряет;
+- `.started` без `.done` и `.stopped` — запущена и ещё без итога
+  (`launched_without_result`). `Stop` ищет идентификаторы подзадачи среди
+  поля `id` задач `background_tasks` своего входа (любой тип: субагент,
+  teammate, облачная сессия) со статусом `running` или `pending`: есть — ещё
+  идёт, ход не блокирует (окончание фонового субагента само будит сессию);
+  нет — завершена без итога, ход блокируется с её `agent_id` для
+  возобновления, в том числе когда `Stop` пришёл раньше `SubagentStop`
+  только что закончившегося агента. Без поля `background_tasks` и у отметки
+  прежней версии хука (без `tool_use_id` и идентификатора) живость не
+  определить: такие подзадачи только называются в причине блокировки.
+  `SubagentStop` помечает `registered: false` в `.stopped`, если запуска
+  не видел;
 - `subagent-stop` по метке `Подзадача: <имя>` в приглашении субагента проверяет
   отметку итога `subtasks/<имя>.done`; её нет — пишет `subtasks/<имя>.stopped`
   и шлёт координатору строку «возобнови или перезапусти»;
 - `stop` блокирует конец хода координатора, пока есть подзадача, завершённая
-  без итога и без `SubagentStop` (ожидание её не покрывает: время окончания
-  неизвестно, а будить сессию некому), или остановившаяся подзадача
+  без итога и без `SubagentStop` или с неподтверждённым запуском (ожидание
+  её не покрывает: время окончания неизвестно, а будить сессию некому),
+  или остановившаяся подзадача
   без итога, для которой нет ожидания, начатого после её остановки: прогона
   во вкладке без `done` (`started_ms` в `meta.txt`), ожидания `signals.py wait`
   (`since_ms`). Ожидание, начатое раньше, к остановке подзадачи отношения
@@ -63,6 +79,18 @@ READ_ONLY_TYPES = {"Explore", "Plan", "claude-code-guide", "duty:inspector"}
 # Рутина навыков /duty:* идёт на runner: под ворота постановки не попадает.
 GATE_FREE_TYPES = READ_ONLY_TYPES | {"duty:runner"}
 MESSAGE_LIMIT = 200
+# Ответ инструмента Agent (схема вывода Claude Code): статус успешного запуска
+# и поля идентификаторов, по которым задача видна в `background_tasks` Stop.
+LAUNCH_ID_FIELDS = {
+    "async_launched": ("agentId",),
+    "completed": ("agentId",),
+    "teammate_spawned": ("agentId", "teammate_id"),
+    "remote_launched": ("taskId",),
+}
+UNCONFIRMED = "unconfirmed"
+# Статусы задачи в `background_tasks`, при которых она ещё идёт; конечные —
+# completed, failed, killed; остальные (paused и новые) живостью не считаются.
+LIVE_STATUSES = {"running", "pending"}
 # Хвост транскрипта сессии для распознавания запуска из навыка. Ход со всеми
 # вызовами и выводами инструментов обычно короче; больший ход читается
 # частично и считается «не из навыка»: отказ ворот безопаснее пропуска.
@@ -292,83 +320,229 @@ def pre_tool(data: dict[str, object]) -> None:
             # Перезапуск под тем же именем: прежние отметки к нему не относятся.
             for suffix in (".stopped", ".done"):
                 (subtasks(task) / f"{tag.group(1)}{suffix}").unlink(missing_ok=True)
-            mark_started(task, tag.group(1), tool_input)
+            mark_started(task, tag.group(1), tool_input, data.get("tool_use_id"))
         elif tool_input.get("subagent_type") not in READ_ONLY_TYPES:
             has_line = TAG_LINE_RE.search(str(tool_input.get("prompt", "")))
             pre_tool_output(additionalContext=BAD_TAG if has_line else UNTAGGED)
 
 
-def mark_started(task: Path, name: str, tool_input: dict[str, object]) -> None:
+def mark_started(
+    task: Path, name: str, tool_input: dict[str, object], tool_use_id: object
+) -> None:
     """Запуск подзадачи регистрируется отметкой `<имя>.started`.
 
-    В отметке — время (мс), описание и тип субагента из вызова `Agent`: по ним
-    `Stop` находит подзадачу среди живых в `background_tasks` (там нет ни
-    приглашения, ни метки, а `agent_id` до запуска неизвестен).
+    В отметке — время (мс), описание и тип субагента из вызова `Agent` и его
+    `tool_use_id`: по нему PostToolUse и `Stop` находят ответ инструмента
+    с идентификатором субагента (до запуска он неизвестен).
     """
     directory = subtasks(task)
     directory.mkdir(parents=True, exist_ok=True)
-    record = {
+    record: dict[str, object] = {
         "at_ms": time.time_ns() // 1_000_000,
         "description": str(tool_input.get("description") or ""),
         "subagent_type": str(tool_input.get("subagent_type") or ""),
     }
-    (directory / f"{name}.started").write_text(
-        json.dumps(record, ensure_ascii=False), encoding="utf-8"
-    )
+    if isinstance(tool_use_id, str) and tool_use_id:
+        record["tool_use_id"] = tool_use_id
+    write_record(directory / f"{name}.started", record)
 
 
-def is_live(record: dict[str, str], live: list[object]) -> bool:
-    """Подзадача из отметки `.started` есть среди живых субагентов сессии."""
-    kind = record.get("subagent_type")
+def write_record(path: Path, record: dict[str, object]) -> None:
+    path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+
+def apply_response(record: dict[str, object], response: object) -> None:
+    """Ответ инструмента Agent подтверждает запуск идентификаторами или нет.
+
+    Подтверждает только известный статус с первым полем идентификатора
+    (`agentId` или `taskId`); любой другой ответ — запуск не подтверждён.
+    """
+    body = response if isinstance(response, dict) else {}
+    status = body.get("status")
+    fields = LAUNCH_ID_FIELDS.get(status, ()) if isinstance(status, str) else ()
+    ids = [
+        value for field in fields if isinstance(value := body.get(field), str) and value
+    ]
+    if fields and isinstance(body.get(fields[0]), str) and body.get(fields[0]):
+        record["launch"] = status
+        record["agent_ids"] = ids
+        record.pop("response_status", None)
+    else:
+        record["launch"] = UNCONFIRMED
+        record["response_status"] = str(status)
+        record.pop("agent_ids", None)
+
+
+def agent_ids(record: dict[str, object]) -> list[str]:
+    raw = record.get("agent_ids")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, str) and item]
+
+
+def is_live(ids: list[str], live: list[object]) -> bool:
+    """Задача с одним из идентификаторов подзадачи ещё идёт в сессии."""
     return any(
         isinstance(item, dict)
-        and item.get("type") == "subagent"
-        and item.get("description") == record.get("description")
-        and (not kind or item.get("agent_type") == kind)
+        and item.get("id") in ids
+        and item.get("status") in LIVE_STATUSES
         for item in live
     )
 
 
-def launched_without_result(
-    task: Path, live: list[object] | None
-) -> tuple[list[str], list[str], list[str]]:
-    """Подзадачи с `.started` без `.done`: идут, завершены, неизвестно.
+def tool_result(transcript: object, tool_use_id: str) -> dict[str, object] | None:
+    """Запись `tool_result` вызова в транскрипте сессии; None — не найдена.
 
-    `live` — поле `background_tasks` входа `Stop`; None — поля нет, и все
-    подзадачи попадают в «неизвестно», как и отметки с пустым описанием или
-    без него. Подзадача с `.stopped` — тоже «неизвестно»: её судит отметка
-    остановки, а здесь она только называется.
+    Возвращается `{"is_error": bool, "response": toolUseResult}`. Читается
+    хвост транскрипта, как у `last_turn_skill`; ошибка чтения — None.
+    """
+    try:
+        with Path(str(transcript)).open("rb") as stream:
+            size = stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
+            raw = stream.read()
+    except (OSError, ValueError):
+        return None
+    for line in reversed(raw.decode("utf-8", errors="replace").splitlines()):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue  # обрезанная первая строка хвоста и посторонние записи
+        message = entry.get("message") if isinstance(entry, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        for block in content if isinstance(content, list) else []:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_result"
+                and block.get("tool_use_id") == tool_use_id
+            ):
+                return {
+                    "is_error": block.get("is_error") is True,
+                    "response": entry.get("toolUseResult"),
+                }
+    return None
+
+
+def launched_without_result(
+    task: Path, live: list[object] | None, transcript: object = None
+) -> tuple[list[str], list[tuple[str, list[str]]], list[str], list[str]]:
+    """Подзадачи с `.started` без `.done`: идут, завершены, неизвестно, не подтверждены.
+
+    `live` — поле `background_tasks` входа `Stop`; None — поля нет, и
+    подтверждённые подзадачи попадают в «неизвестно», как и отметки прежней
+    версии хука (без `tool_use_id` и идентификатора). Подзадача с `.stopped` —
+    тоже «неизвестно»: её судит отметка остановки, а здесь она только
+    называется. Отметка без ответа Agent сверяется с транскриптом сессии:
+    отказ в вызове снимает её, ответа нет — запуск не подтверждён.
     """
     directory = subtasks(task)
     running: list[str] = []
-    ended: list[str] = []
+    ended: list[tuple[str, list[str]]] = []
     unknown: list[str] = []
+    unconfirmed: list[str] = []
     if not directory.is_dir():
-        return running, ended, unknown
+        return running, ended, unknown, unconfirmed
     for path in sorted(directory.glob("*.started")):
         name = path.stem
         if (directory / f"{name}.done").exists():
             continue
-        record = read_record(path)
-        if (
-            live is None
-            or not record.get("description")
-            or (directory / f"{name}.stopped").exists()
-        ):
+        if (directory / f"{name}.stopped").exists():
             unknown.append(name)
-        elif is_live(record, live):
+            continue
+        record: dict[str, object] = dict(read_record(path))
+        tool_use_id = record.get("tool_use_id")
+        if "launch" not in record and isinstance(tool_use_id, str):
+            found = tool_result(transcript, tool_use_id) if transcript else None
+            if found is not None and found["is_error"]:
+                path.unlink(missing_ok=True)  # вызов отклонён: субагента нет
+                continue
+            apply_response(record, found["response"] if found else None)
+            if found is not None:
+                write_record(path, record)
+        ids = agent_ids(record)
+        if record.get("launch") == UNCONFIRMED:
+            unconfirmed.append(name)
+        elif not ids or live is None:
+            unknown.append(name)
+        elif is_live(ids, live):
             running.append(name)
         else:
-            ended.append(name)
-    return running, ended, unknown
+            ended.append((name, ids))
+    return running, ended, unknown, unconfirmed
 
 
-def post_tool(data: dict[str, object]) -> None:
-    """Успешный `SendMessage` возобновил подзадачу: отметка остановки снимается."""
-    if data.get("agent_id") or data.get("tool_name") != "SendMessage":
+def started_for(task: Path, data: dict[str, object]) -> Path | None:
+    """Отметка `.started` подзадачи из вызова Agent координатора; None — не его.
+
+    Вызов субагента (`agent_id` во входе) и вызов без метки не судятся;
+    отметка другого вызова под тем же именем (другой `tool_use_id`) не трогается.
+    """
+    if data.get("agent_id"):
+        return None
+    raw_input = data.get("tool_input")
+    tool_input = raw_input if isinstance(raw_input, dict) else {}
+    tag = TAG_RE.search(str(tool_input.get("prompt", "")))
+    if not tag:
+        return None
+    path = subtasks(task) / f"{tag.group(1)}.started"
+    known = read_record(path).get("tool_use_id")
+    if known is not None and known != data.get("tool_use_id"):
+        return None
+    return path
+
+
+def confirm_launch(task: Path, data: dict[str, object]) -> None:
+    """PostToolUse на Agent: идентификаторы из ответа пишутся в `.started`.
+
+    Отметки нет (pre-tool не отработал) — она создаётся: подзадача
+    отслеживается и без неё.
+    """
+    path = started_for(task, data)
+    if path is None:
+        return
+    record: dict[str, object] = dict(read_record(path))
+    if not record:
+        raw_input = data.get("tool_input")
+        tool_input = raw_input if isinstance(raw_input, dict) else {}
+        mark_started(task, path.stem, tool_input, data.get("tool_use_id"))
+        record = dict(read_record(path))
+    apply_response(record, data.get("tool_response"))
+    write_record(path, record)
+
+
+def post_tool_failure(data: dict[str, object]) -> None:
+    """Ошибка выполнения Agent: субагент не запущен, `.started` снимается.
+
+    Прерывание пользователем (`is_interrupt`) отметку не снимает: субагент
+    мог успеть начать работу, запуск остаётся неподтверждённым.
+    """
+    if data.get("tool_name") not in SUBAGENT_TOOLS:
         return
     task = task_dir()
     if task is None:
+        return
+    path = started_for(task, data)
+    if path is None or not path.exists():
+        return
+    record: dict[str, object] = dict(read_record(path))
+    if agent_ids(record):
+        return
+    if data.get("is_interrupt"):
+        record["launch"] = UNCONFIRMED
+        write_record(path, record)
+        return
+    path.unlink(missing_ok=True)
+
+
+def post_tool(data: dict[str, object]) -> None:
+    """Agent подтверждает запуск; успешный `SendMessage` снимает отметку остановки."""
+    task = task_dir()
+    if task is None:
+        return
+    if data.get("tool_name") in SUBAGENT_TOOLS:
+        confirm_launch(task, data)
+        return
+    if data.get("agent_id") or data.get("tool_name") != "SendMessage":
         return
     response = data.get("tool_response")
     # Ответ SendMessage — объект с полем success; ложное значение — отправка
@@ -546,11 +720,15 @@ def stop(data: dict[str, object]) -> None:
         return
     raw_live = data.get("background_tasks")
     live = raw_live if isinstance(raw_live, list) else None
-    running, ended, unknown = launched_without_result(task, live)
+    running, ended, unknown, unconfirmed = launched_without_result(
+        task, live, data.get("transcript_path")
+    )
     pending = uncovered(task)
-    if not pending and not ended:
+    if not pending and not ended and not unconfirmed:
         return
-    names = ", ".join([name for name, _, _ in pending] + ended)
+    names = ", ".join(
+        [name for name, _, _ in pending] + [name for name, _ in ended] + unconfirmed
+    )
     if data.get("stop_hook_active"):
         subprocess.run(
             [
@@ -576,9 +754,15 @@ def stop(data: dict[str, object]) -> None:
             f"ожидание: {lines}"
         )
     if ended:
+        lines = ", ".join(f"{name} (agent_id {', '.join(ids)})" for name, ids in ended)
         parts.append(
-            f"Завершены без итога: {', '.join(ended)} (субагента нет среди живых, "
+            f"Завершены без итога: {lines} (среди живых задач сессии нет, "
             "отметки остановки нет)"
+        )
+    if unconfirmed:
+        parts.append(
+            f"Запуск не подтверждён: {', '.join(unconfirmed)} (в ответе Agent нет "
+            "известного статуса с идентификатором)"
         )
     if running:
         parts.append(f"Ещё идут: {', '.join(running)}")
@@ -601,6 +785,7 @@ def stop(data: dict[str, object]) -> None:
 HANDLERS = {
     "pre-tool": pre_tool,
     "post-tool": post_tool,
+    "post-tool-failure": post_tool_failure,
     "subagent-stop": subagent_stop,
     "stop": stop,
 }

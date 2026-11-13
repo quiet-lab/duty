@@ -19,14 +19,17 @@
   освобождается до вызова); подтверждённый запуск отложенные удаляет,
   отклонённый возвращает на место;
 - `pre-tool` при запуске подзадачи пишет отметку `subtasks/<имя>.started`
-  со временем, описанием, типом субагента и `tool_use_id` вызова;
+  со временем, описанием, типом субагента и `tool_use_id` вызова; второй
+  вызов под тем же именем отклоняется, пока у первого нет ответа Agent ни
+  в PostToolUse, ни в транскрипте сессии;
 - `post-tool` на `Agent` подтверждает запуск: из ответа инструмента
   (`tool_response`) берутся `status` и идентификатор — `agentId` у
   `async_launched`, `completed` и `teammate_spawned` (с `teammate_id`),
   `taskId` у `remote_launched` — и пишутся в отметку (`agent_ids`). Ответ
   с другим статусом или без идентификатора — запуск не подтверждён
   (`launch: unconfirmed`). Ошибка выполнения `Agent` (`post-tool-failure`)
-  возвращает отметки к состоянию до вызова: субагент не запущен. Отказ
+  приходит и после запуска субагента, а agentId в ней нет: подзадача
+  считается остановившейся без итога (`.stopped`, `launch: failed`). Отказ
   в вызове (другой хук
   PreToolUse, отказ в разрешении) ни PostToolUse, ни PostToolUseFailure
   не даёт: такую отметку `Stop` сверяет по `tool_use_id` с транскриптом
@@ -71,6 +74,7 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 PLUGIN = Path(__file__).resolve().parent.parent
@@ -92,6 +96,8 @@ LAUNCH_ID_FIELDS = {
     "remote_launched": ("taskId",),
 }
 UNCONFIRMED = "unconfirmed"
+# Ошибка выполнения Agent (PostToolUseFailure): запуск мог состояться.
+FAILED = "failed"
 # Статусы задачи в `background_tasks`, при которых она ещё идёт; конечные —
 # completed, failed, killed; остальные (paused и новые) живостью не считаются.
 LIVE_STATUSES = {"running", "pending"}
@@ -124,6 +130,12 @@ BAD_TAG = (
     "(agents/worker.md, п. 3)."
 )
 
+BUSY_TAG = (
+    "Подзадача «{name}» уже запускается другим вызовом Agent, ответа которого ещё "
+    "нет: две подзадачи с одной меткой делили бы одни отметки. Дай этой подзадаче "
+    "другое имя в строке «Подзадача: <имя>» (agents/worker.md, п. 3)."
+)
+
 
 GATE_HINT = (
     "Задача субагенту ставится с критерием готовности, условием остановки, "
@@ -146,6 +158,29 @@ ASK_HINT = (
 )
 
 
+def transcript_entries(transcript: object) -> Iterator[dict[str, object]]:
+    """Записи хвоста транскрипта сессии от последней к первой.
+
+    Хвост (`TRANSCRIPT_TAIL_BYTES`) читается одним чтением при первом шаге;
+    обрезанная первая строка и записи не в JSON пропускаются, ошибка чтения —
+    ни одной записи.
+    """
+    try:
+        with Path(str(transcript)).open("rb") as stream:
+            size = stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
+            raw = stream.read()
+    except (OSError, ValueError):
+        return
+    for line in reversed(raw.decode("utf-8", errors="replace").splitlines()):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            yield entry
+
+
 def last_turn_skill(transcript: object) -> str | None:
     """Имя навыка, из которого идёт текущий ход; None — ход начат не навыком.
 
@@ -155,22 +190,9 @@ def last_turn_skill(transcript: object) -> str | None:
     (`<command-name>` в сообщении) либо вызов инструмента `Skill` после него.
     Любая ошибка чтения — None.
     """
-    try:
-        path = Path(str(transcript))
-        with path.open("rb") as stream:
-            size = stream.seek(0, os.SEEK_END)
-            stream.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
-            raw = stream.read()
-    except (OSError, ValueError):
-        return None
-    lines = raw.decode("utf-8", errors="replace").splitlines()
     skill: str | None = None
-    for line in reversed(lines):
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue  # обрезанная первая строка хвоста и посторонние записи
-        message = entry.get("message") if isinstance(entry, dict) else None
+    for entry in transcript_entries(transcript):
+        message = entry.get("message")
         if not isinstance(message, dict):
             continue
         content = message.get("content")
@@ -321,11 +343,41 @@ def pre_tool(data: dict[str, object]) -> None:
     if tool in SUBAGENT_TOOLS:
         tag = TAG_RE.search(str(tool_input.get("prompt", "")))
         if tag:
-            set_aside(task, tag.group(1))
-            mark_started(task, tag.group(1), tool_input, data.get("tool_use_id"))
+            name = tag.group(1)
+            tool_use_id = data.get("tool_use_id")
+            if in_flight(task, name, tool_use_id, data.get("transcript_path")):
+                pre_tool_output(
+                    permissionDecision="deny",
+                    permissionDecisionReason=BUSY_TAG.format(name=name),
+                )
+                return
+            set_aside(task, name)
+            mark_started(task, name, tool_input, tool_use_id)
         elif tool_input.get("subagent_type") not in READ_ONLY_TYPES:
             has_line = TAG_LINE_RE.search(str(tool_input.get("prompt", "")))
             pre_tool_output(additionalContext=BAD_TAG if has_line else UNTAGGED)
+
+
+def in_flight(task: Path, name: str, tool_use_id: object, transcript: object) -> bool:
+    """Под именем уже идёт другой вызов Agent, ещё не получивший ответа.
+
+    Два вызова с одной меткой в одном сообщении делили бы одну отметку:
+    второй перезаписал бы `tool_use_id`, и PostToolUse первого был бы отброшен
+    (`started_for`), а `.done` и `.stopped` одного закрывали бы обоих. Отметка
+    другого вызова без ответа Agent сверяется с транскриптом (`settle`):
+    ответ есть — вызов окончен (отказ возвращает прежние отметки), повтор
+    разрешён; ответа нет или транскрипт не прочитан — вызов идёт (отказ при
+    сомнении).
+    """
+    path = subtasks(task) / f"{name}.started"
+    known = unsettled_id(read_record(path))
+    if known is None or known == tool_use_id:
+        return False
+    results = tool_results(transcript, {known})
+    if known not in results:
+        return True
+    settle(path, results)
+    return False
 
 
 MARK_SUFFIXES = (".started", ".stopped", ".done")
@@ -438,51 +490,56 @@ def is_live(ids: list[str], live: list[object]) -> bool:
     )
 
 
-def tool_result(transcript: object, tool_use_id: str) -> dict[str, object] | None:
-    """Запись `tool_result` вызова в транскрипте сессии; None — не найдена.
+def tool_results(transcript: object, wanted: set[str]) -> dict[str, dict[str, object]]:
+    """Записи `tool_result` вызовов `wanted` в транскрипте сессии по `tool_use_id`.
 
-    Возвращается `{"is_error": bool, "response": toolUseResult}`. Читается
-    хвост транскрипта, как у `last_turn_skill`; ошибка чтения — None.
+    Значение — `{"is_error": bool, "response": toolUseResult}` последней записи
+    вызова; не найденного вызова в словаре нет. Хвост транскрипта читается
+    один раз на все вызовы (`transcript_entries`); ошибка чтения — пустой словарь.
     """
-    try:
-        with Path(str(transcript)).open("rb") as stream:
-            size = stream.seek(0, os.SEEK_END)
-            stream.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
-            raw = stream.read()
-    except (OSError, ValueError):
-        return None
-    for line in reversed(raw.decode("utf-8", errors="replace").splitlines()):
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue  # обрезанная первая строка хвоста и посторонние записи
-        message = entry.get("message") if isinstance(entry, dict) else None
+    found: dict[str, dict[str, object]] = {}
+    if not transcript or not wanted:
+        return found
+    for entry in transcript_entries(transcript):
+        message = entry.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         for block in content if isinstance(content, list) else []:
-            if (
-                isinstance(block, dict)
-                and block.get("type") == "tool_result"
-                and block.get("tool_use_id") == tool_use_id
-            ):
-                return {
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            tool_use_id = block.get("tool_use_id")
+            if tool_use_id in wanted and tool_use_id not in found:
+                found[tool_use_id] = {
                     "is_error": block.get("is_error") is True,
                     "response": entry.get("toolUseResult"),
                 }
-    return None
+        if len(found) == len(wanted):
+            break
+    return found
 
 
-def settle(path: Path, transcript: object) -> dict[str, object] | None:
+def unsettled_id(record: dict[str, object]) -> str | None:
+    """`tool_use_id` отметки, которой ещё не пришёл ответ Agent; None — пришёл."""
+    tool_use_id = record.get("tool_use_id")
+    if "launch" in record or not isinstance(tool_use_id, str):
+        return None
+    return tool_use_id
+
+
+def settle(
+    path: Path, results: dict[str, dict[str, object]]
+) -> dict[str, object] | None:
     """Отметка `.started` после сверки запуска без ответа Agent с транскриптом.
 
-    Ответ найден — пишется в отметку. Вызов отклонён — прежние отметки
+    `results` — найденные в транскрипте ответы (`tool_results`). Ответ
+    найден — пишется в отметку. Вызов отклонён — прежние отметки
     возвращаются (`restore_previous`), и отдаётся вернувшаяся `.started`;
     её нет — None. Ответа нет — запуск не подтверждён.
     """
     record: dict[str, object] = dict(read_record(path))
-    tool_use_id = record.get("tool_use_id")
-    if "launch" in record or not isinstance(tool_use_id, str):
+    tool_use_id = unsettled_id(record)
+    if tool_use_id is None:
         return record
-    found = tool_result(transcript, tool_use_id) if transcript else None
+    found = results.get(tool_use_id)
     if found is not None and found["is_error"]:
         restore_previous(path.parent, path.stem)
         return dict(read_record(path)) if path.exists() else None
@@ -503,7 +560,8 @@ def launched_without_result(
     подтверждённые подзадачи попадают в «неизвестно», как и отметки прежней
     версии хука (без `tool_use_id` и идентификатора). Подзадача с `.stopped` —
     тоже «неизвестно»: её судит отметка остановки, а здесь она только
-    называется. Отметка без ответа Agent сверяется с транскриптом (`settle`).
+    называется. Отметки без ответа Agent сверяются с транскриптом (`settle`):
+    хвост читается один раз на все такие отметки.
     """
     directory = subtasks(task)
     running: list[str] = []
@@ -512,9 +570,16 @@ def launched_without_result(
     unconfirmed: list[str] = []
     if not directory.is_dir():
         return running, ended, unknown, unconfirmed
-    for path in sorted(directory.glob("*.started")):
+    paths = sorted(directory.glob("*.started"))
+    wanted = {
+        tool_use_id
+        for path in paths
+        if (tool_use_id := unsettled_id(read_record(path))) is not None
+    }
+    results = tool_results(transcript, wanted)
+    for path in paths:
         name = path.stem
-        record = settle(path, transcript)
+        record = settle(path, results)
         if record is None or (directory / f"{name}.done").exists():
             continue
         if (directory / f"{name}.stopped").exists():
@@ -574,10 +639,18 @@ def confirm_launch(task: Path, data: dict[str, object]) -> None:
 
 
 def post_tool_failure(data: dict[str, object]) -> None:
-    """Ошибка выполнения Agent: субагент не запущен, `.started` снимается.
+    """Ошибка выполнения Agent: субагент мог успеть поработать.
 
-    Прерывание пользователем (`is_interrupt`) отметку не снимает: субагент
-    мог успеть начать работу, запуск остаётся неподтверждённым.
+    PostToolUseFailure приходит и после запуска: субагент на переднем плане,
+    упавший на ошибке API, даёт SubagentStart, StopFailure (SubagentStop нет)
+    и затем PostToolUseFailure без agentId, только с текстом ошибки. Отказ
+    до запуска (другой хук PreToolUse, отказ в разрешении) этого события
+    не даёт и снимается сверкой с транскриптом (`settle`). По входу события
+    запуск от незапуска не отличить, поэтому ошибка считается остановкой без
+    итога (отказ при сомнении): `.started` получает `launch: failed` с текстом
+    ошибки, без `.done` пишется `.stopped`, отложенные отметки прежнего запуска
+    удаляются. Прерывание пользователем (`is_interrupt`) оставляет запуск
+    неподтверждённым.
     """
     if data.get("tool_name") not in SUBAGENT_TOOLS:
         return
@@ -594,7 +667,22 @@ def post_tool_failure(data: dict[str, object]) -> None:
         record["launch"] = UNCONFIRMED
         write_record(path, record)
         return
-    restore_previous(path.parent, path.stem)
+    error = one_line(data.get("error"))
+    record["launch"] = FAILED
+    record["error"] = error
+    write_record(path, record)
+    directory, name = path.parent, path.stem
+    if not (directory / f"{name}.done").exists():
+        write_record(
+            directory / f"{name}.stopped",
+            {
+                "last": error,
+                "at_ms": time.time_ns() // 1_000_000,
+                "registered": True,
+                "launch": FAILED,
+            },
+        )
+    drop_previous(directory, name)
 
 
 def post_tool(data: dict[str, object]) -> None:

@@ -396,7 +396,9 @@ class GuardTest(unittest.TestCase):
         r = self.hook("stop", {"background_tasks": [], "transcript_path": transcript})
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
         self.assertFalse((self.subtasks / "r1.started").exists())
-        # Ошибка выполнения Agent приходит PostToolUseFailure: отметка снимается.
+        # Ошибка выполнения Agent приходит PostToolUseFailure и после запуска
+        # субагента; по входу события их не различить (RP-2445, п. 2): даже
+        # ошибка до запуска считается остановкой без итога (отказ при сомнении).
         self.launch("r2", "правка", tool_use_id="toolu_r2", confirm=False)
         r = self.hook(
             "post-tool-failure",
@@ -408,9 +410,9 @@ class GuardTest(unittest.TestCase):
             },
         )
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
-        self.assertFalse((self.subtasks / "r2.started").exists())
+        self.assertTrue((self.subtasks / "r2.stopped").exists())
         r = self.hook("stop", {"background_tasks": []})
-        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        self.assertIn("r2 (agent_id ?)", json.loads(r.stdout)["reason"])
 
     def test_rejected_relaunch_restores_previous_marks(self) -> None:
         # Перезапуск остановившейся подзадачи отклонён: прежние отметки
@@ -446,30 +448,28 @@ class GuardTest(unittest.TestCase):
                 ]
             )
 
-        # Отказ через PostToolUseFailure.
+        # Отказ без PostToolUse: Stop находит ошибку в транскрипте.
         self.launch("a1", "правка", agent_id="ag-old", tool_use_id="toolu_old")
         self.write_stopped("a1", "ag-old")
-        self.launch("a1", "правка", tool_use_id="toolu_new", confirm=False)
-        failure("a1", "toolu_new")
-        r = self.hook("stop", {"background_tasks": []})
-        out = json.loads(r.stdout)
-        self.assertEqual(out["decision"], "block")
-        self.assertIn("a1 (agent_id ag-old)", out["reason"])
-        record = json.loads((self.subtasks / "a1.started").read_text(encoding="utf-8"))
-        self.assertEqual(record["agent_ids"], ["ag-old"])
-        # Отказ без PostToolUse: Stop находит ошибку в транскрипте.
         self.launch("a1", "правка", tool_use_id="toolu_new2", confirm=False)
         transcript = rejected_in_transcript("toolu_new2")
         r = self.hook("stop", {"background_tasks": [], "transcript_path": transcript})
         out = json.loads(r.stdout)
         self.assertEqual(out["decision"], "block")
         self.assertIn("a1 (agent_id ag-old)", out["reason"])
-        # Итог был записан: отклонённый перезапуск его не стирает.
+        record = json.loads((self.subtasks / "a1.started").read_text(encoding="utf-8"))
+        self.assertEqual(record["agent_ids"], ["ag-old"])
+        # Ошибка выполнения перезапуска (PostToolUseFailure): перезапуск мог
+        # поработать, прежний итог его не покрывает — остановка без итога
+        # (RP-2445, п. 2).
         self.launch("a2", "тесты", tool_use_id="toolu_a2")
         (self.subtasks / "a2.done").write_text("итог\n", encoding="utf-8")
         self.launch("a2", "тесты", tool_use_id="toolu_a2b", confirm=False)
         failure("a2", "toolu_a2b")
-        self.assertTrue((self.subtasks / "a2.done").exists())
+        self.assertFalse((self.subtasks / "a2.done").exists())
+        self.assertTrue((self.subtasks / "a2.stopped").exists())
+        self.assertEqual(sorted(self.subtasks.glob("a2.*.prev")), [])
+        (self.subtasks / "a2.done").write_text("итог снят\n", encoding="utf-8")
         # Подтверждённый перезапуск снимает прежние отметки.
         self.launch("a1", "правка", agent_id="ag-new", tool_use_id="toolu_new3")
         self.assertFalse((self.subtasks / "a1.stopped").exists())
@@ -551,6 +551,52 @@ class GuardTest(unittest.TestCase):
         self.assertTrue((self.subtasks / "z.stopped.prev").exists())
         # Повтор того же вызова (тот же tool_use_id) не отклоняется.
         r = self.pre_agent("z", "toolu_z2", transcript)
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_foreground_failure_after_start_keeps_subtask(self) -> None:
+        # RP-2445, п. 2. Порядок событий снят пробой Claude Code 2.1.323:
+        # субагент на переднем плане с недоступной моделью даёт PreToolUse,
+        # SubagentStart, StopFailure (без SubagentStop) и PostToolUseFailure
+        # с текстом ошибки, без agentId. Субагент запускался: подзадача
+        # не снимается, а считается остановившейся без итога.
+        self.launch("f1", "правка", tool_use_id="toolu_f1", confirm=False)
+        r = self.hook(
+            "post-tool-failure",
+            {
+                "tool_name": "Agent",
+                "tool_use_id": "toolu_f1",
+                "tool_input": {"prompt": "Подзадача: f1\n" + GATE_LINES},
+                "error": "Agent terminated early due to an API error: model_not_found",
+                "is_interrupt": False,
+            },
+        )
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        record = json.loads((self.subtasks / "f1.started").read_text(encoding="utf-8"))
+        self.assertEqual(record["launch"], "failed")
+        stopped = json.loads((self.subtasks / "f1.stopped").read_text(encoding="utf-8"))
+        self.assertIn("API error", stopped["last"])
+        r = self.hook("stop", {"background_tasks": []})
+        out = json.loads(r.stdout)
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("f1", out["reason"])
+        # Итог записан до сбоя: остановки без итога нет.
+        self.launch("f2", "правка", tool_use_id="toolu_f2", confirm=False)
+        (self.subtasks / "f2.done").write_text("итог\n", encoding="utf-8")
+        self.hook(
+            "post-tool-failure",
+            {
+                "tool_name": "Agent",
+                "tool_use_id": "toolu_f2",
+                "tool_input": {"prompt": "Подзадача: f2\n" + GATE_LINES},
+                "error": "Agent terminated early due to an API error",
+            },
+        )
+        self.assertFalse((self.subtasks / "f2.stopped").exists())
+        # Перезапуск под тем же именем проходит и снимает отметки сбоя.
+        self.launch("f1", "правка", agent_id="ag-f1", tool_use_id="toolu_f1b")
+        self.assertFalse((self.subtasks / "f1.stopped").exists())
+        live = [self.live_agent("x", agent_id="ag-f1")]
+        r = self.hook("stop", {"background_tasks": live})
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
 
     def test_unconfirmed_launch_blocks(self) -> None:

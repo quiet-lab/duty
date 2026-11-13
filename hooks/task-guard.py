@@ -28,7 +28,8 @@
   `taskId` у `remote_launched` — и пишутся в отметку (`agent_ids`). Ответ
   с другим статусом или без идентификатора — запуск не подтверждён
   (`launch: unconfirmed`). Ошибка выполнения `Agent` (`post-tool-failure`)
-  возвращает отметки к состоянию до вызова: субагент не запущен. Отказ
+  приходит и после запуска субагента, а agentId в ней нет: подзадача
+  считается остановившейся без итога (`.stopped`, `launch: failed`). Отказ
   в вызове (другой хук
   PreToolUse, отказ в разрешении) ни PostToolUse, ни PostToolUseFailure
   не даёт: такую отметку `Stop` сверяет по `tool_use_id` с транскриптом
@@ -95,6 +96,8 @@ LAUNCH_ID_FIELDS = {
     "remote_launched": ("taskId",),
 }
 UNCONFIRMED = "unconfirmed"
+# Ошибка выполнения Agent (PostToolUseFailure): запуск мог состояться.
+FAILED = "failed"
 # Статусы задачи в `background_tasks`, при которых она ещё идёт; конечные —
 # completed, failed, killed; остальные (paused и новые) живостью не считаются.
 LIVE_STATUSES = {"running", "pending"}
@@ -636,10 +639,18 @@ def confirm_launch(task: Path, data: dict[str, object]) -> None:
 
 
 def post_tool_failure(data: dict[str, object]) -> None:
-    """Ошибка выполнения Agent: субагент не запущен, `.started` снимается.
+    """Ошибка выполнения Agent: субагент мог успеть поработать.
 
-    Прерывание пользователем (`is_interrupt`) отметку не снимает: субагент
-    мог успеть начать работу, запуск остаётся неподтверждённым.
+    PostToolUseFailure приходит и после запуска: субагент на переднем плане,
+    упавший на ошибке API, даёт SubagentStart, StopFailure (SubagentStop нет)
+    и затем PostToolUseFailure без agentId, только с текстом ошибки. Отказ
+    до запуска (другой хук PreToolUse, отказ в разрешении) этого события
+    не даёт и снимается сверкой с транскриптом (`settle`). По входу события
+    запуск от незапуска не отличить, поэтому ошибка считается остановкой без
+    итога (отказ при сомнении): `.started` получает `launch: failed` с текстом
+    ошибки, без `.done` пишется `.stopped`, отложенные отметки прежнего запуска
+    удаляются. Прерывание пользователем (`is_interrupt`) оставляет запуск
+    неподтверждённым.
     """
     if data.get("tool_name") not in SUBAGENT_TOOLS:
         return
@@ -656,7 +667,22 @@ def post_tool_failure(data: dict[str, object]) -> None:
         record["launch"] = UNCONFIRMED
         write_record(path, record)
         return
-    restore_previous(path.parent, path.stem)
+    error = one_line(data.get("error"))
+    record["launch"] = FAILED
+    record["error"] = error
+    write_record(path, record)
+    directory, name = path.parent, path.stem
+    if not (directory / f"{name}.done").exists():
+        write_record(
+            directory / f"{name}.stopped",
+            {
+                "last": error,
+                "at_ms": time.time_ns() // 1_000_000,
+                "registered": True,
+                "launch": FAILED,
+            },
+        )
+    drop_previous(directory, name)
 
 
 def post_tool(data: dict[str, object]) -> None:

@@ -64,11 +64,25 @@ def build(
     }
 
 
+def in_pool(release) -> None:
+    """Запрос двойнику пришёл не из пула потоков — обход последовательный.
+
+    Ожидание в главном потоке не дождалось бы второго участника: release
+    снимает ожидание остальных, проверка падает с причиной, а не зависает.
+    """
+    if threading.current_thread() is threading.main_thread():
+        release()
+        raise AssertionError("обход Jenkins идёт в главном потоке, а не в пуле")
+
+
 class WeekStatsTest(unittest.TestCase):
     def test_jenkins_walk_is_parallel(self) -> None:
         # Сборки двух заданий запрашиваются одновременно: двойник отвечает
-        # на запрос сборок, только когда пришли оба (барьер без срока: обход
-        # по одному зависает, его ловит внешний предел прогона целиком).
+        # на запрос сборок, только когда пришли оба. Барьер без срока
+        # (запись решения о сроках ожидания в тестах): запрос листа
+        # из главного потока ломает барьер, и тест падает с причиной; обход
+        # по одному в пуле потоков зависает, его ловит внешний предел
+        # прогона целиком.
         barrier = threading.Barrier(2)
         folders = {
             "http://j/": {"jobs": [{"name": "d", "url": "http://j/d/"}]},
@@ -89,7 +103,13 @@ class WeekStatsTest(unittest.TestCase):
             if base in folders:
                 return folders[base]
             # Лист: сборки приходят в том же ответе, что и признак задания.
-            barrier.wait()
+            in_pool(barrier.abort)
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                raise AssertionError(
+                    f"барьер сломан: второй лист не запрошен ({base})"
+                ) from None
             return {"_class": "job", "allBuilds": [{"timestamp": 5, "number": 1}]}
 
         old = ws.gates.jenkins
@@ -127,6 +147,7 @@ class WeekStatsTest(unittest.TestCase):
         def fake_jenkins(url: str, env: dict) -> dict | None:
             base = url.split("/api/json")[0] + "/"
             if base == "http://j/y/":
+                in_pool(leaf_requested.set)
                 leaf_requested.wait()
             if base in folders:
                 return folders[base]

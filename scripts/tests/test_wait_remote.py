@@ -741,6 +741,73 @@ class WaitRemoteFakeSshTest(WaitRemoteTest):
         self.check_term_in_pause()
 
 
+
+FLOCK_DOUBLE = r"""#!/bin/bash
+# Двойник flock: перед неблокирующим захватом замка наблюдателя сообщает
+# об этом в stderr и ждёт записи «e» в спуле (события inotify), то есть
+# конца процесса и выхода прежнего наблюдателя.
+if [ -n "${FAKE_FLOCK_SPOOL:-}" ] && [ "$1" = -n ]; then
+    echo flock-reached >&2
+    until [ "$(tail -n 1 -- "$FAKE_FLOCK_SPOOL" 2> /dev/null)" = e ]; do
+        inotifywait -qq -e modify "$FAKE_FLOCK_SPOOL"
+    done
+fi
+exec /usr/bin/flock "$@"
+"""
+
+
+class WaitRemoteNodeRaceTest(unittest.TestCase):
+    """Наблюдатель завершился между чтением спула и захватом замка."""
+
+    def test_no_second_watcher_after_end(self) -> None:
+        node = SCRIPTS / "wait-remote-node.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "bin").mkdir()
+            double = root / "bin" / "flock"
+            double.write_text(FLOCK_DOUBLE, encoding="utf-8")
+            double.chmod(0o755)
+            log = root / "log"
+            log.write_text("a\n", encoding="utf-8")
+            target = subprocess.Popen(["sleep", "100000"])
+            self.addCleanup(target.kill)
+            self.addCleanup(target.wait)
+            env = {**os.environ, "TMPDIR": str(root / "tmp")}
+            (root / "tmp").mkdir()
+
+            def connect(token: str, extra: dict[str, str]) -> subprocess.Popen:
+                return subprocess.Popen(
+                    ["bash", "-s", "--", str(log), str(target.pid), token, "first"],
+                    stdin=node.open("rb"),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env={**env, **extra},
+                )
+
+            first = connect("t1", {})
+            assert first.stdout is not None
+            self.assertIn("wait-remote t1", first.stdout.readline())
+            (spool,) = (root / "tmp").glob("wait-remote-*/*/spool")
+            second = connect(
+                "t2",
+                {
+                    "FAKE_FLOCK_SPOOL": str(spool),
+                    "PATH": f"{root / 'bin'}:{os.environ['PATH']}",
+                },
+            )
+            assert second.stderr is not None
+            self.assertEqual(second.stderr.readline().strip(), "flock-reached")
+            target.kill()
+            target.wait()
+            out1, _ = first.communicate()
+            out2, _ = second.communicate()
+            self.assertEqual(out1.splitlines()[-2:], ["o a", "e"], out1)
+            self.assertEqual(out2.splitlines()[-2:], ["o a", "e"], out2)
+            self.assertNotIn("w", out2.splitlines(), out2)
+            self.assertEqual(out2.splitlines().count("e"), 1, out2)
+
+
 @unittest.skipUnless(
     real_ssh_available(), "ssh на localhost по ключу недоступен (BatchMode)"
 )

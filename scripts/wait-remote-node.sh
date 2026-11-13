@@ -225,11 +225,18 @@ main() {
     last=$(tail -n 1 -- "$S/spool")
     exec 9>> "$S/lock"
     if [ "$last" != e ] && flock -n 9; then
-        exec 6< <(exec setsid bash -c "$(declare -f rec log_open log_emit log_sync log_initial log_replace watch_log); watch_log \"\$@\"" \
-            wait-remote-watch "$S" "$log" "$pid" < /dev/null 2> /dev/null 8>&-)
-        # Готовность: наблюдатель записал свой PID и первое чтение журнала.
-        IFS= read -r _ <&6 || true
-        exec 6<&-
+        # Прежний наблюдатель мог закончить между чтением спула и захватом
+        # замка (замок освобождается при его выходе): метка конца
+        # перечитывается под замком, иначе после «e» запустился бы лишний
+        # наблюдатель и дописал «w» и повторы.
+        last=$(tail -n 1 -- "$S/spool")
+        if [ "$last" != e ]; then
+            exec 6< <(exec setsid bash -c "$(declare -f rec log_open log_emit log_sync log_initial log_replace watch_log); watch_log \"\$@\"" \
+                wait-remote-watch "$S" "$log" "$pid" < /dev/null 2> /dev/null 8>&-)
+            # Готовность: наблюдатель записал свой PID и первое чтение журнала.
+            IFS= read -r _ <&6 || true
+            exec 6<&-
+        fi
     fi
     exec 9>&- 8>&-
     n=$(wc -l < "$S/spool")

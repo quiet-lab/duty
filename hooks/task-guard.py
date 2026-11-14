@@ -410,7 +410,9 @@ def claim(
                 done=subtasks(task) / f"{name}.done",
             )
         set_aside(task, name)
-        if not mark_started(task, name, tool_input, tool_use_id):
+        if not mark_started(
+            task, name, tool_input, tool_use_id, data.get("transcript_path")
+        ):
             return BUSY_TAG.format(name=name)
     return None
 
@@ -442,11 +444,23 @@ def in_flight(task: Path, name: str, tool_use_id: object, transcript: object) ->
     другого вызова без ответа Agent сверяется с транскриптом (`settle`):
     ответ есть — вызов окончен (отказ возвращает прежние отметки), повтор
     разрешён; ответа нет или транскрипт не прочитан — вызов идёт (отказ при
-    сомнении).
+    сомнении). Отметка, записанная при другом транскрипте (сессию сменил
+    `/clear` или возобновление), вызовом текущей сессии быть не может:
+    она помечается неподтверждённой, и имя освобождается.
     """
     path = subtasks(task) / f"{name}.started"
-    known = unsettled_id(read_record(path))
+    record = read_record(path)
+    known = unsettled_id(record)
     if known is None or known == tool_use_id:
+        return False
+    marked = record.get("transcript")
+    if (
+        isinstance(marked, str)
+        and isinstance(transcript, str)
+        and transcript
+        and marked != transcript
+    ):
+        write_record(path, {**record, "launch": UNCONFIRMED})
         return False
     results = tool_results(transcript, {known})
     if known not in results:
@@ -502,7 +516,11 @@ def drop_previous(directory: Path, name: str) -> None:
 
 
 def mark_started(
-    task: Path, name: str, tool_input: dict[str, object], tool_use_id: object
+    task: Path,
+    name: str,
+    tool_input: dict[str, object],
+    tool_use_id: object,
+    transcript: object = None,
 ) -> bool:
     """Запуск подзадачи регистрируется отметкой `<имя>.started`; False — занято.
 
@@ -521,6 +539,8 @@ def mark_started(
     }
     if isinstance(tool_use_id, str) and tool_use_id:
         record["tool_use_id"] = tool_use_id
+    if isinstance(transcript, str) and transcript:
+        record["transcript"] = transcript
     path = directory / f"{name}.started"
     known = read_record(path).get("tool_use_id")
     if path.exists() and isinstance(known, str) and known == tool_use_id:
@@ -577,30 +597,74 @@ def is_live(ids: list[str], live: list[object]) -> bool:
     )
 
 
+def result_blocks(entry: dict[str, object]) -> Iterator[tuple[str, dict[str, object]]]:
+    """Пары (`tool_use_id`, ответ) из блоков `tool_result` записи транскрипта."""
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    for block in content if isinstance(content, list) else []:
+        if not isinstance(block, dict) or block.get("type") != "tool_result":
+            continue
+        tool_use_id = block.get("tool_use_id")
+        if isinstance(tool_use_id, str):
+            yield (
+                tool_use_id,
+                {
+                    "is_error": block.get("is_error") is True,
+                    "response": entry.get("toolUseResult"),
+                },
+            )
+
+
+def scan_whole_transcript(
+    transcript: object, wanted: set[str]
+) -> dict[str, dict[str, object]]:
+    """Ответы `wanted` по всему транскрипту, не только по хвосту.
+
+    Читается построчно, без загрузки файла в память; строки без искомого
+    идентификатора не разбираются. Вызывается, когда хвост ответа не дал:
+    запись, вышедшая за `TRANSCRIPT_TAIL_BYTES`, иначе занимала бы имя подзадачи
+    навсегда. Ошибка чтения — пустой словарь. Из нескольких записей вызова
+    берётся последняя.
+    """
+    found: dict[str, dict[str, object]] = {}
+    try:
+        with Path(str(transcript)).open("rb") as stream:
+            for raw in stream:
+                if not any(tool_use_id.encode() in raw for tool_use_id in wanted):
+                    continue
+                try:
+                    entry = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                for tool_use_id, result in result_blocks(entry):
+                    if tool_use_id in wanted:
+                        found[tool_use_id] = result
+    except (OSError, ValueError):
+        return {}
+    return found
+
+
 def tool_results(transcript: object, wanted: set[str]) -> dict[str, dict[str, object]]:
     """Записи `tool_result` вызовов `wanted` в транскрипте сессии по `tool_use_id`.
 
     Значение — `{"is_error": bool, "response": toolUseResult}` последней записи
     вызова; не найденного вызова в словаре нет. Хвост транскрипта читается
-    один раз на все вызовы (`transcript_entries`); ошибка чтения — пустой словарь.
+    один раз на все вызовы (`transcript_entries`); не найденные в хвосте
+    ищутся по всему файлу (`scan_whole_transcript`). Ошибка чтения — пустой
+    словарь.
     """
     found: dict[str, dict[str, object]] = {}
     if not transcript or not wanted:
         return found
     for entry in transcript_entries(transcript):
-        message = entry.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        for block in content if isinstance(content, list) else []:
-            if not isinstance(block, dict) or block.get("type") != "tool_result":
-                continue
-            tool_use_id = block.get("tool_use_id")
+        for tool_use_id, result in result_blocks(entry):
             if tool_use_id in wanted and tool_use_id not in found:
-                found[tool_use_id] = {
-                    "is_error": block.get("is_error") is True,
-                    "response": entry.get("toolUseResult"),
-                }
+                found[tool_use_id] = result
         if len(found) == len(wanted):
-            break
+            return found
+    found.update(scan_whole_transcript(transcript, wanted - set(found)))
     return found
 
 
@@ -717,7 +781,13 @@ def confirm_launch(task: Path, data: dict[str, object]) -> None:
     if not record:
         raw_input = data.get("tool_input")
         tool_input = raw_input if isinstance(raw_input, dict) else {}
-        mark_started(task, path.stem, tool_input, data.get("tool_use_id"))
+        mark_started(
+            task,
+            path.stem,
+            tool_input,
+            data.get("tool_use_id"),
+            data.get("transcript_path"),
+        )
         record = dict(read_record(path))
     apply_response(record, data.get("tool_response"))
     write_record(path, record)

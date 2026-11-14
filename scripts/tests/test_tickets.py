@@ -562,6 +562,26 @@ class JiraTest(Base):
         self.assertEqual(export["RP-2"]["status_since"], "2026-10-10")
         self.assertEqual(export["RP-3"]["status_since"], "2026-09-01")
 
+    def test_history_400_from_request_stops_retry(self) -> None:
+        """400 на каждый запрос истории: после двух одиночных повтор прекращается."""
+        items = []
+        for n in range(2, 6):
+            item = issue(f"RP-{n}", f"Т{n}")
+            item["fields"]["status"] = {"name": "To Test"}
+            item["fields"]["created"] = "2026-09-01T10:00:00.000+0300"
+            items.append(item)
+        bad = (400, {"errorMessages": ["Bad request"]})
+        self.serve([(200, {"total": 4, "issues": items}), bad, bad, bad])
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # основной запрос, пакет и два одиночных: остальные ключи не запрашиваются
+        self.assertEqual(len(FakeJira.seen), 4)
+        self.assertIn("повтор прекращён", r.stderr)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 2, r.stderr)
+        path = Path(r.stdout.strip().splitlines()[-1].removeprefix("Отчёт: "))
+        export = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        self.assertEqual(export["RP-5"]["status_since"], "2026-09-01")
+
     def test_history_403_still_stops(self) -> None:
         waiting = issue("RP-2", "Второй")
         waiting["fields"]["status"] = {"name": "To Test"}

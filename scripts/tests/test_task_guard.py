@@ -618,6 +618,41 @@ class GuardTest(unittest.TestCase):
         )
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
 
+    def test_result_beyond_tail_releases_name(self) -> None:
+        # RP-2445, п. 8: ответ Agent вышел за хвост транскрипта (2 МБ):
+        # сверка читает файл целиком, и имя подзадачи не занято навсегда.
+        self.pre_agent("t", "toolu_t1", self.session_transcript([]))
+        result = {
+            "type": "user",
+            "message": {
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_t1", "is_error": True}
+                ]
+            },
+            "toolUseResult": "Error: отклонено",
+        }
+        filler = {"type": "assistant", "message": {"content": "x" * 100_000}}
+        transcript = self.session_transcript([result] + [filler] * 30)
+        self.assertGreater(Path(transcript).stat().st_size, 2 * 1024 * 1024)
+        r = self.pre_agent("t", "toolu_t2", transcript)
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        record = json.loads((self.subtasks / "t.started").read_text(encoding="utf-8"))
+        self.assertEqual(record["tool_use_id"], "toolu_t2")
+
+    def test_mark_from_other_transcript_releases_name(self) -> None:
+        # RP-2445, п. 8: сессию сменил `/clear`; отметка прежнего транскрипта
+        # без ответа не занимает имя, в той же сессии — занимает.
+        old = self.session_transcript([])
+        self.pre_agent("c", "toolu_c1", old)
+        r = self.pre_agent("c", "toolu_c2", old)
+        self.assertIn('"deny"', r.stdout)
+        fresh = self.root / "session-new.jsonl"
+        fresh.write_text("", encoding="utf-8")
+        r = self.pre_agent("c", "toolu_c3", str(fresh))
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        record = json.loads((self.subtasks / "c.started").read_text(encoding="utf-8"))
+        self.assertEqual(record["tool_use_id"], "toolu_c3")
+
     def test_relaunch_while_background_running_denied(self) -> None:
         # Ревью RP-2445, п. 1: фоновый агент подтверждён (async_launched)
         # и ещё без итога и без остановки — второй вызов под тем же именем

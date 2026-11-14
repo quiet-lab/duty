@@ -1,5 +1,6 @@
 """Проверки общих помощников `dutylib`: запуск `python3 -I scripts/tests/test_dutylib.py`."""
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -236,6 +237,24 @@ class ContainerMountsTest(unittest.TestCase):
         self.assertTrue(opened.docker_unknown)
         why = dutylib.live_reason(Path("/data/results/run-1"), opened)
         self.assertIn("docker не ответил", why)
+
+    def test_live_reason_rejects_copy_of_index(self) -> None:
+        """Копия или обычный словарь теряют `docker_unknown`: отказ, а не пропуск."""
+        self.with_docker("exit 0")
+
+        def fake_run(cmd: list[str], **kwargs: object) -> object:
+            raise subprocess.TimeoutExpired(cmd, 1)
+
+        with mock.patch.object(dutylib.subprocess, "run", fake_run):
+            _, opened = dutylib.proc_indexes()
+        top = Path("/data/results/run-1")
+        self.assertIsInstance(opened, dutylib.ProcIndex)
+        for copy in (dict(opened.paths), {**opened.paths}, opened.paths):
+            with self.subTest(copy=type(copy)), self.assertRaises(TypeError):
+                dutylib.live_reason(top, copy)  # type: ignore[arg-type]
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            opened.docker_unknown = False  # type: ignore[misc]
+        self.assertIn("docker не ответил", dutylib.live_reason(top, opened))
 
     def test_docker_calls_share_one_deadline(self) -> None:
         """Второй вызов получает остаток общего срока, а не новый."""

@@ -23,6 +23,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
@@ -212,10 +213,24 @@ class DockerUnknown(RuntimeError):
     """Docker не ответил в срок: источники монтирования контейнеров неизвестны."""
 
 
-class ProcIndex(dict[Path, Path]):
-    """Индекс «каталог → путь внутри него»; `docker_unknown` — монтирования контейнеров не получены."""
+@dataclass(frozen=True)
+class ProcIndex:
+    """Индекс занятых путей процессов и контейнеров.
 
-    docker_unknown = False
+    `paths` — «каталог → путь внутри него»; `docker_unknown` — монтирования
+    контейнеров не получены. Признак — поле неизменяемой структуры, а не
+    атрибут подкласса dict: копия словаря (`dict(...)`, `{**...}`)
+    его не унесёт, и `live_reason` не принимает ничего, кроме `ProcIndex`.
+    """
+
+    paths: dict[Path, Path]
+    docker_unknown: bool = False
+
+    def __contains__(self, path: object) -> bool:
+        return path in self.paths
+
+    def __getitem__(self, path: Path) -> Path:
+        return self.paths[path]
 
 
 def container_mounts() -> list[Path]:
@@ -278,7 +293,7 @@ def cwd_users(path: Path, index: dict[Path, Path] | None = None) -> bool:
     return path in (cwd_index() if index is None else index)
 
 
-def open_paths() -> dict[Path, Path]:
+def open_paths() -> ProcIndex:
     """Индекс текущих каталогов и открытых файлов процессов (`/proc/<pid>/{cwd,fd}`).
 
     Собирается один раз на перечень: обход `/proc` на каждый путь дорог,
@@ -290,7 +305,7 @@ def open_paths() -> dict[Path, Path]:
     return proc_indexes()[1]
 
 
-def proc_indexes() -> tuple[dict[Path, Path], dict[Path, Path]]:
+def proc_indexes() -> tuple[dict[Path, Path], ProcIndex]:
     """Индексы `cwd_index` и `open_paths` за один обход `/proc`."""
     cwds, files = _proc_paths(True)
     try:
@@ -298,8 +313,7 @@ def proc_indexes() -> tuple[dict[Path, Path], dict[Path, Path]]:
         unknown = False
     except DockerUnknown:
         mounts, unknown = [], True
-    opened = ProcIndex(_with_ancestors([*cwds, *files, *mounts]))
-    opened.docker_unknown = unknown
+    opened = ProcIndex(_with_ancestors([*cwds, *files, *mounts]), unknown)
     return _with_ancestors(cwds), opened
 
 
@@ -370,7 +384,7 @@ def tab_run_alive(run_dir: Path, meta: dict[str, str] | None = None) -> bool:
     return str(run_dir / "cmd.sh").encode() in cmdline
 
 
-def live_reason(top: Path, opened: dict[Path, Path] | None = None) -> str:
+def live_reason(top: Path, opened: ProcIndex | None = None) -> str:
     """Почему каталог результатов (задачи или прогона) нельзя убирать; пустая строка — признаков нет.
 
     Признаки: процесс с текущим каталогом или открытым файлом внутри
@@ -378,10 +392,13 @@ def live_reason(top: Path, opened: dict[Path, Path] | None = None) -> str:
     в конце); прогон tab-run.sh в `runs/*` без `done` с живым PID;
     задача (`brief.md`) со `state.md`, где шаг не завершён (`task_finished`).
     Индекс с `docker_unknown` (docker не ответил) — признак для любого каталога:
-    монтирования контейнеров неизвестны, убирать нельзя.
+    монтирования контейнеров неизвестны, убирать нельзя. Не `ProcIndex`
+    (например, копия словаря без признака) — `TypeError`: отказ при сомнении.
     """
     index = open_paths() if opened is None else opened
-    if getattr(index, "docker_unknown", False):
+    if not isinstance(index, ProcIndex):
+        raise TypeError(f"live_reason: нужен ProcIndex, получен {type(index).__name__}")
+    if index.docker_unknown:
         return "docker не ответил в срок: монтирования контейнеров неизвестны"
     if top in index:
         return f"открыт файл процесса ({index[top]})"

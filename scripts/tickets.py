@@ -174,20 +174,68 @@ def fetch(cfg, jql: str) -> dict[str, dict]:
     # История переходов нужна только для возраста в статусе проверки:
     # запрашивается по ключам тикетов в этих статусах.
     waiting = [k for k, t in out.items() if t["status"] in check]
-    for i in range(0, len(waiting), PAGE):
-        keys = ", ".join(waiting[i : i + PAGE])
+
+    def history(keys: list[str]) -> bool:
+        """Записывает `status_since` по истории переходов тикетов `keys`; False — 400."""
         try:
-            for issues in pages(f"key in ({keys})", EXPAND):
+            for issues in pages(f"key in ({', '.join(keys)})", EXPAND):
                 for issue in issues:
                     t = out.get(issue["key"])
                     if t is not None:
                         t["status_since"] = status_since(issue) or t["created"]
         except urllib.error.HTTPError as e:
-            # 400 на пакетный запрос истории (например, ключ удалённого
-            # тикета): истории нет, возраст — по запасному `created`, уже
-            # записанному `normalize`. 401/403 пакет сюда не пускает.
+            # 401/403 сюда не пускает: они останавливают отчёт.
             if e.code != 400:
                 raise
+            return False
+        return True
+
+    def batch_history(keys: list[str]) -> None:
+        """История пакета; при 400 — повтор по одному ключу с остановкой."""
+        if history(keys):
+            return
+        names = ", ".join(keys)
+        # 400 на пакет (например, ключ удалённого тикета): без повтора все
+        # тикеты пакета остались бы с запасным `created`, уже записанным
+        # `normalize`. Повтор по одному ключу оставляет `created` только тому,
+        # на кого 400 и по одному.
+        if len(keys) == 1:
+            print(
+                f"tickets: Jira ответила 400 на историю {names}: "
+                "возраст в статусе — по дате создания",
+                file=sys.stderr,
+            )
+            return
+        print(
+            f"tickets: Jira ответила 400 на историю пакета ({names}): "
+            "повтор по одному ключу",
+            file=sys.stderr,
+        )
+        bad: list[str] = []
+        for key in keys:
+            if history([key]):
+                bad.clear()
+                continue
+            bad.append(key)
+            # Два 400 подряд на одиночные ключи: причина в самом запросе
+            # (expand, длина JQL), а не в ключе; повтор остальных не поможет.
+            if len(bad) == 2:
+                print(
+                    "tickets: Jira ответила 400 на одиночные ключи подряд "
+                    f"({', '.join(bad)}): повтор прекращён, остальные ключи "
+                    "пакета и эти — с возрастом в статусе по дате создания",
+                    file=sys.stderr,
+                )
+                return
+        if bad:
+            print(
+                f"tickets: Jira ответила 400 на историю {', '.join(bad)}: "
+                "возраст в статусе — по дате создания",
+                file=sys.stderr,
+            )
+
+    for i in range(0, len(waiting), PAGE):
+        batch_history(waiting[i : i + PAGE])
     return out
 
 

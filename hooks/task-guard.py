@@ -629,6 +629,10 @@ def scan_whole_transcript(
     found: dict[str, dict[str, object]] = {}
     try:
         with Path(str(transcript)).open("rb") as stream:
+            # Файл не больше хвоста уже прочитан целиком: повтор ничего не даст.
+            if stream.seek(0, os.SEEK_END) <= TRANSCRIPT_TAIL_BYTES:
+                return found
+            stream.seek(0)
             for raw in stream:
                 if not any(tool_use_id.encode() in raw for tool_use_id in wanted):
                     continue

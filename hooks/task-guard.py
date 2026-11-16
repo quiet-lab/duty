@@ -19,8 +19,10 @@
   освобождается до вызова); подтверждённый запуск отложенные удаляет,
   отклонённый возвращает на место;
 - `pre-tool` при запуске подзадачи пишет отметку `subtasks/<имя>.started`
-  со временем, описанием, типом субагента и `tool_use_id` вызова: проверка
-  и запись идут под замком `.subtasks.lock`, отметка создаётся атомарно.
+  со временем, описанием, типом субагента и `tool_use_id` вызова. Каждая
+  запись отметок (всеми хуками) и проверка в `pre-tool` идут под замком
+  `.subtasks.lock`, транскрипт сессии читается до замка; отметка появляется
+  под своим именем сразу целиком (временный файл и `os.link`/`os.replace`).
   Второй вызов под тем же именем отклоняется, пока у первого нет ответа
   Agent ни в PostToolUse, ни в транскрипте сессии, и пока подтверждённый
   запуск идёт без `.done` и `.stopped`;
@@ -31,10 +33,11 @@
   с другим статусом или без идентификатора — запуск не подтверждён
   (`launch: unconfirmed`). Ошибка выполнения `Agent` (`post-tool-failure`)
   с известным текстом отказа до запуска возвращает прежние отметки; иная
-  приходит и после запуска субагента, а agentId в ней нет: возвращается
-  отложенный итог, без него подзадача считается остановившейся без итога
-  (`.stopped` без agent_id, `launch: failed`). Отказ
-  в вызове (другой хук
+  приходит и после запуска субагента, а agentId в ней нет: у вызова на
+  переднем плане возвращается отложенный итог, без него подзадача считается
+  остановившейся без итога (`.stopped` без agent_id, `launch: failed`);
+  фоновый вызов (`background: true`) держит имя, пока агент может идти.
+  Отказ в вызове (другой хук
   PreToolUse, отказ в разрешении) ни PostToolUse, ни PostToolUseFailure
   не даёт: такую отметку `Stop` сверяет по `tool_use_id` с транскриптом
   сессии — `tool_result` с ошибкой возвращает прежние отметки, ответ
@@ -78,6 +81,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -157,6 +161,14 @@ BUSY_RUNNING = (
     "остановки: второй агент под тем же именем делил бы с ней отметки. "
     "Возобнови её (SendMessage), дождись итога или дай новой подзадаче другое "
     "имя; если итог уже снят — запиши отметку {done} и перезапусти."
+)
+BUSY_FAILED = (
+    "Фоновый запуск подзадачи «{name}» завершился ошибкой, а agent_id в ней нет: "
+    "агент мог запуститься и ещё идти, второй агент под тем же именем делил бы "
+    "с ним отметки. Имя освободится, когда у агента появится итог или отметка "
+    "остановки либо когда Stop не найдёт среди живых задач сессии задачи с её "
+    "описанием; сейчас дай новой подзадаче другое имя; если агента точно нет — "
+    "запиши отметку {done} и перезапусти."
 )
 
 
@@ -334,10 +346,11 @@ def forget_stopped(task: Path, target: str) -> None:
     directory = subtasks(task)
     if not directory.is_dir():
         return
-    for path in directory.glob("*.stopped"):
-        record = read_record(path)
-        if target in (path.stem, record.get("agent_id")):
-            path.unlink(missing_ok=True)
+    with marks_lock(task):
+        for path in directory.glob("*.stopped"):
+            record = read_record(path)
+            if target in (path.stem, record.get("agent_id")):
+                path.unlink(missing_ok=True)
 
 
 def read_record(path: Path) -> dict[str, str]:
@@ -376,43 +389,70 @@ def pre_tool(data: dict[str, object]) -> None:
             pre_tool_output(additionalContext=BAD_TAG if has_line else UNTAGGED)
 
 
+# Глубина вложенных `marks_lock` процесса хука: `flock` берётся на открытое
+# описание файла, и повторное открытие замка тем же процессом ждало бы самого
+# себя. Хук однопоточный, поэтому хватает счётчика.
+_MARKS_LOCK_DEPTH = 0
+
+
 @contextmanager
 def marks_lock(task: Path) -> Iterator[None]:
-    """Замок на отметки подзадач задачи на время проверки и записи в `pre-tool`.
+    """Замок на отметки подзадач задачи: каждая запись и сверка отметок идут под ним.
 
     Ресурс — каталог `subtasks/` задачи: его отметки — общее состояние хуков
-    одной сессии, размножить его нельзя. Вызовы Agent одного сообщения дают
-    параллельные PreToolUse, и без замка один откладывал бы (`set_aside`)
-    отметки, только что отложенные другим. Ожидание ограничено пределом хука
-    (10 с, `hooks/hooks.json`), участок под замком — миллисекунды; `flock`
-    снимает ядро при выходе процесса. Условие снятия — Claude Code перестанет
-    запускать PreToolUse одного сообщения параллельно.
+    одной сессии (PreToolUse, PostToolUse, PostToolUseFailure, SubagentStop,
+    Stop), размножить его нельзя. Вызовы Agent одного сообщения дают
+    параллельные PreToolUse, а SubagentStop фонового субагента приходит
+    в любой момент: без замка один хук откладывал бы (`set_aside`) или
+    перезаписывал отметки, только что изменённые другим. Под замком — только
+    чтение и запись отметок (миллисекунды): транскрипт читается до замка,
+    подпроцессы запускаются после него. Ожидание ограничено пределом хука
+    (`hooks/hooks.json`); `flock` снимает ядро при выходе процесса. Вложенный
+    вызов в том же процессе замок не берёт повторно. Условие снятия — Claude
+    Code перестанет запускать хуки одной сессии параллельно.
     """
+    global _MARKS_LOCK_DEPTH
     subtasks(task).mkdir(parents=True, exist_ok=True)
+    if _MARKS_LOCK_DEPTH:
+        _MARKS_LOCK_DEPTH += 1
+        try:
+            yield
+        finally:
+            _MARKS_LOCK_DEPTH -= 1
+        return
     with (task / ".subtasks.lock").open("a") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
-        yield
+        _MARKS_LOCK_DEPTH = 1
+        try:
+            yield
+        finally:
+            _MARKS_LOCK_DEPTH = 0
 
 
 def claim(
     task: Path, name: str, tool_input: dict[str, object], data: dict[str, object]
 ) -> str | None:
-    """Отметки подзадачи занимаются новым вызовом Agent; строка — причина отказа."""
+    """Отметки подзадачи занимаются новым вызовом Agent; строка — причина отказа.
+
+    Транскрипт сессии (целиком он бывает большим) читается до замка
+    (`unsettled_results`): параллельные PreToolUse не ждут друг друга на его
+    разборе. Под замком отметка перечитывается и сверяется с прочитанным.
+    """
     tool_use_id = data.get("tool_use_id")
+    transcript = data.get("transcript_path")
+    path = subtasks(task) / f"{name}.started"
+    results = unsettled_results(path, tool_use_id, transcript)
     with marks_lock(task):
-        if in_flight(task, name, tool_use_id, data.get("transcript_path")):
+        if in_flight(path, tool_use_id, transcript, results):
             return BUSY_TAG.format(name=name)
+        done = subtasks(task) / f"{name}.done"
         ids = running_ids(task, name)
         if ids:
-            return BUSY_RUNNING.format(
-                name=name,
-                ids=", ".join(ids),
-                done=subtasks(task) / f"{name}.done",
-            )
+            return BUSY_RUNNING.format(name=name, ids=", ".join(ids), done=done)
+        if failed_in_background(task, name):
+            return BUSY_FAILED.format(name=name, done=done)
         set_aside(task, name)
-        if not mark_started(
-            task, name, tool_input, tool_use_id, data.get("transcript_path")
-        ):
+        if not mark_started(task, name, tool_input, tool_use_id, transcript):
             return BUSY_TAG.format(name=name)
     return None
 
@@ -435,34 +475,84 @@ def running_ids(task: Path, name: str) -> list[str]:
     return agent_ids(record)
 
 
-def in_flight(task: Path, name: str, tool_use_id: object, transcript: object) -> bool:
+def failed_in_background(task: Path, name: str) -> bool:
+    """Фоновый запуск упал без agent_id, и агент, возможно, ещё идёт.
+
+    PostToolUseFailure фонового вызова может прийти после запуска агента,
+    а идентификатора в нём нет: живость не проверить, имя остаётся занятым,
+    пока нет `.done` и `.stopped` (их пишут итог агента, SubagentStop или
+    Stop, не нашедший среди живых задач сессии задачи с описанием запуска).
+    """
+    directory = subtasks(task)
+    if (directory / f"{name}.done").exists() or (
+        directory / f"{name}.stopped"
+    ).exists():
+        return False
+    return held_after_failure(read_record(directory / f"{name}.started"))
+
+
+def held_after_failure(record: dict[str, object]) -> bool:
+    """Отметка фонового запуска, упавшего без agent_id (`post_tool_failure`)."""
+    return (
+        record.get("launch") == FAILED
+        and record.get("background") is True
+        and not agent_ids(record)
+    )
+
+
+def transcript_mismatch(record: dict[str, object], transcript: object) -> bool:
+    """Отметка записана при другом транскрипте (сессию сменил `/clear`)."""
+    marked = record.get("transcript")
+    return (
+        isinstance(marked, str)
+        and isinstance(transcript, str)
+        and bool(transcript)
+        and marked != transcript
+    )
+
+
+def unsettled_results(
+    path: Path, tool_use_id: object, transcript: object
+) -> dict[str, dict[str, object]]:
+    """Ответ из транскрипта на вызов отметки `path` без ответа Agent; читается до замка.
+
+    Пусто, если сверять нечего: ответ уже есть, отметка этого же вызова или
+    записана при другом транскрипте.
+    """
+    record = read_record(path)
+    known = unsettled_id(record)
+    if known is None or known == tool_use_id or transcript_mismatch(record, transcript):
+        return {}
+    return tool_results(transcript, {known})
+
+
+def in_flight(
+    path: Path,
+    tool_use_id: object,
+    transcript: object,
+    results: dict[str, dict[str, object]],
+) -> bool:
     """Под именем уже идёт другой вызов Agent, ещё не получивший ответа.
 
     Два вызова с одной меткой в одном сообщении делили бы одну отметку:
     второй перезаписал бы `tool_use_id`, и PostToolUse первого был бы отброшен
     (`started_for`), а `.done` и `.stopped` одного закрывали бы обоих. Отметка
-    другого вызова без ответа Agent сверяется с транскриптом (`settle`):
-    ответ есть — вызов окончен (отказ возвращает прежние отметки), повтор
-    разрешён; ответа нет или транскрипт не прочитан — вызов идёт (отказ при
-    сомнении). Отметка, записанная при другом транскрипте (сессию сменил
-    `/clear` или возобновление), вызовом текущей сессии быть не может:
-    она помечается неподтверждённой, и имя освобождается.
+    другого вызова без ответа Agent сверяется с ответами из транскрипта,
+    прочитанными до замка (`unsettled_results`, `settle`): ответ есть — вызов
+    окончен (отказ возвращает прежние отметки), повтор разрешён; ответа нет,
+    транскрипт не прочитан или отметку после чтения занял другой вызов — вызов
+    идёт (отказ при сомнении). Отметка, записанная при другом транскрипте
+    (сессию сменил `/clear` или возобновление), вызовом текущей сессии быть
+    не может: она помечается неподтверждённой, и имя освобождается.
+    Вызывается под `marks_lock`.
     """
-    path = subtasks(task) / f"{name}.started"
     record = read_record(path)
     known = unsettled_id(record)
     if known is None or known == tool_use_id:
         return False
-    marked = record.get("transcript")
-    if (
-        isinstance(marked, str)
-        and isinstance(transcript, str)
-        and transcript
-        and marked != transcript
-    ):
+    if transcript_mismatch(record, transcript):
         write_record(path, {**record, "launch": UNCONFIRMED})
         return False
-    results = tool_results(transcript, {known})
     if known not in results:
         return True
     settle(path, results)
@@ -526,9 +616,10 @@ def mark_started(
 
     В отметке — время (мс), описание и тип субагента из вызова `Agent` и его
     `tool_use_id`: по нему PostToolUse и `Stop` находят ответ инструмента
-    с идентификатором субагента (до запуска он неизвестен). Отметка создаётся
-    атомарно (`O_EXCL`): отметку другого вызова она не перезаписывает,
-    свою (тот же `tool_use_id`) — перезаписывает.
+    с идентификатором субагента (до запуска он неизвестен). Отметка появляется
+    сразу целиком (`write_atomic`): отметку другого вызова она не
+    перезаписывает (`os.link` не заменяет существующий файл), свою (тот же
+    `tool_use_id`) — перезаписывает. Вызывается под `marks_lock`.
     """
     directory = subtasks(task)
     directory.mkdir(parents=True, exist_ok=True)
@@ -546,16 +637,38 @@ def mark_started(
     if path.exists() and isinstance(known, str) and known == tool_use_id:
         write_record(path, record)
         return True
+    return write_atomic(path, record, exclusive=True)
+
+
+def write_atomic(path: Path, record: dict[str, object], exclusive: bool) -> bool:
+    """Отметка пишется во временный файл рядом и появляется под своим именем целиком.
+
+    Читатель без замка (`stopped_without_result`, `running_ids` другого хука)
+    видит либо прежнюю отметку, либо новую, но не пустую и не обрезанную.
+    `exclusive` — не заменять существующую отметку (`os.link` отказывает,
+    если имя занято): False — отметка уже была. Временный файл начинается
+    с точки и оканчивается `.tmp`: маски `*.started`, `*.stopped` его не видят.
+    """
+    handle, temporary = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
     try:
-        with path.open("x", encoding="utf-8") as stream:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(json.dumps(record, ensure_ascii=False))
-    except FileExistsError:
-        return False
-    return True
+        if not exclusive:
+            os.replace(temporary, path)
+            return True
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def write_record(path: Path, record: dict[str, object]) -> None:
-    path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    write_atomic(path, record, exclusive=False)
 
 
 def apply_response(record: dict[str, object], response: object) -> None:
@@ -716,7 +829,12 @@ def launched_without_result(
     версии хука (без `tool_use_id` и идентификатора). Подзадача с `.stopped` —
     тоже «неизвестно»: её судит отметка остановки, а здесь она только
     называется. Отметки без ответа Agent сверяются с транскриптом (`settle`):
-    хвост читается один раз на все такие отметки.
+    хвост читается один раз на все такие отметки и до замка; сверка и запись
+    отметок — под `marks_lock`. Завершённым без итога пишется `.stopped`
+    (`mark_ended`). Фоновый запуск, упавший без agent_id
+    (`held_after_failure`), идёт, пока среди живых задач есть задача с его
+    описанием или без описания; иначе он закрывается как сбой запуска
+    (`close_failed`), и остановку без итога называет `uncovered`.
     """
     directory = subtasks(task)
     running: list[str] = []
@@ -725,31 +843,54 @@ def launched_without_result(
     unconfirmed: list[str] = []
     if not directory.is_dir():
         return running, ended, unknown, unconfirmed
-    paths = sorted(directory.glob("*.started"))
     wanted = {
         tool_use_id
-        for path in paths
+        for path in directory.glob("*.started")
         if (tool_use_id := unsettled_id(read_record(path))) is not None
     }
     results = tool_results(transcript, wanted)
-    for path in paths:
-        name = path.stem
-        record = settle(path, results)
-        if record is None or (directory / f"{name}.done").exists():
-            continue
-        if (directory / f"{name}.stopped").exists():
-            unknown.append(name)
-            continue
-        ids = agent_ids(record)
-        if record.get("launch") == UNCONFIRMED:
-            unconfirmed.append(name)
-        elif not ids or live is None:
-            unknown.append(name)
-        elif is_live(ids, live):
-            running.append(name)
-        else:
-            ended.append((name, ids))
+    with marks_lock(task):
+        for path in sorted(directory.glob("*.started")):
+            name = path.stem
+            record = settle(path, results)
+            if record is None or (directory / f"{name}.done").exists():
+                continue
+            if (directory / f"{name}.stopped").exists():
+                unknown.append(name)
+                continue
+            ids = agent_ids(record)
+            if held_after_failure(record):
+                if live is None:
+                    unknown.append(name)
+                elif maybe_live(record, live):
+                    running.append(name)
+                else:
+                    close_failed(directory, name, str(record.get("error") or ""))
+            elif record.get("launch") == UNCONFIRMED:
+                unconfirmed.append(name)
+            elif not ids or live is None:
+                unknown.append(name)
+            elif is_live(ids, live):
+                running.append(name)
+            else:
+                ended.append((name, ids))
+                mark_ended(task, name, ids)
     return running, ended, unknown, unconfirmed
+
+
+def maybe_live(record: dict[str, object], live: list[object]) -> bool:
+    """Среди живых задач сессии может быть агент запуска без идентификатора.
+
+    Совпадение — по описанию вызова Agent; задача без поля `description`
+    тоже считается возможной (отказ при сомнении).
+    """
+    description = record.get("description")
+    return any(
+        isinstance(item, dict)
+        and item.get("status") in LIVE_STATUSES
+        and item.get("description", description) == description
+        for item in live
+    )
 
 
 def started_for(task: Path, data: dict[str, object]) -> Path | None:
@@ -778,25 +919,26 @@ def confirm_launch(task: Path, data: dict[str, object]) -> None:
     Отметки нет (pre-tool не отработал) — она создаётся: подзадача
     отслеживается и без неё.
     """
-    path = started_for(task, data)
-    if path is None:
-        return
-    record: dict[str, object] = dict(read_record(path))
-    if not record:
-        raw_input = data.get("tool_input")
-        tool_input = raw_input if isinstance(raw_input, dict) else {}
-        mark_started(
-            task,
-            path.stem,
-            tool_input,
-            data.get("tool_use_id"),
-            data.get("transcript_path"),
-        )
-        record = dict(read_record(path))
-    apply_response(record, data.get("tool_response"))
-    write_record(path, record)
-    if agent_ids(record):
-        drop_previous(path.parent, path.stem)
+    with marks_lock(task):
+        path = started_for(task, data)
+        if path is None:
+            return
+        record: dict[str, object] = dict(read_record(path))
+        if not record:
+            raw_input = data.get("tool_input")
+            tool_input = raw_input if isinstance(raw_input, dict) else {}
+            mark_started(
+                task,
+                path.stem,
+                tool_input,
+                data.get("tool_use_id"),
+                data.get("transcript_path"),
+            )
+            record = dict(read_record(path))
+        apply_response(record, data.get("tool_response"))
+        write_record(path, record)
+        if agent_ids(record):
+            drop_previous(path.parent, path.stem)
 
 
 def post_tool_failure(data: dict[str, object]) -> None:
@@ -808,34 +950,57 @@ def post_tool_failure(data: dict[str, object]) -> None:
     с известным текстом отказа до запуска (`PRE_START_ERROR_RE`) возвращает
     прежние отметки, как отказ в вызове. Остальные запуск от незапуска
     не отличают (отказ при сомнении): `.started` получает `launch: failed`
-    с текстом ошибки, отложенный итог прежнего запуска возвращается на место,
-    а без `.done` пишется `.stopped` без agent_id. Прочие отложенные отметки
-    остаются до следующего запуска. Прерывание пользователем (`is_interrupt`)
-    оставляет запуск неподтверждённым.
+    с текстом ошибки. Вызов на переднем плане к этому моменту окончен
+    (агент уже дал StopFailure): отложенный итог прежнего запуска
+    возвращается на место, а без `.done` пишется `.stopped` без agent_id
+    (`close_failed`). Фоновый вызов (`run_in_background`) мог оставить
+    агента идти, а agentId в ошибке нет: отметка получает `background: true`,
+    имя остаётся занятым (`failed_in_background`) до итога агента, его
+    SubagentStop или Stop, не нашедшего живой задачи с описанием запуска.
+    Прочие отложенные отметки остаются до следующего запуска. Прерывание
+    пользователем (`is_interrupt`) оставляет запуск неподтверждённым.
     """
     if data.get("tool_name") not in SUBAGENT_TOOLS:
         return
     task = task_dir()
     if task is None:
         return
-    path = started_for(task, data)
-    if path is None or not path.exists():
-        return
-    record: dict[str, object] = dict(read_record(path))
-    if agent_ids(record):
-        return
-    if data.get("is_interrupt"):
-        record["launch"] = UNCONFIRMED
+    with marks_lock(task):
+        path = started_for(task, data)
+        if path is None or not path.exists():
+            return
+        record: dict[str, object] = dict(read_record(path))
+        if agent_ids(record):
+            return
+        if data.get("is_interrupt"):
+            record["launch"] = UNCONFIRMED
+            write_record(path, record)
+            return
+        directory, name = path.parent, path.stem
+        if PRE_START_ERROR_RE.match(str(data.get("error") or "")):
+            restore_previous(directory, name)
+            return
+        error = one_line(data.get("error"))
+        record["launch"] = FAILED
+        record["error"] = error
+        raw_input = data.get("tool_input")
+        tool_input = raw_input if isinstance(raw_input, dict) else {}
+        if tool_input.get("run_in_background") is True:
+            # Фоновый агент мог запуститься и идти дальше: имя не освобождается
+            # (`held_after_failure`), отложенный итог остаётся отложенным.
+            record["background"] = True
+            write_record(path, record)
+            return
         write_record(path, record)
-        return
-    directory, name = path.parent, path.stem
-    if PRE_START_ERROR_RE.match(str(data.get("error") or "")):
-        restore_previous(directory, name)
-        return
-    error = one_line(data.get("error"))
-    record["launch"] = FAILED
-    record["error"] = error
-    write_record(path, record)
+        close_failed(directory, name, error)
+
+
+def close_failed(directory: Path, name: str, error: str) -> None:
+    """Запуск с ошибкой окончен: отложенный итог возвращается, без него — `.stopped`.
+
+    `.stopped` без agent_id (`launch: failed`) освобождает имя, и Stop
+    советует перезапуск под тем же именем. Вызывается под `marks_lock`.
+    """
     done = directory / f"{name}.done"
     previous_done = directory / f"{name}.done{PREV}"
     if not done.exists() and previous_done.exists():
@@ -909,22 +1074,21 @@ def subagent_stop(data: dict[str, object]) -> None:
         return
     name = tag.group(1)
     directory = subtasks(task)
-    if (directory / f"{name}.done").exists():
-        (directory / f"{name}.stopped").unlink(missing_ok=True)
-        return
     agent_id = str(data.get("agent_id", ""))
     last = one_line(data.get("last_assistant_message"))
-    directory.mkdir(parents=True, exist_ok=True)
-    record = {
-        "agent_id": agent_id,
-        "last": last,
-        "at_ms": time.time_ns() // 1_000_000,
-        # Остановка подзадачи, запуск которой хук не видел (нет `.started`).
-        "registered": (directory / f"{name}.started").exists(),
-    }
-    (directory / f"{name}.stopped").write_text(
-        json.dumps(record, ensure_ascii=False), encoding="utf-8"
-    )
+    with marks_lock(task):
+        if (directory / f"{name}.done").exists():
+            (directory / f"{name}.stopped").unlink(missing_ok=True)
+            return
+        record = {
+            "agent_id": agent_id,
+            "last": last,
+            "at_ms": time.time_ns() // 1_000_000,
+            # Остановка подзадачи, запуск которой хук не видел (нет `.started`).
+            "registered": (directory / f"{name}.started").exists(),
+        }
+        write_record(directory / f"{name}.stopped", record)
+    # Подпроцесс — после замка: под замком только отметки.
     push(
         task,
         f"субагент {name} остановился без итога: возобнови (SendMessage to={agent_id}) "
@@ -1037,7 +1201,7 @@ def mark_ended(task: Path, name: str, ids: list[str]) -> None:
 
     Отметка остановки разрешает перезапуск под тем же именем (`running_ids`)
     и дальше судится как остановка без итога; SubagentStop, пришедший позже,
-    её перезаписывает.
+    её перезаписывает. Вызывается под `marks_lock` (`launched_without_result`).
     """
     write_record(
         subtasks(task) / f"{name}.stopped",
@@ -1060,8 +1224,6 @@ def stop(data: dict[str, object]) -> None:
     running, ended, unknown, unconfirmed = launched_without_result(
         task, live, data.get("transcript_path")
     )
-    for name, ids in ended:
-        mark_ended(task, name, ids)
     reported = {name for name, _ in ended}
     pending = [item for item in uncovered(task) if item[0] not in reported]
     if not pending and not ended and not unconfirmed:

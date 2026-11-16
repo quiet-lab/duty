@@ -190,15 +190,13 @@ def fetch(cfg, jql: str) -> dict[str, dict]:
             return False
         return True
 
-    def batch_history(keys: list[str]) -> None:
-        """История пакета; при 400 — повтор по одному ключу с остановкой."""
+    def batch_history(keys: list[str], top: bool = True) -> None:
+        """История пакета; при 400 — деление пополам: отбрасываются только ключи,
+        на которые Jira отвечает 400 по одному (например, удалённые тикеты),
+        остальные получают свою историю. Без задержек и опроса."""
         if history(keys):
             return
         names = ", ".join(keys)
-        # 400 на пакет (например, ключ удалённого тикета): без повтора все
-        # тикеты пакета остались бы с запасным `created`, уже записанным
-        # `normalize`. Повтор по одному ключу оставляет `created` только тому,
-        # на кого 400 и по одному.
         if len(keys) == 1:
             print(
                 f"tickets: Jira ответила 400 на историю {names}: "
@@ -206,33 +204,17 @@ def fetch(cfg, jql: str) -> dict[str, dict]:
                 file=sys.stderr,
             )
             return
-        print(
-            f"tickets: Jira ответила 400 на историю пакета ({names}): "
-            "повтор по одному ключу",
-            file=sys.stderr,
-        )
-        bad: list[str] = []
-        for key in keys:
-            if history([key]):
-                bad.clear()
-                continue
-            bad.append(key)
-            # Два 400 подряд на одиночные ключи: причина в самом запросе
-            # (expand, длина JQL), а не в ключе; повтор остальных не поможет.
-            if len(bad) == 2:
-                print(
-                    "tickets: Jira ответила 400 на одиночные ключи подряд "
-                    f"({', '.join(bad)}): повтор прекращён, остальные ключи "
-                    "пакета и эти — с возрастом в статусе по дате создания",
-                    file=sys.stderr,
-                )
-                return
-        if bad:
+        # `created` уже записан `normalize`: ключи, оставшиеся без истории,
+        # получают возраст по дате создания.
+        if top:
             print(
-                f"tickets: Jira ответила 400 на историю {', '.join(bad)}: "
-                "возраст в статусе — по дате создания",
+                f"tickets: Jira ответила 400 на историю пакета ({names}): "
+                "деление пакета пополам",
                 file=sys.stderr,
             )
+        half = len(keys) // 2
+        batch_history(keys[:half], False)
+        batch_history(keys[half:], False)
 
     for i in range(0, len(waiting), PAGE):
         batch_history(waiting[i : i + PAGE])

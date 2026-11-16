@@ -9,14 +9,17 @@ import datetime as dt
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import ClassVar
+from urllib.parse import parse_qs, urlsplit
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 SAMPLE = Path(__file__).with_name("tickets-sample.json")
@@ -372,10 +375,16 @@ class ReviewFixesTest(Base):
 class FakeJira(BaseHTTPRequestHandler):
     pages: ClassVar[list[tuple[int, dict]]] = []
     seen: ClassVar[list[str]] = []
+    responder: ClassVar[Callable[[str], tuple[int, dict]] | None] = None
 
     def do_GET(self) -> None:
         FakeJira.seen.append(self.path + " " + self.headers.get("Authorization", ""))
-        code, body = FakeJira.pages[min(len(FakeJira.seen), len(FakeJira.pages)) - 1]
+        if FakeJira.responder is not None:
+            code, body = FakeJira.responder(self.path)
+        else:
+            code, body = FakeJira.pages[
+                min(len(FakeJira.seen), len(FakeJira.pages)) - 1
+            ]
         data = json.dumps(body).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
@@ -411,6 +420,8 @@ class JiraTest(Base):
     def serve(self, pages: list[tuple[int, dict]]) -> None:
         FakeJira.pages = pages
         FakeJira.seen = []
+        FakeJira.responder = None
+        self.addCleanup(setattr, FakeJira, "responder", None)
         server = HTTPServer(("127.0.0.1", 0), FakeJira)
         self.port = server.server_port
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -562,8 +573,9 @@ class JiraTest(Base):
         self.assertEqual(export["RP-2"]["status_since"], "2026-10-10")
         self.assertEqual(export["RP-3"]["status_since"], "2026-09-01")
 
-    def test_history_400_from_request_stops_retry(self) -> None:
-        """400 на каждый запрос истории: после двух одиночных повтор прекращается."""
+    def test_history_400_all_keys_bisected_without_stop(self) -> None:
+        """400 на каждый запрос истории: пакет делится пополам до одиночных ключей,
+        все ключи получают возраст по `created`, число запросов конечно."""
         items = []
         for n in range(2, 6):
             item = issue(f"RP-{n}", f"Т{n}")
@@ -571,16 +583,58 @@ class JiraTest(Base):
             item["fields"]["created"] = "2026-09-01T10:00:00.000+0300"
             items.append(item)
         bad = (400, {"errorMessages": ["Bad request"]})
-        self.serve([(200, {"total": 4, "issues": items}), bad, bad, bad])
+        self.serve([(200, {"total": 4, "issues": items}), bad])
         r = self.run_script()
         self.assertEqual(r.returncode, 0, r.stderr)
-        # основной запрос, пакет и два одиночных: остальные ключи не запрашиваются
-        self.assertEqual(len(FakeJira.seen), 4)
-        self.assertIn("повтор прекращён", r.stderr)
-        self.assertEqual(len(r.stderr.strip().splitlines()), 2, r.stderr)
+        # основной, пакет из 4, две пары и четыре одиночных ключа
+        self.assertEqual(len(FakeJira.seen), 1 + 1 + 2 + 4)
         path = Path(r.stdout.strip().splitlines()[-1].removeprefix("Отчёт: "))
         export = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
         self.assertEqual(export["RP-5"]["status_since"], "2026-09-01")
+
+    def test_history_400_two_deleted_in_row_do_not_hide_the_rest(self) -> None:
+        """duty-merge п. 8: два подряд удалённых ключа не останавливают повтор:
+        ключи после них получают свою историю (деление пакета пополам)."""
+        deleted = {"RP-3", "RP-4"}
+        items = []
+        for n in range(2, 7):
+            item = issue(f"RP-{n}", f"Т{n}")
+            item["fields"]["status"] = {"name": "To Test"}
+            item["fields"]["created"] = "2026-09-01T10:00:00.000+0300"
+            items.append(item)
+
+        def responder(path: str) -> tuple[int, dict]:
+            query = parse_qs(urlsplit(path).query)
+            if "expand" not in query:
+                return 200, {"total": len(items), "issues": items}
+            keys = re.findall(r"RP-\d+", query["jql"][0])
+            if deleted & set(keys):
+                return 400, {"errorMessages": ["Issue does not exist"]}
+            found = []
+            for key in keys:
+                item = issue(key, key)
+                item["fields"]["status"] = {"name": "To Test"}
+                item["changelog"] = {
+                    "histories": [
+                        {
+                            "created": "2026-10-10T10:00:00.000+0300",
+                            "items": [{"field": "status"}],
+                        }
+                    ]
+                }
+                found.append(item)
+            return 200, {"total": len(found), "issues": found}
+
+        self.serve([])
+        FakeJira.responder = responder
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        path = Path(r.stdout.strip().splitlines()[-1].removeprefix("Отчёт: "))
+        export = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        for key in ("RP-2", "RP-5", "RP-6"):
+            self.assertEqual(export[key]["status_since"], "2026-10-10", key)
+        for key in sorted(deleted):
+            self.assertEqual(export[key]["status_since"], "2026-09-01", key)
 
     def test_history_403_still_stops(self) -> None:
         waiting = issue("RP-2", "Второй")

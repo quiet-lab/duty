@@ -612,11 +612,14 @@ def write_atomic(path: Path, record: dict[str, object], exclusive: bool) -> bool
     `exclusive` — не заменять существующую отметку (`os.link` отказывает,
     если имя занято): False — отметка уже была. Временный файл начинается
     с точки и оканчивается `.tmp`: маски `*.started`, `*.stopped` его не видят.
+    Права — как у файла, созданного `open()`: 0666 с учётом umask процесса
+    (`mkstemp` создаёт 0600).
     """
     handle, temporary = tempfile.mkstemp(
         dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
     )
     try:
+        os.fchmod(handle, 0o666 & ~current_umask())
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(json.dumps(record, ensure_ascii=False))
         if not exclusive:
@@ -629,6 +632,13 @@ def write_atomic(path: Path, record: dict[str, object], exclusive: bool) -> bool
         return True
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+def current_umask() -> int:
+    """Umask процесса: читается установкой и возвратом (хук однопоточный)."""
+    mask = os.umask(0o077)
+    os.umask(mask)
+    return mask
 
 
 def write_record(path: Path, record: dict[str, object]) -> None:

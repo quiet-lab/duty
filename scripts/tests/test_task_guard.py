@@ -1818,6 +1818,21 @@ class MarksLockTest(unittest.TestCase):
         self.assertEqual((probe.partial, probe.changes), ([], 1))
         self.assertEqual(sorted(p.name for p in self.subtasks.iterdir()), ["a.started"])
 
+    def test_marks_mode_follows_umask(self) -> None:
+        # Ревью набора iter2-duty, п. C: временный файл mkstemp создаётся
+        # с правами 0600, и отметка получала их вместо прав по umask.
+        for mask, mode in ((0o022, 0o644), (0o027, 0o640)):
+            previous = os.umask(mask)
+            try:
+                started = self.subtasks / f"m{mask:o}.started"
+                self.assertTrue(self.tg.mark_started(self.task, started.stem, {}, "t"))
+                stopped = self.subtasks / f"m{mask:o}.stopped"
+                self.tg.write_record(stopped, {"last": ""})
+            finally:
+                os.umask(previous)
+            for path in (started, stopped):
+                self.assertEqual(path.stat().st_mode & 0o777, mode, path.name)
+
     def test_transcript_read_outside_lock(self) -> None:
         # duty-merge п. 2: сверка с транскриптом (целиком он бывает большим)
         # шла под замком, и параллельные PreToolUse ждали её в очереди.

@@ -1053,19 +1053,54 @@ class RmResultsTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_test_bracket_subscript_substitution_denied(self) -> None:
-        """duty-merge п. 7: `[ -v 'x[$(cmd)]' ]` исполняет cmd из литерала."""
+        """duty-merge п. 7: литерал `имя[$(cmd)]` там, где bash трактует аргумент как
+        имя переменной или арифметику, исполняет cmd; строковые сравнения — нет."""
         for command in (
             f"[ -v 'x[$(rm -rf {self.live})]' ]",
             f"test -v 'x[$(rm -rf {self.live})]'",
             f"[ 'a[$(rm -rf {self.live})]' -eq 1 ]",
-            "[ 'a[`id`]' -eq 1 ]",
+            "[ 1 -lt 'a[`id`]' ]",
             "[[ -v 'x[$(id)]' ]]",
+            "printf -v 'a[$(pkill foo)]' %s 1",
+            "printf -v'a[$(id)]' %s 1",
+            "read -r 'a[$(pkill foo)]' <<< x",
+            "mapfile 'a[$(id)]' < /dev/null",
+            "readarray -t 'a[$(id)]' < /dev/null",
+            "unset 'a[$(id)]'",
+            "declare 'a[$(id)]=1'",
+            "typeset 'a[$(id)]=1'",
+            "local 'a[$(id)]=1'",
+            "export 'a[$(id)]=1'",
+            "readonly 'a[$(id)]=1'",
+            "let 'x=a[$(id)]'",
+            "wait -p 'a[$(id)]'",
         ):
             with self.subTest(command=command):
                 self.assertEqual(self.check(command), "test-eval")
-        for command in ("[ -f x ]", '[ -n "$(date)" ]', "test -d 'a[1]'", "[ a = b ]"):
+        for command in (
+            "[ -f x ]",
+            '[ -n "$(date)" ]',
+            "test -d 'a[1]'",
+            "[ a = b ]",
+            "[ \"$x\" = 'a[$(b)]' ]",
+            "[ \"$x\" != 'a[$(b)]' ]",
+            "[ -n 'a[$(b)]' ]",
+            "[ -z 'a[$(b)]' ]",
+            "[ \"$x\" == 'a[$(b)]' ]",
+            "printf '%s\\n' 'a[$(b)]'",
+            "read -r x",
+            "declare -i n=1",
+            "unset x",
+        ):
             with self.subTest(command=command):
                 self.assertIsNone(self.check(command))
+
+    def test_py_write_flag_ambiguous_prefix_of_read_only_key(self) -> None:
+        """Сокращение, подходящее и к ключу только для чтения, не ключ записи."""
+        self.assertFalse(forbid.py_write_flag("--output-f"))
+        self.assertFalse(forbid.py_write_flag("--output-form=json"))
+        self.assertTrue(forbid.py_write_flag("--output-file=x"))
+        self.assertTrue(forbid.py_write_flag("--cache-d=x"))
 
 
 class ConfigTest(unittest.TestCase):

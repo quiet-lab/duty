@@ -35,8 +35,7 @@
   с известным текстом отказа до запуска возвращает прежние отметки; иная
   приходит и после запуска субагента, а agentId в ней нет: у вызова на
   переднем плане возвращается отложенный итог, без него подзадача считается
-  остановившейся без итога (`.stopped` без agent_id, `launch: failed`);
-  фоновый вызов (`background: true`) держит имя, пока агент может идти.
+  остановившейся без итога (`.stopped` без agent_id, `launch: failed`).
   Отказ в вызове (другой хук
   PreToolUse, отказ в разрешении) ни PostToolUse, ни PostToolUseFailure
   не даёт: такую отметку `Stop` сверяет по `tool_use_id` с транскриптом
@@ -161,14 +160,6 @@ BUSY_RUNNING = (
     "остановки: второй агент под тем же именем делил бы с ней отметки. "
     "Возобнови её (SendMessage), дождись итога или дай новой подзадаче другое "
     "имя; если итог уже снят — запиши отметку {done} и перезапусти."
-)
-BUSY_FAILED = (
-    "Фоновый запуск подзадачи «{name}» завершился ошибкой, а agent_id в ней нет: "
-    "агент мог запуститься и ещё идти, второй агент под тем же именем делил бы "
-    "с ним отметки. Имя освободится, когда у агента появится итог или отметка "
-    "остановки либо когда Stop не найдёт среди живых задач сессии задачи с её "
-    "описанием; сейчас дай новой подзадаче другое имя; если агента точно нет — "
-    "запиши отметку {done} и перезапусти."
 )
 
 
@@ -449,8 +440,6 @@ def claim(
         ids = running_ids(task, name)
         if ids:
             return BUSY_RUNNING.format(name=name, ids=", ".join(ids), done=done)
-        if failed_in_background(task, name):
-            return BUSY_FAILED.format(name=name, done=done)
         set_aside(task, name)
         if not mark_started(task, name, tool_input, tool_use_id, transcript):
             return BUSY_TAG.format(name=name)
@@ -473,31 +462,6 @@ def running_ids(task: Path, name: str) -> list[str]:
     if record.get("launch") not in LAUNCH_ID_FIELDS:
         return []
     return agent_ids(record)
-
-
-def failed_in_background(task: Path, name: str) -> bool:
-    """Фоновый запуск упал без agent_id, и агент, возможно, ещё идёт.
-
-    PostToolUseFailure фонового вызова может прийти после запуска агента,
-    а идентификатора в нём нет: живость не проверить, имя остаётся занятым,
-    пока нет `.done` и `.stopped` (их пишут итог агента, SubagentStop или
-    Stop, не нашедший среди живых задач сессии задачи с описанием запуска).
-    """
-    directory = subtasks(task)
-    if (directory / f"{name}.done").exists() or (
-        directory / f"{name}.stopped"
-    ).exists():
-        return False
-    return held_after_failure(read_record(directory / f"{name}.started"))
-
-
-def held_after_failure(record: dict[str, object]) -> bool:
-    """Отметка фонового запуска, упавшего без agent_id (`post_tool_failure`)."""
-    return (
-        record.get("launch") == FAILED
-        and record.get("background") is True
-        and not agent_ids(record)
-    )
 
 
 def transcript_mismatch(record: dict[str, object], transcript: object) -> bool:
@@ -648,11 +612,14 @@ def write_atomic(path: Path, record: dict[str, object], exclusive: bool) -> bool
     `exclusive` — не заменять существующую отметку (`os.link` отказывает,
     если имя занято): False — отметка уже была. Временный файл начинается
     с точки и оканчивается `.tmp`: маски `*.started`, `*.stopped` его не видят.
+    Права — как у файла, созданного `open()`: 0666 с учётом umask процесса
+    (`mkstemp` создаёт 0600).
     """
     handle, temporary = tempfile.mkstemp(
         dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
     )
     try:
+        os.fchmod(handle, 0o666 & ~current_umask())
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(json.dumps(record, ensure_ascii=False))
         if not exclusive:
@@ -665,6 +632,13 @@ def write_atomic(path: Path, record: dict[str, object], exclusive: bool) -> bool
         return True
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+def current_umask() -> int:
+    """Umask процесса: читается установкой и возвратом (хук однопоточный)."""
+    mask = os.umask(0o077)
+    os.umask(mask)
+    return mask
 
 
 def write_record(path: Path, record: dict[str, object]) -> None:
@@ -831,10 +805,7 @@ def launched_without_result(
     называется. Отметки без ответа Agent сверяются с транскриптом (`settle`):
     хвост читается один раз на все такие отметки и до замка; сверка и запись
     отметок — под `marks_lock`. Завершённым без итога пишется `.stopped`
-    (`mark_ended`). Фоновый запуск, упавший без agent_id
-    (`held_after_failure`), идёт, пока среди живых задач есть задача с его
-    описанием или без описания; иначе он закрывается как сбой запуска
-    (`close_failed`), и остановку без итога называет `uncovered`.
+    (`mark_ended`).
     """
     directory = subtasks(task)
     running: list[str] = []
@@ -859,14 +830,7 @@ def launched_without_result(
                 unknown.append(name)
                 continue
             ids = agent_ids(record)
-            if held_after_failure(record):
-                if live is None:
-                    unknown.append(name)
-                elif maybe_live(record, live):
-                    running.append(name)
-                else:
-                    close_failed(directory, name, str(record.get("error") or ""))
-            elif record.get("launch") == UNCONFIRMED:
+            if record.get("launch") == UNCONFIRMED:
                 unconfirmed.append(name)
             elif not ids or live is None:
                 unknown.append(name)
@@ -876,21 +840,6 @@ def launched_without_result(
                 ended.append((name, ids))
                 mark_ended(task, name, ids)
     return running, ended, unknown, unconfirmed
-
-
-def maybe_live(record: dict[str, object], live: list[object]) -> bool:
-    """Среди живых задач сессии может быть агент запуска без идентификатора.
-
-    Совпадение — по описанию вызова Agent; задача без поля `description`
-    тоже считается возможной (отказ при сомнении).
-    """
-    description = record.get("description")
-    return any(
-        isinstance(item, dict)
-        and item.get("status") in LIVE_STATUSES
-        and item.get("description", description) == description
-        for item in live
-    )
 
 
 def started_for(task: Path, data: dict[str, object]) -> Path | None:
@@ -950,14 +899,14 @@ def post_tool_failure(data: dict[str, object]) -> None:
     с известным текстом отказа до запуска (`PRE_START_ERROR_RE`) возвращает
     прежние отметки, как отказ в вызове. Остальные запуск от незапуска
     не отличают (отказ при сомнении): `.started` получает `launch: failed`
-    с текстом ошибки. Вызов на переднем плане к этому моменту окончен
-    (агент уже дал StopFailure): отложенный итог прежнего запуска
-    возвращается на место, а без `.done` пишется `.stopped` без agent_id
-    (`close_failed`). Фоновый вызов (`run_in_background`) мог оставить
-    агента идти, а agentId в ошибке нет: отметка получает `background: true`,
-    имя остаётся занятым (`failed_in_background`) до итога агента, его
-    SubagentStop или Stop, не нашедшего живой задачи с описанием запуска.
-    Прочие отложенные отметки остаются до следующего запуска. Прерывание
+    с текстом ошибки, отложенный итог прежнего запуска возвращается на место,
+    а без `.done` пишется `.stopped` без agent_id (`close_failed`): имя
+    освобождается. Живого агента после ошибки не остаётся (Claude Code
+    2.1.325): синхронный вызов падает, когда его агент уже окончен
+    (StopFailure), а асинхронный (`run_in_background: true` или фон
+    по умолчанию, когда ключ не предлагается) возвращает `async_launched`
+    сразу после регистрации агента, и ошибки его работы приходят
+    уведомлением задачи, а не PostToolUseFailure. Прочие отложенные отметки остаются до следующего запуска. Прерывание
     пользователем (`is_interrupt`) оставляет запуск неподтверждённым.
     """
     if data.get("tool_name") not in SUBAGENT_TOOLS:
@@ -983,14 +932,6 @@ def post_tool_failure(data: dict[str, object]) -> None:
         error = one_line(data.get("error"))
         record["launch"] = FAILED
         record["error"] = error
-        raw_input = data.get("tool_input")
-        tool_input = raw_input if isinstance(raw_input, dict) else {}
-        if tool_input.get("run_in_background") is True:
-            # Фоновый агент мог запуститься и идти дальше: имя не освобождается
-            # (`held_after_failure`), отложенный итог остаётся отложенным.
-            record["background"] = True
-            write_record(path, record)
-            return
         write_record(path, record)
         close_failed(directory, name, error)
 

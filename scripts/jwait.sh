@@ -9,7 +9,8 @@
 # Каталог по умолчанию — $DUTY_TASK/runs/jenkins-<задание>-<номер>, без
 # DUTY_TASK — <paths.results>/wait/<задание>-<номер>. Адрес Jenkins и файл
 # доступа — раздел [jenkins] файла .duty/duty.toml (reference/config.md).
-# Ожидание — по событию Jenkins CLI `console -f` по WebSocket, без опроса
-# (jwait.py). Сборки не запускает.
+# Ожидание — по событиям, без опроса (jwait.py): появление сборки — поток
+# плагина Jenkins sse-gateway (без плагина — код 2 и причина в report.md),
+# конец — Jenkins CLI `console -f` по WebSocket. Сборки не запускает.
 set -euo pipefail
 exec python3 -I "$(dirname "$(readlink -f "$0")")/jwait.py" "$@"

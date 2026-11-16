@@ -25,11 +25,30 @@ report.md с причиной и код 2. Корень проекта — `--ro
 сообщение — один кадр «байт операции + данные»; клиент шлёт ARG (0)
 со строками в writeUTF, ENCODING (2), LOCALE (1), START (3); сервер —
 STDOUT (7), STDERR (8), EXIT (4) с кодом int32.
+
+Сборки ещё нет (номер больше последнего или `last` у задания без сборок) —
+её появление ждётся по событиям плагина Jenkins sse-gateway на том же
+адресе контроллера, что и CLI: `connect?clientId=` (cookie сессии
+сохраняется, в ней живёт диспетчер), поток `listen/<clientId>`
+(`text/event-stream`, первое событие `open` с `dispatcherId`),
+`configure?batchId=` с подпиской на канал `job` по полному имени задания,
+подтверждение — событие `configure`. После подтверждения — одна сверка по
+REST (сборка могла появиться до подписки); событие `reload` (сервер
+потерял события) — та же сверка. События очереди `job_run_queue_*`
+печатаются в stderr; `job_run_started` с нужным номером (для `last` —
+любой) — сборка появилась, дальше ожидание конца через CLI; старт сборки
+с номером больше нужного — сборки не будет, код 2. Сервер закрывает поток
+по своему сроку — переподключение тем же clientId и cookie, пропущенные
+события сервер досылает. Плагина нет (connect отвечает 404) или поток
+недоступен — код 2 и report.md с причиной: jwait запускается повторно
+после появления сборки. Срока ожидания появления нет: общий предел —
+у вызывающего (wait-done.sh, вкладка).
 """
 
 import argparse
 import base64
 import html
+import http.client
 import importlib.util
 import json
 import os
@@ -42,6 +61,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
 
 # Каталог скрипта убран из sys.path ключом -I, поэтому модуль подключается по пути.
@@ -258,6 +278,334 @@ def follow(
         cli.close()
 
 
+class SseUnavailable(Exception):
+    """Поток событий sse-gateway недоступен: плагина нет или нет связи."""
+
+
+def parse_sse(read1) -> Iterator[tuple[str, str]]:
+    """События потока text/event-stream: пары (имя, данные).
+
+    `read1()` отдаёт очередную порцию байтов, пустая — конец потока.
+    Разбор по спецификации HTML (раздел server-sent events): конец строки —
+    CRLF, LF или CR; строка с `:` в начале — комментарий; `data` из
+    нескольких строк склеивается через LF; пустая строка отправляет
+    событие; поля `id` и `retry` не нужны и пропускаются; незаконченное
+    событие в конце потока отбрасывается. Ошибка чтения и тишина дольше
+    срока сокета — тоже конец потока.
+    """
+    buf = b""
+    event, data = "", []
+    eof = False
+    while True:
+        m = re.search(rb"\r\n|\r|\n", buf)
+        # CR в конце порции может оказаться началом CRLF: ждём следующую.
+        if m is None or (m.group() == b"\r" and m.end() == len(buf) and not eof):
+            if eof:
+                return
+            try:
+                chunk = read1()
+            except (OSError, http.client.HTTPException, ValueError):
+                chunk = b""
+            if not chunk:
+                eof = True
+            buf += chunk
+            continue
+        line = buf[: m.start()].decode("utf-8", errors="replace")
+        buf = buf[m.end() :]
+        if not line:
+            if data:
+                yield event or "message", "\n".join(data)
+            event, data = "", []
+            continue
+        if line.startswith(":"):
+            continue
+        field, _, value = line.partition(":")
+        value = value.removeprefix(" ")
+        if field == "event":
+            event = value
+        elif field == "data":
+            data.append(value)
+
+
+class SseStream:
+    """Клиент sse-gateway Jenkins: connect, listen и configure в одной сессии.
+
+    Диспетчер событий живёт в HTTP-сессии контроллера, поэтому cookie из
+    `Set-Cookie` (`JSESSIONID…`) идут во всех следующих запросах вместе
+    с Basic-авторизацией.
+    """
+
+    def __init__(self, base: str, auth: str, client_id: str) -> None:
+        u = urllib.parse.urlsplit(base)
+        self.https = u.scheme == "https"
+        self.host = u.hostname or ""
+        self.port = u.port or (443 if self.https else 80)
+        self.prefix = u.path.rstrip("/") + "/sse-gateway/"
+        self.auth = auth
+        self.client_id = client_id
+        self.cookies: dict[str, str] = {}
+        self.batch = 0
+        self.conn: http.client.HTTPConnection | None = None
+
+    def _connection(self, timeout: float) -> http.client.HTTPConnection:
+        if self.https:
+            return http.client.HTTPSConnection(
+                self.host, self.port, timeout=timeout, context=ssl_context()
+            )
+        return http.client.HTTPConnection(self.host, self.port, timeout=timeout)
+
+    def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
+        h = {"Authorization": self.auth}
+        if self.cookies:
+            h["Cookie"] = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
+        h.update(extra or {})
+        return h
+
+    def _keep_cookies(self, resp: http.client.HTTPResponse) -> None:
+        for raw in resp.headers.get_all("Set-Cookie") or []:
+            pair = raw.split(";", 1)[0]
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                self.cookies[k.strip()] = v.strip()
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        extra: dict[str, str] | None = None,
+    ) -> int:
+        conn = self._connection(30)
+        try:
+            conn.request(
+                method, self.prefix + path, body=body, headers=self._headers(extra)
+            )
+            resp = conn.getresponse()
+            resp.read()
+            self._keep_cookies(resp)
+            return resp.status
+        finally:
+            conn.close()
+
+    def connect(self) -> None:
+        try:
+            status = self._request(
+                "GET", "connect?clientId=" + urllib.parse.quote(self.client_id, safe="")
+            )
+        except (OSError, http.client.HTTPException) as exc:
+            raise SseUnavailable(
+                f"нет связи с {self.host}:{self.port}: {exc}"
+            ) from None
+        if status == 404:
+            raise SseUnavailable("connect ответил 404 — плагин не установлен")
+        if status != 200:
+            raise SseUnavailable(f"connect ответил {status}")
+
+    def listen(self) -> Iterator[tuple[str, str]]:
+        """Подключение к потоку; отказ — SseUnavailable или OSError."""
+        self.close()
+        # Срок сокета — обнаружение мёртвого соединения (SILENCE_S), не опрос.
+        self.conn = self._connection(SILENCE_S)
+        self.conn.request(
+            "GET",
+            self.prefix + "listen/" + urllib.parse.quote(self.client_id, safe=""),
+            headers=self._headers({"Accept": "text/event-stream"}),
+        )
+        resp = self.conn.getresponse()
+        self._keep_cookies(resp)
+        if resp.status != 200:
+            resp.read()
+            raise SseUnavailable(f"listen ответил {resp.status}")
+        return parse_sse(lambda: resp.read1(65536))
+
+    def configure(self, dispatcher: object, name: str) -> int:
+        """Подписка на события задания; возврат — batchId для подтверждения."""
+        self.batch += 1
+        body = json.dumps(
+            {
+                "dispatcherId": dispatcher,
+                "subscribe": [{"jenkins_channel": "job", "job_name": name}],
+                "unsubscribe": [],
+            }
+        ).encode()
+        try:
+            status = self._request(
+                "POST",
+                f"configure?batchId={self.batch}",
+                body,
+                {"Content-Type": "application/json"},
+            )
+        except (OSError, http.client.HTTPException) as exc:
+            raise SseUnavailable(f"configure: {exc}") from None
+        if status != 200:
+            raise SseUnavailable(f"configure ответил {status}")
+        return self.batch
+
+    def close(self) -> None:
+        if self.conn is not None:
+            self.conn.close()
+            self.conn = None
+
+
+QUEUE_TEXT = {
+    "job_run_queue_enter": "в очереди",
+    "job_run_queue_buildable": "ждёт исполнителя",
+    "job_run_queue_blocked": "заблокирована в очереди",
+}
+LEFT_TEXT = {
+    "ALLOCATED": "получила исполнителя",
+    "CANCELLED": "снята с очереди",
+}
+
+
+def build_number(payload: dict) -> int | None:
+    raw = str(payload.get("jenkins_object_id") or "")
+    if not raw.isdigit():
+        raw = str(payload.get("jenkins_object_name") or "").lstrip("#")
+    return int(raw) if raw.isdigit() else None
+
+
+def say(text: str) -> None:
+    print(text, file=sys.stderr, flush=True)
+
+
+def wait_appear(
+    cli_url: str, base: str, auth: str, name: str, jp: str, number: int | None
+) -> tuple[int, str]:
+    """Ожидание появления сборки по событиям sse-gateway; возврат — номер и замер."""
+    started = time.time()
+    if number is None:
+        head = f"у задания {name} ещё нет сборок"
+    else:
+        head = f"сборки {name} #{number} ещё нет"
+
+    def unavailable(why: str) -> WaitError:
+        return WaitError(
+            f"{head}; поток событий Jenkins (плагин sse-gateway) недоступен: {why}"
+            " — запусти jwait повторно после появления сборки"
+        )
+
+    def check() -> int | None:
+        """Сверка по REST: номер появившейся сборки или None."""
+        if number is None:
+            last = rest(base, jp + "lastBuild/api/json?tree=number", auth)
+            return int(last["number"]) if last else None
+        # Следующий номер читается до сборки: сборка, созданная между двумя
+        # запросами, не принимается за пропущенную.
+        job = rest(base, jp + "api/json?tree=nextBuildNumber", auth) or {}
+        if rest(base, f"{jp}{number}/api/json?tree=building", auth) is not None:
+            return number
+        nxt = job.get("nextBuildNumber")
+        if isinstance(nxt, int) and nxt > number:
+            raise WaitError(
+                f"сборки {name} #{number} нет и не будет: следующий номер задания — {nxt}"
+            )
+        return None
+
+    def measured(found: int, how: str) -> tuple[int, str]:
+        say(f"{name} #{found}: {how}")
+        return found, (
+            f"появления ждал {time.time() - started:.1f} с"
+            f" (событий очереди: {queued}, переподключений потока: {reconnects})"
+        )
+
+    queued = reconnects = 0
+    found = check()
+    if found is not None:
+        return measured(found, "сборка уже есть")
+    stream = SseStream(cli_url, auth, f"jwait-{os.getpid()}-{os.urandom(4).hex()}")
+    try:
+        stream.connect()
+    except SseUnavailable as exc:
+        raise unavailable(str(exc)) from None
+    say(f"{head}: жду появления по событиям Jenkins (sse-gateway, задание {name})")
+    dispatcher: object = None
+    batch = 0
+    failures = 0
+    why = ""
+    try:
+        while True:
+            got_event = False
+            try:
+                events = stream.listen()
+            except (SseUnavailable, OSError, http.client.HTTPException) as exc:
+                why = str(exc)
+                if dispatcher is None:
+                    raise unavailable(f"listen: {why}") from None
+                events = iter(())
+            for ev, data in events:
+                got_event = True
+                try:
+                    payload = json.loads(data) if data else {}
+                except ValueError:
+                    payload = {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                if ev == "open":
+                    current = payload.get("dispatcherId")
+                    if current is None:
+                        raise unavailable("событие open без dispatcherId")
+                    if current != dispatcher:
+                        # Первое подключение или новый диспетчер (сессия
+                        # потеряна): подписка заново, подтверждение — событием.
+                        try:
+                            batch = stream.configure(current, name)
+                        except SseUnavailable as exc:
+                            if dispatcher is None:
+                                raise unavailable(str(exc)) from None
+                            raise WaitError(f"поток событий: {exc}") from None
+                        dispatcher = current
+                    continue
+                if ev == "configure" and str(payload.get("batchId")) == str(batch):
+                    say("подписка на события задания подтверждена, сверка по REST")
+                    found = check()
+                    if found is not None:
+                        return measured(found, "сборка появилась до подписки")
+                    continue
+                if ev == "reload":
+                    say("сервер событий потерял события, сверка по REST")
+                    found = check()
+                    if found is not None:
+                        return measured(found, "сборка найдена сверкой")
+                    continue
+                if ev != "job" or payload.get("job_name") != name:
+                    continue
+                kind = str(payload.get("jenkins_event") or "")
+                queue_id = payload.get("job_run_queueId", "?")
+                if kind.startswith("job_run_queue_"):
+                    queued += 1
+                    if kind == "job_run_queue_left":
+                        status = str(payload.get("job_run_status") or "")
+                        text = LEFT_TEXT.get(status, f"вышла из очереди ({status})")
+                    else:
+                        text = QUEUE_TEXT.get(kind, kind)
+                    say(f"{name}: сборка {text} (очередь {queue_id})")
+                elif kind == "job_run_started":
+                    n = build_number(payload)
+                    if n is None:
+                        continue
+                    if number is None or n == number:
+                        return measured(n, "сборка стартовала")
+                    if n > number:
+                        raise WaitError(
+                            f"сборки {name} #{number} не будет: стартовала #{n}"
+                        )
+            # Поток закрыт сервером (его срок) или оборван: переподключение
+            # тем же clientId и cookie. Подключение без единого события
+            # (сервер шлёт `open` на каждое) считается неудачным.
+            if got_event:
+                failures = 0
+            else:
+                failures += 1
+                if failures > MAX_RECONNECTS:
+                    raise WaitError(
+                        f"{head}; поток событий обрывался {failures} раз подряд: {why or 'нет событий'}"
+                    )
+            reconnects += 1
+    finally:
+        stream.close()
+
+
 def strip_html(text: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", text))
 
@@ -381,10 +729,9 @@ def main() -> int:
         auth = auth_header(e)
         base = e["JENKINS_URL"]
         if a.build == "last":
+            # Сборок нет — номер остаётся пустым, первая ждётся по событиям.
             last = rest(base, jp + "lastBuild/api/json?tree=number", auth)
-            if not last:
-                raise WaitError(f"у задания {name} нет сборок")
-            number = int(last["number"])
+            number = int(last["number"]) if last else None
         else:
             number = int(a.build)
     except (WaitError, KeyError, ValueError, OSError) as exc:
@@ -401,7 +748,7 @@ def main() -> int:
 
     code = 2
     try:
-        if error or number is None:
+        if error:
             raise WaitError(error)
         cli_url = (
             os.environ.get("JENKINS_CLI_URL")
@@ -409,12 +756,18 @@ def main() -> int:
             or cfg.get("jenkins.cli_url", "")
             or base
         )
-        bp = f"{jp}{number}/"
-        info = rest(base, bp + "api/json?tree=building", auth)
+        info = None
+        if number is not None:
+            info = rest(base, f"{jp}{number}/api/json?tree=building", auth)
+        appear = ""
         if info is None:
-            raise WaitError(f"сборки {name} #{number} нет")
+            number, appear = wait_appear(cli_url, base, auth, name, jp, number)
+            info = rest(base, f"{jp}{number}/api/json?tree=building", auth)
+            if info is None:
+                raise WaitError(f"сборки {name} #{number} нет после события старта")
+        bp = f"{jp}{number}/"
         print(f"жду {name} #{number}, итог — {out}", file=sys.stderr, flush=True)
-        note, failures, started = "", 0, time.time()
+        note, failures, started = appear, 0, time.time()
         while info and info.get("building"):
             got = None
             try:

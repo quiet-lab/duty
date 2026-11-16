@@ -190,15 +190,22 @@ def fetch(cfg, jql: str) -> dict[str, dict]:
             return False
         return True
 
+    class RequestFault(Exception):
+        """400 вызван самим запросом, а не ключами: повтор прекращается."""
+
     def batch_history(keys: list[str]) -> None:
-        """История пакета; при 400 — повтор по одному ключу с остановкой."""
+        """История пакета; при 400 — деление пополам: отбрасываются только ключи,
+        на которые Jira отвечает 400 по одному (например, удалённые тикеты),
+        остальные получают свою историю. Без задержек и опроса.
+
+        Два одиночных 400, пока ни один запрос части пакета не прошёл, — признак
+        ошибки запроса (expand, длина JQL): два контрольных одиночных запроса
+        (последний и средний из неразобранных ключей) отличают её от удалённых
+        ключей; оба 400 — повтор прекращается с одной строкой предупреждения.
+        """
         if history(keys):
             return
         names = ", ".join(keys)
-        # 400 на пакет (например, ключ удалённого тикета): без повтора все
-        # тикеты пакета остались бы с запасным `created`, уже записанным
-        # `normalize`. Повтор по одному ключу оставляет `created` только тому,
-        # на кого 400 и по одному.
         if len(keys) == 1:
             print(
                 f"tickets: Jira ответила 400 на историю {names}: "
@@ -206,30 +213,70 @@ def fetch(cfg, jql: str) -> dict[str, dict]:
                 file=sys.stderr,
             )
             return
+        # `created` уже записан `normalize`: ключи без истории получают возраст
+        # по дате создания.
         print(
             f"tickets: Jira ответила 400 на историю пакета ({names}): "
-            "повтор по одному ключу",
+            "деление пакета пополам",
             file=sys.stderr,
         )
+        pending = list(keys)
         bad: list[str] = []
-        for key in keys:
-            if history([key]):
-                bad.clear()
-                continue
-            bad.append(key)
-            # Два 400 подряд на одиночные ключи: причина в самом запросе
-            # (expand, длина JQL), а не в ключе; повтор остальных не поможет.
-            if len(bad) == 2:
-                print(
-                    "tickets: Jira ответила 400 на одиночные ключи подряд "
-                    f"({', '.join(bad)}): повтор прекращён, остальные ключи "
-                    "пакета и эти — с возрастом в статусе по дате создания",
-                    file=sys.stderr,
-                )
+        passed = False
+
+        def resolve(part: list[str]) -> None:
+            pending[:] = [k for k in pending if k not in part]
+
+        def run(part: list[str]) -> None:
+            nonlocal passed
+            if history(part):
+                passed = True
+                resolve(part)
                 return
-        if bad:
+            if len(part) == 1:
+                bad.append(part[0])
+                resolve(part)
+                if not passed and len(bad) >= 2:
+                    raise RequestFault
+                return
+            half = len(part) // 2
+            run(part[:half])
+            run(part[half:])
+
+        half = len(keys) // 2
+        try:
+            try:
+                run(keys[:half])
+                run(keys[half:])
+            except RequestFault:
+                probes = (
+                    list(dict.fromkeys([pending[-1], pending[(len(pending) - 1) // 2]]))
+                    if pending
+                    else []
+                )
+                for probe in probes:
+                    if history([probe]):
+                        passed = True
+                        resolve([probe])
+                        break
+                    bad.append(probe)
+                    resolve([probe])
+                if not passed:
+                    raise
+                if pending:
+                    run(list(pending))
+        except RequestFault:
             print(
-                f"tickets: Jira ответила 400 на историю {', '.join(bad)}: "
+                "tickets: Jira ответила 400 на одиночные ключи подряд "
+                f"({', '.join(bad)}) и контрольные: ошибка запроса, повтор "
+                "прекращён, остальные ключи пакета — с возрастом в статусе "
+                "по дате создания",
+                file=sys.stderr,
+            )
+            return
+        for key in bad:
+            print(
+                f"tickets: Jira ответила 400 на историю {key}: "
                 "возраст в статусе — по дате создания",
                 file=sys.stderr,
             )

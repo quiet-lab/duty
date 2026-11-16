@@ -723,6 +723,51 @@ class GuardTest(unittest.TestCase):
         self.assertIn("g (agent_id нет: перезапусти под тем же именем)", reason)
         self.assertNotIn("g (agent_id ", reason.replace("g (agent_id нет", ""))
 
+    def fail_background(self, name: str, tool_use_id: str) -> None:
+        """PostToolUseFailure фонового вызова Agent: ошибка после запуска, agentId нет."""
+        r = self.hook(
+            "post-tool-failure",
+            {
+                "tool_name": "Agent",
+                "tool_use_id": tool_use_id,
+                "tool_input": {
+                    "prompt": f"Подзадача: {name}\n" + GATE_LINES,
+                    "description": "правка",
+                    "run_in_background": True,
+                },
+                "error": "Agent terminated early due to an API error",
+                "is_interrupt": False,
+            },
+        )
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_background_failure_releases_name(self) -> None:
+        # Ревью набора iter2-duty, п. A: асинхронный Agent (явный
+        # run_in_background или фон по умолчанию без ключа) возвращает
+        # async_launched сразу после регистрации агента; PostToolUseFailure
+        # у него бывает только до запуска, живого агента после ошибки нет.
+        # Имя освобождается, как у вызова на переднем плане, и не залипает.
+        self.launch("b", "правка", tool_use_id="toolu_b1", confirm=False)
+        self.fail_background("b", "toolu_b1")
+        stopped = json.loads((self.subtasks / "b.stopped").read_text(encoding="utf-8"))
+        self.assertEqual(stopped["launch"], "failed")
+        self.assertNotIn("agent_id", stopped)
+        record = json.loads((self.subtasks / "b.started").read_text(encoding="utf-8"))
+        self.assertNotIn("background", record)
+        reason = json.loads(self.hook("stop", {}).stdout)["reason"]
+        self.assertIn("b (agent_id нет: перезапусти под тем же именем)", reason)
+        r = self.pre_agent("b", "toolu_b2", self.session_transcript([]))
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        # Отложенный итог прежнего запуска возвращается сразу.
+        self.post_launch("b", self.async_launched("ag-b"), "toolu_b2")
+        (self.subtasks / "b.done").write_text("итог\n", encoding="utf-8")
+        self.launch("b", "правка", tool_use_id="toolu_b3", confirm=False)
+        self.fail_background("b", "toolu_b3")
+        self.assertEqual(
+            (self.subtasks / "b.done").read_text(encoding="utf-8"), "итог\n"
+        )
+        self.assertFalse((self.subtasks / "b.stopped").exists())
+
     def test_unconfirmed_launch_blocks(self) -> None:
         # Ответа нет ни в PostToolUse, ни в транскрипте: отказ (fail-closed).
         self.launch("u1", "правка", tool_use_id="toolu_u1", confirm=False)
@@ -1641,6 +1686,284 @@ class ExclusiveStartTest(unittest.TestCase):
         self.assertIn('"deny"', out.getvalue())
         record = json.loads((task / "subtasks" / "k.started").read_text("utf-8"))
         self.assertEqual(record, foreign)
+
+
+def load_guard():
+    """Модуль hooks/task-guard.py для проверок внутри процесса."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("task_guard", HOOK)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class MarkProbe:
+    """Читатель отметки, который смотрит на неё на каждом шаге хука.
+
+    Трассировка (`sys.settrace`) вызывает проверку на каждом событии каждой
+    строки хука и библиотек, которые он вызывает, — так читатель без замка
+    в другом процессе мог бы увидеть отметку в любой из этих точек. Проверка:
+    отметка либо отсутствует, либо целый объект JSON (`partial` — увиденные
+    пустые и обрезанные); каждое изменение отметки сделано, пока замок
+    `.subtasks.lock` занят (`unlocked` — изменения без замка). Занятость
+    замка видна по отказу неблокирующего `flock` на собственном открытом
+    описании файла: `flock` различает описания и внутри одного процесса.
+    Сроков ожидания нет: проверка идёт синхронно в шаге хука.
+    """
+
+    def __init__(self, target: Path, lock: Path) -> None:
+        self.target = target
+        self.lock = lock
+        self.partial: list[bytes] = []
+        self.unlocked: list[bytes | None] = []
+        self.changes = 0
+        self.last = self.state()
+
+    def state(self) -> bytes | None:
+        try:
+            return self.target.read_bytes()
+        except FileNotFoundError:
+            return None
+
+    def locked(self) -> bool:
+        import fcntl
+
+        with self.lock.open("a") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            return False
+
+    def check(self) -> None:
+        now = self.state()
+        if now is not None:
+            try:
+                whole = isinstance(json.loads(now), dict)
+            except ValueError:
+                whole = False
+            if not whole:
+                self.partial.append(now)
+        if now != self.last:
+            self.changes += 1
+            if not self.locked():
+                self.unlocked.append(now)
+            self.last = now
+
+    def trace(self, frame: object, event: str, arg: object):
+        self.check()
+        return self.trace
+
+    def run(self, action) -> None:
+        sys.settrace(self.trace)
+        try:
+            action()
+        finally:
+            sys.settrace(None)
+        self.check()
+
+
+class MarksLockTest(unittest.TestCase):
+    """Отчёт duty-merge, пп. 1–3: запись отметок атомарна и идёт под замком."""
+
+    def setUp(self) -> None:
+        self.tg = load_guard()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.task = Path(os.path.realpath(self.tmp.name)) / "task"
+        self.subtasks = self.task / "subtasks"
+        self.subtasks.mkdir(parents=True)
+        self.lock = self.task / ".subtasks.lock"
+
+    def call(self, handler, data: dict) -> str:
+        import contextlib
+        import io
+        from unittest import mock
+
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"DUTY_TASK": str(self.task)}),
+            contextlib.redirect_stdout(out),
+        ):
+            handler(data)
+        return out.getvalue()
+
+    def test_started_never_seen_empty(self) -> None:
+        # duty-merge п. 1: `.started` создавался пустым и дописывался
+        # отдельно — читатель без замка видел пустую отметку.
+        target = self.subtasks / "a.started"
+        probe = MarkProbe(target, self.lock)
+        probe.run(
+            lambda: self.assertTrue(
+                self.tg.mark_started(
+                    self.task, "a", {"description": "правка"}, "toolu_a1"
+                )
+            )
+        )
+        self.assertEqual(probe.partial, [])
+        self.assertEqual(
+            json.loads(target.read_text("utf-8"))["tool_use_id"], "toolu_a1"
+        )
+        # Второй вызов под тем же именем по-прежнему отвергается.
+        self.assertFalse(self.tg.mark_started(self.task, "a", {}, "toolu_a2"))
+        self.assertEqual(
+            json.loads(target.read_text("utf-8"))["tool_use_id"], "toolu_a1"
+        )
+        # Перезапись существующей отметки тоже не оставляет её пустой.
+        probe = MarkProbe(target, self.lock)
+        probe.run(lambda: self.tg.write_record(target, {"launch": "unconfirmed"}))
+        self.assertEqual((probe.partial, probe.changes), ([], 1))
+        self.assertEqual(sorted(p.name for p in self.subtasks.iterdir()), ["a.started"])
+
+    def test_marks_mode_follows_umask(self) -> None:
+        # Ревью набора iter2-duty, п. C: временный файл mkstemp создаётся
+        # с правами 0600, и отметка получала их вместо прав по umask.
+        for mask, mode in ((0o022, 0o644), (0o027, 0o640)):
+            previous = os.umask(mask)
+            try:
+                started = self.subtasks / f"m{mask:o}.started"
+                self.assertTrue(self.tg.mark_started(self.task, started.stem, {}, "t"))
+                stopped = self.subtasks / f"m{mask:o}.stopped"
+                self.tg.write_record(stopped, {"last": ""})
+            finally:
+                os.umask(previous)
+            for path in (started, stopped):
+                self.assertEqual(path.stat().st_mode & 0o777, mode, path.name)
+
+    def test_transcript_read_outside_lock(self) -> None:
+        # duty-merge п. 2: сверка с транскриптом (целиком он бывает большим)
+        # шла под замком, и параллельные PreToolUse ждали её в очереди.
+        from unittest import mock
+
+        transcript = self.task / "session.jsonl"
+        result = {
+            "type": "user",
+            "message": {
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_c1", "is_error": True}
+                ]
+            },
+            "toolUseResult": "Error: отклонено",
+        }
+        transcript.write_text(json.dumps(result) + "\n", encoding="utf-8")
+        (self.subtasks / "c.started").write_text(
+            json.dumps({"at_ms": 1, "tool_use_id": "toolu_c1"}), encoding="utf-8"
+        )
+        probe = MarkProbe(self.subtasks / "c.started", self.lock)
+        reads: list[bool] = []
+        real = self.tg.tool_results
+
+        def watched(path: object, wanted: set[str]):
+            reads.append(probe.locked())
+            return real(path, wanted)
+
+        data = {
+            "tool_name": "Agent",
+            "tool_use_id": "toolu_c2",
+            "transcript_path": str(transcript),
+            "tool_input": {"prompt": "Подзадача: c\n" + GATE_LINES},
+        }
+        with mock.patch.object(self.tg, "tool_results", watched):
+            self.assertEqual(self.call(self.tg.pre_tool, data), "")
+            self.assertEqual(reads, [False])
+            record = json.loads((self.subtasks / "c.started").read_text("utf-8"))
+            self.assertEqual(record["tool_use_id"], "toolu_c2")
+            # Stop читает транскрипт тоже до замка.
+            reads.clear()
+            self.tg.launched_without_result(self.task, [], str(transcript))
+            self.assertEqual(reads, [False])
+
+    def test_stop_marks_written_under_lock(self) -> None:
+        # duty-merge п. 3: SubagentStop и Stop писали `.stopped` без замка
+        # `.subtasks.lock`, которым PreToolUse защищает проверку и запись.
+        from unittest import mock
+
+        agent_transcript = self.task / "agent.jsonl"
+        agent_transcript.write_text(
+            json.dumps({"message": {"content": "Подзадача: s\nСделай."}}) + "\n",
+            encoding="utf-8",
+        )
+        stopped = self.subtasks / "s.stopped"
+        probe = MarkProbe(stopped, self.lock)
+        with mock.patch.object(self.tg, "push", lambda task, text: None):
+            probe.run(
+                lambda: self.call(
+                    self.tg.subagent_stop,
+                    {
+                        "agent_id": "ag-s",
+                        "agent_transcript_path": str(agent_transcript),
+                        "last_assistant_message": "жду",
+                    },
+                )
+            )
+        self.assertEqual((probe.changes, probe.unlocked), (1, []))
+        # Stop: подтверждённый агент среди живых задач не найден — `.stopped`.
+        (self.subtasks / "e.started").write_text(
+            json.dumps({"at_ms": 1, "launch": "async_launched", "agent_ids": ["ag-e"]}),
+            encoding="utf-8",
+        )
+        probe = MarkProbe(self.subtasks / "e.stopped", self.lock)
+        with mock.patch.object(self.tg, "signal_waits", lambda task: []):
+            probe.run(lambda: self.call(self.tg.stop, {"background_tasks": []}))
+        self.assertEqual((probe.changes, probe.unlocked), (1, []))
+        # Подтверждение запуска (PostToolUse) и сбой запуска — тоже под замком.
+        (self.subtasks / "p.started").write_text(
+            json.dumps({"at_ms": 1, "tool_use_id": "toolu_p"}), encoding="utf-8"
+        )
+        probe = MarkProbe(self.subtasks / "p.started", self.lock)
+        probe.run(
+            lambda: self.call(
+                self.tg.post_tool,
+                {
+                    "tool_name": "Agent",
+                    "tool_use_id": "toolu_p",
+                    "tool_input": {"prompt": "Подзадача: p\n"},
+                    "tool_response": {"status": "async_launched", "agentId": "ag-p"},
+                },
+            )
+        )
+        self.assertEqual((probe.changes, probe.unlocked), (1, []))
+        (self.subtasks / "f.started").write_text(
+            json.dumps({"at_ms": 1, "tool_use_id": "toolu_f"}), encoding="utf-8"
+        )
+        probe = MarkProbe(self.subtasks / "f.stopped", self.lock)
+        probe.run(
+            lambda: self.call(
+                self.tg.post_tool_failure,
+                {
+                    "tool_name": "Agent",
+                    "tool_use_id": "toolu_f",
+                    "tool_input": {"prompt": "Подзадача: f\n"},
+                    "error": "Agent terminated early due to an API error",
+                },
+            )
+        )
+        self.assertEqual((probe.changes, probe.unlocked), (1, []))
+        # Снятие отметки после SendMessage — под замком.
+        probe = MarkProbe(stopped, self.lock)
+        probe.run(
+            lambda: self.call(
+                self.tg.post_tool,
+                {
+                    "tool_name": "SendMessage",
+                    "tool_input": {"to": "ag-s"},
+                    "tool_response": {"success": True},
+                },
+            )
+        )
+        self.assertEqual((probe.changes, probe.unlocked), (1, []))
+        self.assertFalse(stopped.exists())
+
+    def test_nested_lock_does_not_wait_for_itself(self) -> None:
+        # Вложенный `marks_lock` в том же процессе не ждёт собственного замка.
+        with self.tg.marks_lock(self.task):
+            with self.tg.marks_lock(self.task):
+                self.assertTrue(MarkProbe(self.lock, self.lock).locked())
+            self.assertTrue(MarkProbe(self.lock, self.lock).locked())
+        self.assertFalse(MarkProbe(self.lock, self.lock).locked())
 
 
 if __name__ == "__main__":

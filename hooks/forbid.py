@@ -119,6 +119,14 @@ DENY = {
         "в вывод не попадают». Вместо этого: передача в stdin "
         "через printf '%s' \"$ИМЯ\" | команда."
     ),
+    "test-eval": (
+        "Запрещён литерал с подстановкой в индексе там, где bash трактует "
+        "аргумент как имя переменной или арифметику (test -v, -eq и подобные, "
+        "printf -v, read, mapfile, readarray, unset, declare, typeset, local, "
+        "export, readonly, let, wait -p): имя[$(команда)] исполняет команду, "
+        "минуя проверку подстановок. "
+        'Вместо этого: test -n "$ИМЯ" или явное сравнение строк.'
+    ),
     "secret-literal": (
         "Запрещён пароль литералом в команде (curl -u логин:пароль, "
         "sshpass -p пароль): rules.md задач «пароли и токены только из "
@@ -360,14 +368,55 @@ BODY_COMMANDS = {
 # индекс): данные в них исполняются как код.
 BODY_DATA_EVAL_RE = re.compile(r"\(\(|\[\[|\$\[|\$\{")
 # `python -m <модуль>` под find и xargs: модули проверок, которые читают файлы
-# и не удаляют их; ключи записи (`BODY_PY_WRITES`) — отказ.
+# и не удаляют их; ключи записи (`PY_WRITE_LONG`) — отказ.
 PYTHON_CHECK_MODULES = {"py_compile", "tabnanny", "pyflakes", "pycodestyle", "mypy"}
 PYTHON_FLAGS = set("BEIOPSbqsu")
 # Ключи модулей проверок, которые пишут или правят файлы.
-PY_WRITE_FLAGS = re.compile(
-    r"-o|--output|--add-noqa|--fix|--unsafe-fixes|--watch|-w$|--junit-xml"
-    r"|--cache-dir|--install-types|--[a-z-]*-report|--write"
-)
+# Имя ключа сравнивается целиком (`--key=value` и `--key value`), поэтому
+# `--output-format` не совпадает с `--output`; однозначное сокращение
+# (argparse: `--cache-d`) считается тем же ключом. Кеш mypy — запись на диск.
+PY_WRITE_LONG = {
+    "--output",
+    "--output-file",
+    "--add-noqa",
+    "--fix",
+    "--fix-only",
+    "--unsafe-fixes",
+    "--watch",
+    "--junit-xml",
+    "--cache-dir",
+    "--cache-map",
+    "--cache-fine-grained",
+    "--sqlite-cache",
+    "--fixed-format-cache",
+    "--incremental",
+    "--install-types",
+    "--write",
+}
+PY_REPORT_RE = re.compile(r"--[a-z-]*-report")
+PY_READ_ONLY_LONG = {"--output-format"}
+
+
+def py_write_flag(text: str) -> bool:
+    """Ключ модуля проверки пишет или правит файлы (`PY_WRITE_LONG`)."""
+    if not text.startswith("-") or text == "-":
+        return False
+    if not text.startswith("--"):
+        return text == "-w" or text.startswith("-o") or text == "-i"
+    name = text.partition("=")[0]
+    if name in PY_READ_ONLY_LONG:
+        return False
+    if name in PY_WRITE_LONG or PY_REPORT_RE.fullmatch(name):
+        return True
+    # сокращение, подходящее и к ключу только для чтения, неоднозначно: argparse
+    # его отвергает, исполнения нет
+    return (
+        len(name) >= 4
+        and any(w.startswith(name) for w in PY_WRITE_LONG)
+        and not any(w.startswith(name) for w in PY_READ_ONLY_LONG)
+    )
+
+
 INTERPRETER_RE = re.compile(
     r"(pypy|perl|ruby|node|nodejs|php|lua|luajit|tclsh|wish|julia|Rscript|deno|bun"
     r"|pwsh|osascript|awk|gawk|mawk|nawk)[0-9.]*"
@@ -390,7 +439,31 @@ LAUNCHERS = {
 
 
 # Команды, меняющие окружение следующих команд строки (`env_touched`).
-ENV_SETTERS = {"export", "declare", "typeset", "readonly", "set", "source", ".", "eval"}
+ENV_SETTERS = {
+    "export",
+    "declare",
+    "typeset",
+    "readonly",
+    "set",
+    "source",
+    ".",
+    "eval",
+    "read",
+    "mapfile",
+    "readarray",
+}
+
+
+def sets_env(name: str, args: list["Word"]) -> bool:
+    """Команда меняет окружение следующих команд: `ENV_SETTERS` и `printf -v`
+    (обычный `printf` окружения не меняет)."""
+    return (
+        name in ENV_SETTERS
+        or name == "printf"
+        and any(a.text.startswith("-v") for a in args)
+    )
+
+
 # Совет в отказе на оболочку под find и xargs (ключ `rm-results|…|sh`).
 SHELL_HINT = (
     " Проверка синтаксиса под xargs и find — с «--» после -n: xargs -n1 bash -n -- "
@@ -833,7 +906,68 @@ def kill_substitution(args: list[Word]) -> bool:
     return False
 
 
-def check_kill(name: str, args: list[Word]) -> str | None:
+TEST_NAMES = {"test", "[", "[["}
+TEST_ARITH = {"-eq", "-ne", "-lt", "-le", "-gt", "-ge"}
+# Команды, у которых любой литеральный аргумент bash трактует как имя переменной
+# или арифметику (`имя[$(…)]` вычисляется и исполняет команду).
+NAME_ARG_COMMANDS = {
+    "read",
+    "mapfile",
+    "readarray",
+    "unset",
+    "declare",
+    "typeset",
+    "local",
+    "export",
+    "readonly",
+    "let",
+}
+SUBSCRIPT_EXEC_RE = re.compile(r"\[.*(\$\(|`)", re.DOTALL)
+
+
+def subscript_exec(text: str) -> bool:
+    """Литерал вида `имя[…$(…)…]` или `имя[…`…`…]`."""
+    return bool(SUBSCRIPT_EXEC_RE.search(text))
+
+
+def check_test(name: str, args: list[Word]) -> str | None:
+    """Литерал `имя[$(…)]` в аргументе, который bash вычисляет как имя переменной
+    или арифметику: bash исполняет команду из индекса, а подстановки в
+    одинарных кавычках проверка не видит. Вычисляют: `test`/`[`/`[[` (операнд
+    `-v`, `-R` и операнды `-eq`, `-ne`, `-lt`, `-le`, `-gt`, `-ge`; строковые
+    сравнения индекс не вычисляют), `printf -v`, `wait -p`, любые аргументы
+    `NAME_ARG_COMMANDS` (`read`, `mapfile`, `readarray`, `unset`, `declare`,
+    `typeset`, `local`, `export`, `readonly`, `let`)."""
+    texts = [a.text for a in args]
+    hit: list[int] = []
+    if name in TEST_NAMES:
+        for i, text in enumerate(texts):
+            if text in {"-v", "-R"}:
+                hit.append(i + 1)
+            elif text in TEST_ARITH:
+                hit += [i - 1, i + 1]
+    elif name in NAME_ARG_COMMANDS:
+        hit = list(range(len(texts)))
+    elif name in {"printf", "wait"}:
+        flag = "-v" if name == "printf" else "-p"
+        for i, text in enumerate(texts):
+            if text == flag:
+                hit.append(i + 1)
+            elif text.startswith(flag) and not text.startswith("--"):
+                hit.append(i)
+    for i in hit:
+        if 0 <= i < len(args) and args[i].literal and subscript_exec(texts[i]):
+            return "test-eval"
+    return None
+
+
+XargsParsed = tuple["list[Word] | None", "set[str]"]
+
+
+def check_kill(
+    name: str, args: list[Word], xargs: XargsParsed | None = None
+) -> str | None:
+    """`xargs` — уже разобранная команда xargs (`xargs_command`), чтобы не разбирать дважды."""
     texts = [a.text for a in args]
     if name in KILL_COMMANDS:
         return "kill"
@@ -850,7 +984,7 @@ def check_kill(name: str, args: list[Word]) -> str | None:
             return "kill"
     if (
         name == "xargs"
-        and (tail := xargs_command(args)[0])
+        and (tail := (xargs or xargs_command(args))[0])
         and resolve(tail)[0] in KILL_COMMANDS | {"kill"}
     ):
         return "kill"
@@ -1128,7 +1262,7 @@ def body_reads_only(body: str, holders: set[str], depth: int) -> bool:
 
 def python_checks_only(args: list[Word], from_stdin: bool, holders: set[str]) -> bool:
     """`python -m <модуль проверки>` (`PYTHON_CHECK_MODULES`, `ruff check`,
-    `ruff format --check|--diff`) без ключей записи `PY_WRITE_FLAGS`.
+    `ruff format --check|--diff`) без ключей записи `PY_WRITE_LONG`.
 
     Под find (`-execdir` запускает в каталоге найденного) нужен `-I` или `-P`:
     без них модуль ищется и в текущем каталоге. Под xargs нужен `--` после ключей
@@ -1160,7 +1294,7 @@ def python_checks_only(args: list[Word], from_stdin: bool, holders: set[str]) ->
         rest = rest[: rest.index("--")]
         if any(h in t for t in rest for h in holders):
             return False
-    if any(PY_WRITE_FLAGS.match(t) for t in rest):
+    if any(py_write_flag(t) for t in rest):
         return False
     if module in PYTHON_CHECK_MODULES:
         return True
@@ -1220,7 +1354,11 @@ def find_targets(
 
 
 def check_rm(
-    name: str, args: list[Word], cfg: Settings, prefix: list[Word] | None = None
+    name: str,
+    args: list[Word],
+    cfg: Settings,
+    prefix: list[Word] | None = None,
+    xargs: XargsParsed | None = None,
 ) -> str | None:
     """Удаление внутри `paths.results` при живом каталоге: ключ `rm-results|<каталог>: <причина>`.
 
@@ -1231,7 +1369,8 @@ def check_rm(
     (проверяются все живые каталоги результатов). `prefix` — слова перед
     командой: присваивания и `env` там (или раньше в строке, `cfg.env_touched`)
     снимают исключения для оболочки и python -m. Отказ на оболочку под find
-    и xargs несёт совет `SHELL_HINT` (суффикс ключа `|sh`).
+    и xargs несёт совет `SHELL_HINT` (суффикс ключа `|sh`). `xargs` — уже
+    разобранная команда xargs.
     """
     if not cfg.results:
         return None
@@ -1244,7 +1383,10 @@ def check_rm(
     ):
         targets = found
         bodies = find_exec_bodies(args)
-    elif name == "xargs" and (tail_holders := xargs_command(args))[0] is not None:
+    elif (
+        name == "xargs"
+        and (tail_holders := xargs or xargs_command(args))[0] is not None
+    ):
         tail, holders = tail_holders
         if deletion_targets(tail, cfg.cwd, holders, True, 0, clean) is None:
             return None
@@ -1604,7 +1746,7 @@ def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
         name, args, empty_env = resolve(cmd.words)
         prefix = cmd.words[: len(cmd.words) - len(args) - 1] if name else cmd.words
         if (
-            name in ENV_SETTERS
+            sets_env(name, args)
             or not name
             and any(ASSIGN_RE.match(w.text) for w in prefix)
         ):
@@ -1614,6 +1756,7 @@ def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
         texts = [a.text for a in args]
         if name in {"cd", "pushd", "popd"} and not cmd.pipe_out:
             cwd = next_cwd(name, args, cwd)
+        xargs = xargs_command(args) if name == "xargs" else None
         next_name = None
         if cmd.pipe_out and index + 1 < len(commands):
             last = index + 1  # конец конвейера: до экрана доходит его вывод
@@ -1628,8 +1771,9 @@ def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
         )
         found = (
             (check_network(name, texts) if cfg.network else None)
-            or check_kill(name, args)
-            or check_rm(name, args, cfg, prefix)
+            or check_kill(name, args, xargs)
+            or check_test(name, args)
+            or check_rm(name, args, cfg, prefix, xargs)
             or (check_git(args, cfg) if name == "git" else None)
             or (check_herdr(texts) if name == "herdr" and cfg.herdr else None)
             or check_rules(name, texts, cfg)
@@ -1653,7 +1797,7 @@ def check(src: str, cfg: Settings | None = None, depth: int = 0) -> str | None:
                 for body in find_exec_bodies(args)
                 if body
             ]
-        if name == "xargs" and (tail := xargs_command(args)[0]):
+        if name == "xargs" and (tail := xargs[0]):
             # команда xargs — со своими запретами, как тело -exec find
             inner_texts.append(" ".join(shell_quote(w.text) for w in tail))
         if name in {"bash", "sh", "zsh", "dash"}:  # heredoc и here-string — их ввод

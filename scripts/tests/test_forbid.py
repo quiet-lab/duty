@@ -974,6 +974,134 @@ class RmResultsTest(unittest.TestCase):
         self.assertIsNotNone(self.check(f"rm -rf {self.live}"))
         self.assertEqual(calls, [1])
 
+    def test_env_setters_read_printf_v_mapfile_readarray(self) -> None:
+        """duty-merge п. 5: `read`, `printf -v`, `mapfile`, `readarray` задают
+        переменную (BASH_ENV) для следующих команд, как `export`."""
+        tail = "ls | xargs bash -n -- x"
+        self.assertIsNone(self.check(tail))
+        for setter in (
+            "read BASH_ENV",
+            "printf -v BASH_ENV x",
+            "printf -vBASH_ENV x",
+            "mapfile BASH_ENV",
+            "readarray BASH_ENV",
+            "export BASH_ENV=x",
+        ):
+            with self.subTest(setter=setter):
+                found = self.check(f"{setter}; {tail}")
+                assert found is not None
+                self.assertTrue(found.startswith("rm-results|"), found)
+        # обычный printf окружения не меняет
+        self.assertIsNone(self.check(f"printf '%s' x; {tail}"))
+
+    def test_py_write_flag_exact_name(self) -> None:
+        """duty-merge п. 6: имя ключа сравнивается целиком; ключи кеша mypy — запись."""
+        for ok in (
+            "--output-format=json",
+            "--output-format json",
+            "--select",
+            "--strict",
+            "--config-file=x",
+        ):
+            with self.subTest(flag=ok):
+                self.assertFalse(forbid.py_write_flag(ok))
+        for bad in (
+            "-o",
+            "-ofile",
+            "--output",
+            "--output=x",
+            "--output-file",
+            "--output-file=x",
+            "--sqlite-cache",
+            "--incremental",
+            "--cache-dir=x",
+            "--cache-dir",
+            "--fix",
+            "--fix-only",
+            "--html-report",
+            "--cache-d=x",
+            "-w",
+        ):
+            with self.subTest(flag=bad):
+                self.assertTrue(forbid.py_write_flag(bad))
+        self.assertIsNone(
+            self.check("ls | xargs python3 -m ruff check --output-format=json --")
+        )
+        for command in (
+            "ls | xargs python3 -m mypy --sqlite-cache --",
+            "ls | xargs python3 -m mypy --incremental --",
+            "ls | xargs python3 -m ruff check --output-file=x --",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNotNone(self.check(command))
+
+    def test_xargs_parsed_once(self) -> None:
+        """duty-merge п. 7: хвост xargs разбирается один раз на команду."""
+        calls: list[int] = []
+        real = forbid.xargs_command
+
+        def counting(args: list["forbid.Word"]) -> object:
+            calls.append(1)
+            return real(args)
+
+        forbid.xargs_command = counting
+        self.addCleanup(setattr, forbid, "xargs_command", real)
+        self.assertIsNone(self.check("ls | xargs echo hi"))
+        self.assertEqual(len(calls), 1)
+        calls.clear()
+        self.assertIsNotNone(self.check("ls | xargs rm -rf x"))
+        self.assertEqual(len(calls), 1)
+
+    def test_test_bracket_subscript_substitution_denied(self) -> None:
+        """duty-merge п. 7: литерал `имя[$(cmd)]` там, где bash трактует аргумент как
+        имя переменной или арифметику, исполняет cmd; строковые сравнения — нет."""
+        for command in (
+            f"[ -v 'x[$(rm -rf {self.live})]' ]",
+            f"test -v 'x[$(rm -rf {self.live})]'",
+            f"[ 'a[$(rm -rf {self.live})]' -eq 1 ]",
+            "[ 1 -lt 'a[`id`]' ]",
+            "[[ -v 'x[$(id)]' ]]",
+            "printf -v 'a[$(pkill foo)]' %s 1",
+            "printf -v'a[$(id)]' %s 1",
+            "read -r 'a[$(pkill foo)]' <<< x",
+            "mapfile 'a[$(id)]' < /dev/null",
+            "readarray -t 'a[$(id)]' < /dev/null",
+            "unset 'a[$(id)]'",
+            "declare 'a[$(id)]=1'",
+            "typeset 'a[$(id)]=1'",
+            "local 'a[$(id)]=1'",
+            "export 'a[$(id)]=1'",
+            "readonly 'a[$(id)]=1'",
+            "let 'x=a[$(id)]'",
+            "wait -p 'a[$(id)]'",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.check(command), "test-eval")
+        for command in (
+            "[ -f x ]",
+            '[ -n "$(date)" ]',
+            "test -d 'a[1]'",
+            "[ a = b ]",
+            "[ \"$x\" = 'a[$(b)]' ]",
+            "[ \"$x\" != 'a[$(b)]' ]",
+            "[ -n 'a[$(b)]' ]",
+            "[ -z 'a[$(b)]' ]",
+            "[ \"$x\" == 'a[$(b)]' ]",
+            "printf '%s\\n' 'a[$(b)]'",
+            "read -r x",
+            "declare -i n=1",
+            "unset x",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.check(command))
+
+    def test_py_write_flag_ambiguous_prefix_of_read_only_key(self) -> None:
+        """Сокращение, подходящее и к ключу только для чтения, не ключ записи."""
+        self.assertFalse(forbid.py_write_flag("--output-f"))
+        self.assertFalse(forbid.py_write_flag("--output-form=json"))
+        self.assertTrue(forbid.py_write_flag("--output-file=x"))
+        self.assertTrue(forbid.py_write_flag("--cache-d=x"))
+
 
 class ConfigTest(unittest.TestCase):
     def test_defaults_without_config(self) -> None:

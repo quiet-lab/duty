@@ -741,49 +741,32 @@ class GuardTest(unittest.TestCase):
         )
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
 
-    def test_background_failure_keeps_name_while_agent_may_live(self) -> None:
-        # duty-merge п. 4: фоновый вызов упал после запуска, agentId в ошибке
-        # нет. Агент мог остаться жив: второй агент под тем же именем
-        # не допускается, пока Stop не найдёт, что живой задачи с описанием
-        # запуска нет.
+    def test_background_failure_releases_name(self) -> None:
+        # Ревью набора iter2-duty, п. A: асинхронный Agent (явный
+        # run_in_background или фон по умолчанию без ключа) возвращает
+        # async_launched сразу после регистрации агента; PostToolUseFailure
+        # у него бывает только до запуска, живого агента после ошибки нет.
+        # Имя освобождается, как у вызова на переднем плане, и не залипает.
         self.launch("b", "правка", tool_use_id="toolu_b1", confirm=False)
         self.fail_background("b", "toolu_b1")
-        self.assertFalse((self.subtasks / "b.stopped").exists())
-        record = json.loads((self.subtasks / "b.started").read_text(encoding="utf-8"))
-        self.assertEqual((record["launch"], record["background"]), ("failed", True))
-        r = self.pre_agent("b", "toolu_b2", self.session_transcript([]))
-        out = json.loads(r.stdout)["hookSpecificOutput"]
-        self.assertEqual(out["permissionDecision"], "deny")
-        self.assertIn("agent_id в ней нет", out["permissionDecisionReason"])
-        # Живая задача с тем же описанием — агент, возможно, идёт: ход
-        # не блокируется, имя остаётся занятым.
-        r = self.hook("stop", {"background_tasks": [self.live_agent("правка")]})
-        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
-        self.assertIn('"deny"', self.pre_agent("b", "toolu_b3").stdout)
-        # Живой задачи с описанием запуска нет: сбой закрывается отметкой
-        # остановки без agent_id, Stop советует перезапуск, и он проходит.
-        live = [self.live_agent("другое", agent_id="ag-x")]
-        reason = json.loads(self.hook("stop", {"background_tasks": live}).stdout)[
-            "reason"
-        ]
-        self.assertIn("b (agent_id нет: перезапусти под тем же именем)", reason)
         stopped = json.loads((self.subtasks / "b.stopped").read_text(encoding="utf-8"))
         self.assertEqual(stopped["launch"], "failed")
         self.assertNotIn("agent_id", stopped)
-        self.launch("b", "правка", agent_id="ag-b", tool_use_id="toolu_b4")
-        self.assertFalse((self.subtasks / "b.stopped").exists())
-        # Итог прежнего запуска остаётся отложенным, пока агент может идти,
-        # и возвращается, когда Stop его не находит.
-        (self.subtasks / "b.done").write_text("итог\n", encoding="utf-8")
-        self.launch("b", "правка", tool_use_id="toolu_b5", confirm=False)
-        self.fail_background("b", "toolu_b5")
-        self.assertFalse((self.subtasks / "b.done").exists())
-        self.assertIn('"deny"', self.pre_agent("b", "toolu_b6").stdout)
-        r = self.hook("stop", {"background_tasks": []})
+        record = json.loads((self.subtasks / "b.started").read_text(encoding="utf-8"))
+        self.assertNotIn("background", record)
+        reason = json.loads(self.hook("stop", {}).stdout)["reason"]
+        self.assertIn("b (agent_id нет: перезапусти под тем же именем)", reason)
+        r = self.pre_agent("b", "toolu_b2", self.session_transcript([]))
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        # Отложенный итог прежнего запуска возвращается сразу.
+        self.post_launch("b", self.async_launched("ag-b"), "toolu_b2")
+        (self.subtasks / "b.done").write_text("итог\n", encoding="utf-8")
+        self.launch("b", "правка", tool_use_id="toolu_b3", confirm=False)
+        self.fail_background("b", "toolu_b3")
         self.assertEqual(
             (self.subtasks / "b.done").read_text(encoding="utf-8"), "итог\n"
         )
+        self.assertFalse((self.subtasks / "b.stopped").exists())
 
     def test_unconfirmed_launch_blocks(self) -> None:
         # Ответа нет ни в PostToolUse, ни в транскрипте: отказ (fail-closed).

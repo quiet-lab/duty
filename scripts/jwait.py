@@ -1,4 +1,4 @@
-"""Ожидание конца сборки Jenkins по событию и итог в файлы.
+"""Ожидание появления и конца сборки Jenkins по событиям и итог в файлы.
 " 2>/dev/null; exec python3 -I "$0" "$@" # файл, переданный оболочке (bash файл.py), запускается python3
 
 Вызывается из `jwait.sh`. Источник событий — команда Jenkins CLI
@@ -18,7 +18,8 @@ report.md с причиной и код 2. Корень проекта — `--ro
 Итог: `<каталог>/console.log` (журнал сборки), `<каталог>/report.md`
 (итог, длительность, этапы `wfapi/describe`, хвост журнала упавшего этапа)
 и последним — `<каталог>/done` с кодом: 0 — SUCCESS, 1 — сборка
-закончилась с другим итогом, 2 — ожидание не удалось (нет сборки,
+закончилась с другим итогом, 2 — ожидание не удалось (нет задания, сборки
+не будет, поток событий недоступен,
 нет связи, отказ в доступе).
 
 Протокол CLI по WebSocket (PlainCLIProtocol Jenkins): одно двоичное
@@ -404,7 +405,10 @@ class SseStream:
     def listen(self) -> Iterator[tuple[str, str]]:
         """Подключение к потоку; отказ — SseUnavailable или OSError."""
         self.close()
-        # Срок сокета — обнаружение мёртвого соединения (SILENCE_S), не опрос.
+        # Срок сокета — обнаружение мёртвого соединения (SILENCE_S), не опрос:
+        # без событий сервер сам закрывает поток по своему сроку (~30 с), и
+        # переподключение идёт по этому закрытию; тишина втрое дольше значит
+        # обрыв без FIN.
         self.conn = self._connection(SILENCE_S)
         self.conn.request(
             "GET",
@@ -487,12 +491,14 @@ def wait_appear(
 
     def check() -> int | None:
         """Сверка по REST: номер появившейся сборки или None."""
+        # Следующий номер читается до сборки: сборка, созданная между двумя
+        # запросами, не принимается за пропущенную.
+        job = rest(base, jp + "api/json?tree=nextBuildNumber", auth)
+        if job is None:
+            raise WaitError(f"задания {name} нет")
         if number is None:
             last = rest(base, jp + "lastBuild/api/json?tree=number", auth)
             return int(last["number"]) if last else None
-        # Следующий номер читается до сборки: сборка, созданная между двумя
-        # запросами, не принимается за пропущенную.
-        job = rest(base, jp + "api/json?tree=nextBuildNumber", auth) or {}
         if rest(base, f"{jp}{number}/api/json?tree=building", auth) is not None:
             return number
         nxt = job.get("nextBuildNumber")
@@ -529,10 +535,17 @@ def wait_appear(
             try:
                 events = stream.listen()
             except (SseUnavailable, OSError, http.client.HTTPException) as exc:
-                why = str(exc)
+                why = f"listen: {exc}"
                 if dispatcher is None:
-                    raise unavailable(f"listen: {why}") from None
+                    raise unavailable(why) from None
+                # Сессия могла пропасть (перезапуск контроллера): новая сессия,
+                # её диспетчер придёт событием open и получит подписку заново.
                 events = iter(())
+                try:
+                    stream.cookies.clear()
+                    stream.connect()
+                except SseUnavailable as again:
+                    why = f"{why}; {again}"
             for ev, data in events:
                 got_event = True
                 try:
@@ -587,6 +600,15 @@ def wait_appear(
                     if number is None or n == number:
                         return measured(n, "сборка стартовала")
                     if n > number:
+                        # Событие старта N могло пропасть при обрыве — сверка;
+                        # её отказ не меняет вывода: сборка с большим номером
+                        # уже стартовала.
+                        try:
+                            found = check()
+                        except WaitError:
+                            found = None
+                        if found is not None:
+                            return measured(found, "сборка найдена сверкой")
                         raise WaitError(
                             f"сборки {name} #{number} не будет: стартовала #{n}"
                         )
@@ -594,7 +616,7 @@ def wait_appear(
             # тем же clientId и cookie. Подключение без единого события
             # (сервер шлёт `open` на каждое) считается неудачным.
             if got_event:
-                failures = 0
+                failures, why = 0, ""
             else:
                 failures += 1
                 if failures > MAX_RECONNECTS:

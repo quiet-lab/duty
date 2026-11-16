@@ -72,6 +72,8 @@ class Twin:
         self.feed: queue.Queue = queue.Queue()
         self.on_configure: list[tuple] = []
         self.before_confirm: list = []
+        # Ход после второй и следующих подписок (новый диспетчер).
+        self.on_reconfigure: list[tuple] = []
         self.on_listen: dict[int, list[tuple]] = {}
         self.connects: list[str] = []
         self.listens: list[tuple[str, str]] = []
@@ -80,6 +82,21 @@ class Twin:
         # Ответ на сверку сборки по REST отправлен после подписки.
         self.checked = threading.Event()
         self.lock = threading.Lock()
+        # Сессия и диспетчер меняются при «перезапуске» контроллера.
+        self.session = "sess-1"
+        self.dispatcher = "disp-1"
+        self.job_exists = True
+        # Число отказов listen (403) подряд для проверки предела.
+        self.refuse_listen = 0
+
+    def cookie(self) -> str:
+        return f"JSESSIONID.twin={self.session}"
+
+    def restart(self) -> None:
+        """Потеря сессии: прежний cookie больше не действует."""
+        self.session = "sess-2"
+        self.dispatcher = "disp-2"
+        self.checked.clear()
 
     def add_build(self, number: int, result: str = "SUCCESS") -> None:
         with self.lock:
@@ -110,7 +127,7 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def session_ok(self) -> bool:
-        if COOKIE not in self.headers.get("Cookie", ""):
+        if self.server.twin.cookie() not in self.headers.get("Cookie", ""):
             self.send_json(403, {"error": "нет сессии"})
             return False
         return True
@@ -128,8 +145,8 @@ class Handler(BaseHTTPRequestHandler):
             twin.connects.append(query["clientId"][0])
             self.send_json(
                 200,
-                {"jsessionid": "sess-1"},
-                {"Set-Cookie": f"{COOKIE}; Path=/; HttpOnly"},
+                {"jsessionid": twin.session},
+                {"Set-Cookie": f"{twin.cookie()}; Path=/; HttpOnly"},
             )
             return
         if url.path.startswith("/sse-gateway/listen/"):
@@ -146,7 +163,9 @@ class Handler(BaseHTTPRequestHandler):
             builds = dict(twin.builds)
             nxt = twin.next_number
         check = False
-        if rest == "api/json":
+        if not twin.job_exists:
+            self.send_json(404, {})
+        elif rest == "api/json":
             self.send_json(200, {"nextBuildNumber": nxt})
         elif rest == "lastBuild/api/json":
             check = True
@@ -195,6 +214,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def listen(self, client_id: str) -> None:
         twin = self.server.twin
+        if twin.listens and twin.refuse_listen:
+            twin.refuse_listen -= 1
+            self.send_json(403, {})
+            return
         if not self.session_ok():
             return
         twin.listens.append((client_id, self.headers.get("Cookie", "")))
@@ -204,7 +227,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         try:
-            self.write_event("open", {"dispatcherId": "disp-1", "dispatcherInst": 1})
+            self.write_event(
+                "open", {"dispatcherId": twin.dispatcher, "dispatcherInst": 1}
+            )
             for item in twin.on_listen.get(n, []):
                 twin.feed.put(item)
             while True:
@@ -235,8 +260,15 @@ class Handler(BaseHTTPRequestHandler):
             action()
         self.send_json(200, {})
         twin.configured.set()
-        twin.feed.put(("ev", "configure", {"batchId": batch, "dispatcherId": "disp-1"}))
-        for item in twin.on_configure:
+        twin.feed.put(
+            (
+                "ev",
+                "configure",
+                {"batchId": batch, "dispatcherId": body["dispatcherId"]},
+            )
+        )
+        items = twin.on_configure if len(twin.configures) == 1 else twin.on_reconfigure
+        for item in items:
             twin.feed.put(item)
 
 
@@ -456,6 +488,74 @@ class JwaitTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn("нет и не будет: следующий номер задания — 9", self.report())
         self.assertEqual(self.twin.connects, [])
+
+    # Задания нет — код 2 сразу, как до потока событий.
+    def test_missing_job(self) -> None:
+        self.twin.job_exists = False
+        for build in ("5", "last"):
+            with self.subTest(build=build):
+                self.out = self.root / f"out-{build}"
+                r = self.run_jwait(build)
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertIn("задания folder/app нет", self.report())
+        self.assertEqual(self.twin.connects, [])
+
+    # Старт N+1, а событие старта N пропало: сверка находит N.
+    def test_later_started_but_build_exists(self) -> None:
+        self.twin.next_number = 5
+        self.twin.on_configure = [
+            ("wait", self.twin.checked),
+            ("do", lambda: (self.twin.add_build(5), self.twin.add_build(6))),
+            started(6),
+        ]
+        r = self.run_jwait("5")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("найдена сверкой", r.stderr)
+        self.assertIn("# Сборка `folder/app` #5", self.report())
+
+    # Событие reload — сверка по REST.
+    def test_reload_checks_rest(self) -> None:
+        self.twin.next_number = 5
+        self.twin.on_configure = [
+            ("wait", self.twin.checked),
+            ("do", lambda: self.twin.add_build(5)),
+            ("ev", "reload", {}),
+        ]
+        r = self.run_jwait("5")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("потерял события", r.stderr)
+
+    # Сессия потеряна (перезапуск): listen отказывает, новая сессия,
+    # новый диспетчер получает подписку заново.
+    def test_lost_session_resubscribes(self) -> None:
+        self.twin.next_number = 5
+        self.twin.on_configure = [
+            ("wait", self.twin.checked),
+            ("do", self.twin.restart),
+            ("close",),
+        ]
+        self.twin.on_reconfigure = [
+            ("wait", self.twin.checked),
+            ("do", lambda: self.twin.add_build(5)),
+            started(5),
+        ]
+        r = self.run_jwait("5")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual(len(self.twin.connects), 2)
+        self.assertEqual(
+            [c["dispatcherId"] for c in self.twin.configures], ["disp-1", "disp-2"]
+        )
+        self.assertIn("sess-2", self.twin.listens[-1][1])
+
+    # Отказы listen подряд сверх предела — код 2.
+    def test_listen_refused_limit(self) -> None:
+        self.twin.next_number = 5
+        self.twin.refuse_listen = 100
+        self.twin.on_configure = [("wait", self.twin.checked), ("close",)]
+        r = self.run_jwait("5")
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("обрывался 6 раз подряд", self.report())
+        self.assertIn("listen", self.report())
 
 
 if __name__ == "__main__":

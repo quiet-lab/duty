@@ -190,10 +190,19 @@ def fetch(cfg, jql: str) -> dict[str, dict]:
             return False
         return True
 
-    def batch_history(keys: list[str], top: bool = True) -> None:
+    class RequestFault(Exception):
+        """400 вызван самим запросом, а не ключами: повтор прекращается."""
+
+    def batch_history(keys: list[str]) -> None:
         """История пакета; при 400 — деление пополам: отбрасываются только ключи,
         на которые Jira отвечает 400 по одному (например, удалённые тикеты),
-        остальные получают свою историю. Без задержек и опроса."""
+        остальные получают свою историю. Без задержек и опроса.
+
+        Два одиночных 400, пока ни один запрос части пакета не прошёл, — признак
+        ошибки запроса (expand, длина JQL): два контрольных одиночных запроса
+        (последний и средний из неразобранных ключей) отличают её от удалённых
+        ключей; оба 400 — повтор прекращается с одной строкой предупреждения.
+        """
         if history(keys):
             return
         names = ", ".join(keys)
@@ -204,17 +213,73 @@ def fetch(cfg, jql: str) -> dict[str, dict]:
                 file=sys.stderr,
             )
             return
-        # `created` уже записан `normalize`: ключи, оставшиеся без истории,
-        # получают возраст по дате создания.
-        if top:
+        # `created` уже записан `normalize`: ключи без истории получают возраст
+        # по дате создания.
+        print(
+            f"tickets: Jira ответила 400 на историю пакета ({names}): "
+            "деление пакета пополам",
+            file=sys.stderr,
+        )
+        pending = list(keys)
+        bad: list[str] = []
+        passed = False
+
+        def resolve(part: list[str]) -> None:
+            pending[:] = [k for k in pending if k not in part]
+
+        def run(part: list[str]) -> None:
+            nonlocal passed
+            if history(part):
+                passed = True
+                resolve(part)
+                return
+            if len(part) == 1:
+                bad.append(part[0])
+                resolve(part)
+                if not passed and len(bad) >= 2:
+                    raise RequestFault
+                return
+            half = len(part) // 2
+            run(part[:half])
+            run(part[half:])
+
+        half = len(keys) // 2
+        try:
+            try:
+                run(keys[:half])
+                run(keys[half:])
+            except RequestFault:
+                probes = (
+                    list(dict.fromkeys([pending[-1], pending[(len(pending) - 1) // 2]]))
+                    if pending
+                    else []
+                )
+                for probe in probes:
+                    if history([probe]):
+                        passed = True
+                        resolve([probe])
+                        break
+                    bad.append(probe)
+                    resolve([probe])
+                if not passed:
+                    raise
+                if pending:
+                    run(list(pending))
+        except RequestFault:
             print(
-                f"tickets: Jira ответила 400 на историю пакета ({names}): "
-                "деление пакета пополам",
+                "tickets: Jira ответила 400 на одиночные ключи подряд "
+                f"({', '.join(bad)}) и контрольные: ошибка запроса, повтор "
+                "прекращён, остальные ключи пакета — с возрастом в статусе "
+                "по дате создания",
                 file=sys.stderr,
             )
-        half = len(keys) // 2
-        batch_history(keys[:half], False)
-        batch_history(keys[half:], False)
+            return
+        for key in bad:
+            print(
+                f"tickets: Jira ответила 400 на историю {key}: "
+                "возраст в статусе — по дате создания",
+                file=sys.stderr,
+            )
 
     for i in range(0, len(waiting), PAGE):
         batch_history(waiting[i : i + PAGE])

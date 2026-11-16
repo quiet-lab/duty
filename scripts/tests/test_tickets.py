@@ -573,29 +573,40 @@ class JiraTest(Base):
         self.assertEqual(export["RP-2"]["status_since"], "2026-10-10")
         self.assertEqual(export["RP-3"]["status_since"], "2026-09-01")
 
-    def test_history_400_all_keys_bisected_without_stop(self) -> None:
-        """400 на каждый запрос истории: пакет делится пополам до одиночных ключей,
-        все ключи получают возраст по `created`, число запросов конечно."""
+    def test_history_400_all_keys_request_fault_stops_fast(self) -> None:
+        """400 на каждый запрос истории (ошибка запроса, не ключей): повтор
+        прекращается за малое число запросов с одной строкой предупреждения
+        об остановке (плюс строка о пакете)."""
         items = []
-        for n in range(2, 6):
+        for n in range(2, 12):
             item = issue(f"RP-{n}", f"Т{n}")
             item["fields"]["status"] = {"name": "To Test"}
             item["fields"]["created"] = "2026-09-01T10:00:00.000+0300"
             items.append(item)
         bad = (400, {"errorMessages": ["Bad request"]})
-        self.serve([(200, {"total": 4, "issues": items}), bad])
+        self.serve([(200, {"total": 10, "issues": items}), bad])
         r = self.run_script()
         self.assertEqual(r.returncode, 0, r.stderr)
-        # основной, пакет из 4, две пары и четыре одиночных ключа
-        self.assertEqual(len(FakeJira.seen), 1 + 1 + 2 + 4)
+        # основной, пакет, полупакет, пара, два одиночных, два контрольных:
+        # не зависит от числа ключей
+        self.assertLessEqual(len(FakeJira.seen), 8)
+        self.assertIn("ошибка запроса", r.stderr)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 2, r.stderr)
         path = Path(r.stdout.strip().splitlines()[-1].removeprefix("Отчёт: "))
         export = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
-        self.assertEqual(export["RP-5"]["status_since"], "2026-09-01")
+        self.assertEqual(export["RP-11"]["status_since"], "2026-09-01")
 
     def test_history_400_two_deleted_in_row_do_not_hide_the_rest(self) -> None:
         """duty-merge п. 8: два подряд удалённых ключа не останавливают повтор:
         ключи после них получают свою историю (деление пакета пополам)."""
-        deleted = {"RP-3", "RP-4"}
+        self.deleted_in_row({"RP-3", "RP-4"})
+
+    def test_history_400_first_two_deleted_do_not_hide_the_rest(self) -> None:
+        """Удалены первые два ключа пакета, успешного одиночного ответа ещё нет:
+        контрольные запросы показывают, что запрос корректен."""
+        self.deleted_in_row({"RP-2", "RP-3"})
+
+    def deleted_in_row(self, deleted: set[str]) -> None:
         items = []
         for n in range(2, 7):
             item = issue(f"RP-{n}", f"Т{n}")
@@ -631,7 +642,7 @@ class JiraTest(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         path = Path(r.stdout.strip().splitlines()[-1].removeprefix("Отчёт: "))
         export = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
-        for key in ("RP-2", "RP-5", "RP-6"):
+        for key in sorted({"RP-2", "RP-3", "RP-4", "RP-5", "RP-6"} - deleted):
             self.assertEqual(export[key]["status_since"], "2026-10-10", key)
         for key in sorted(deleted):
             self.assertEqual(export[key]["status_since"], "2026-09-01", key)

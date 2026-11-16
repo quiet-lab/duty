@@ -120,9 +120,11 @@ DENY = {
         "через printf '%s' \"$ИМЯ\" | команда."
     ),
     "test-eval": (
-        "Запрещён литерал с подстановкой в индексе у test, [ и [[ "
-        "(-v 'имя[$(команда)]', -eq 'имя[$(команда)]'): bash вычисляет индекс "
-        "как арифметику и исполняет команду, минуя проверку подстановок. "
+        "Запрещён литерал с подстановкой в индексе там, где bash трактует "
+        "аргумент как имя переменной или арифметику (test -v, -eq и подобные, "
+        "printf -v, read, mapfile, readarray, unset, declare, typeset, local, "
+        "export, readonly, let, wait -p): имя[$(команда)] исполняет команду, "
+        "минуя проверку подстановок. "
         'Вместо этого: test -n "$ИМЯ" или явное сравнение строк.'
     ),
     "secret-literal": (
@@ -404,11 +406,14 @@ def py_write_flag(text: str) -> bool:
     name = text.partition("=")[0]
     if name in PY_READ_ONLY_LONG:
         return False
+    if name in PY_WRITE_LONG or PY_REPORT_RE.fullmatch(name):
+        return True
+    # сокращение, подходящее и к ключу только для чтения, неоднозначно: argparse
+    # его отвергает, исполнения нет
     return (
-        name in PY_WRITE_LONG
-        or bool(PY_REPORT_RE.fullmatch(name))
-        or len(name) >= 4
+        len(name) >= 4
         and any(w.startswith(name) for w in PY_WRITE_LONG)
+        and not any(w.startswith(name) for w in PY_READ_ONLY_LONG)
     )
 
 
@@ -901,13 +906,58 @@ def kill_substitution(args: list[Word]) -> bool:
     return False
 
 
+TEST_NAMES = {"test", "[", "[["}
+TEST_ARITH = {"-eq", "-ne", "-lt", "-le", "-gt", "-ge"}
+# Команды, у которых любой литеральный аргумент bash трактует как имя переменной
+# или арифметику (`имя[$(…)]` вычисляется и исполняет команду).
+NAME_ARG_COMMANDS = {
+    "read",
+    "mapfile",
+    "readarray",
+    "unset",
+    "declare",
+    "typeset",
+    "local",
+    "export",
+    "readonly",
+    "let",
+}
+SUBSCRIPT_EXEC_RE = re.compile(r"\[.*(\$\(|`)", re.DOTALL)
+
+
+def subscript_exec(text: str) -> bool:
+    """Литерал вида `имя[…$(…)…]` или `имя[…`…`…]`."""
+    return bool(SUBSCRIPT_EXEC_RE.search(text))
+
+
 def check_test(name: str, args: list[Word]) -> str | None:
-    """`test`, `[`, `[[` с литералом `имя[$(…)]`: bash вычисляет индекс и исполняет
-    команду (`-v`, `-eq`), а подстановки в одинарных кавычках проверка не видит."""
-    if name in {"test", "[", "[["} and any(
-        a.literal and "[" in a.text and ("$(" in a.text or "`" in a.text) for a in args
-    ):
-        return "test-eval"
+    """Литерал `имя[$(…)]` в аргументе, который bash вычисляет как имя переменной
+    или арифметику: bash исполняет команду из индекса, а подстановки в
+    одинарных кавычках проверка не видит. Вычисляют: `test`/`[`/`[[` (операнд
+    `-v`, `-R` и операнды `-eq`, `-ne`, `-lt`, `-le`, `-gt`, `-ge`; строковые
+    сравнения индекс не вычисляют), `printf -v`, `wait -p`, любые аргументы
+    `NAME_ARG_COMMANDS` (`read`, `mapfile`, `readarray`, `unset`, `declare`,
+    `typeset`, `local`, `export`, `readonly`, `let`)."""
+    texts = [a.text for a in args]
+    hit: list[int] = []
+    if name in TEST_NAMES:
+        for i, text in enumerate(texts):
+            if text in {"-v", "-R"}:
+                hit.append(i + 1)
+            elif text in TEST_ARITH:
+                hit += [i - 1, i + 1]
+    elif name in NAME_ARG_COMMANDS:
+        hit = list(range(len(texts)))
+    elif name in {"printf", "wait"}:
+        flag = "-v" if name == "printf" else "-p"
+        for i, text in enumerate(texts):
+            if text == flag:
+                hit.append(i + 1)
+            elif text.startswith(flag) and not text.startswith("--"):
+                hit.append(i)
+    for i in hit:
+        if 0 <= i < len(args) and args[i].literal and subscript_exec(texts[i]):
+            return "test-eval"
     return None
 
 

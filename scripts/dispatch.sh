@@ -18,9 +18,10 @@
 #   dispatch.sh stalled [--root <каталог>] [--results <каталог>]
 #   dispatch.sh close <имя> [--root <каталог>] [--results <каталог>]
 #
-# <модель> — haiku, sonnet, opus или fable. Fable (claude-fable-5-1)
+# <модель> — haiku, sonnet, opus или fable. Fable
 # запускается только по этому слову: навык /duty:dispatch передаёт его,
-# когда пользователь согласился.
+# когда пользователь согласился. Все четыре слова передаются
+# в `claude --model` псевдонимами последней версии модели.
 #
 # Символ workspace — случайный эмодзи из набора symbols.tasks конфигурации
 # (вне репозитория — symbols.outside пользовательского слоя), не занятый
@@ -639,8 +640,7 @@ cmd_start() {
         || die "имя $name: [a-z][a-z0-9_-]{0,31}, как у агентов herdr"
 
     case $model_arg in
-        haiku | sonnet | opus) model=$model_arg ;;
-        fable) model=claude-fable-5-1 ;;
+        haiku | sonnet | opus | fable) model=$model_arg ;;
         *) die "модель $model_arg: haiku, sonnet, opus или fable" ;;
     esac
 
